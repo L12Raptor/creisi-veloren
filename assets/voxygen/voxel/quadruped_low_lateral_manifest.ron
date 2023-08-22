@@ -827,4 +827,40 @@
             lateral: ("npc.driggle.male.foot_br", false),
         ),
     ),
+    (Rigusaurus, Male): (
+        front_left: (
+            offset: (-7.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.male.foot_fr", false),
+        ),
+        front_right: (
+            offset: (0.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.male.foot_fr", false),
+        ),
+        back_left: (
+            offset: (-8.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.male.foot_br", false),
+        ),
+        back_right: (
+            offset: (0.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.male.foot_br", false),
+        ),
+    ),
+    (Rigusaurus, Female): (
+        front_left: (
+            offset: (-7.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.female.foot_fr", false),
+        ),
+        front_right: (
+            offset: (0.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.female.foot_fr", false),
+        ),
+        back_left: (
+            offset: (-8.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.female.foot_br", false),
+        ),
+        back_right: (
+            offset: (0.0, -0.0, -4.0),
+            lateral: ("npc.rigusaurus.female.foot_br", false),
+        ),
+    ),
 })
