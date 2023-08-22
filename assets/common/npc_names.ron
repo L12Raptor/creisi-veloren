@@ -1353,6 +1353,10 @@
                 keyword: "driggle",
                 generic: "Driggle"
             ),
+            rigusaurus: (
+                keyword: "rigusaurus",
+                generic: "Rigusaurus"
+            ),
         )
     ),
     arthropod: (
