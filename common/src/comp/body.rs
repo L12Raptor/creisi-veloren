@@ -392,6 +392,7 @@ impl Body {
                 quadruped_low::Species::Dagon => 600.0,
                 quadruped_low::Species::Basilisk => 800.0,
                 quadruped_low::Species::Driggle => 55.0,
+                quadruped_low::Species::Rigusaurus => 600.0,
             },
             Body::QuadrupedMedium(body) => match body.species {
                 quadruped_medium::Species::Bear => 500.0, // ~✅ (350-700 kg)
@@ -581,6 +582,7 @@ impl Body {
                 quadruped_low::Species::Tortoise => Vec3::new(1.7, 2.7, 1.5),
                 quadruped_low::Species::Driggle => Vec3::new(1.6, 2.7, 1.0),
                 quadruped_low::Species::HermitAlligator => Vec3::new(2.0, 7.7, 1.8),
+                quadruped_low::Species::Rigusaurus => Vec3::new(1.5, 4.5, 1.5),
                 _ => Vec3::new(1.0, 1.6, 1.3),
             },
             Body::Ship(ship) => ship.dimensions(),
@@ -934,6 +936,7 @@ impl Body {
                 quadruped_low::Species::Deadwood => 120,
                 quadruped_low::Species::Mossdrake => 160,
                 quadruped_low::Species::Driggle => 40,
+                quadruped_low::Species::Rigusaurus => 120,
                 _ => 70,
             },
             Body::Arthropod(arthropod) => match arthropod.species {
