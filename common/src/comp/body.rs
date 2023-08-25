@@ -582,7 +582,7 @@ impl Body {
                 quadruped_low::Species::Tortoise => Vec3::new(1.7, 2.7, 1.5),
                 quadruped_low::Species::Driggle => Vec3::new(1.6, 2.7, 1.0),
                 quadruped_low::Species::HermitAlligator => Vec3::new(2.0, 7.7, 1.8),
-                quadruped_low::Species::Rigusaurus => Vec3::new(1.5, 4.5, 1.5),
+                quadruped_low::Species::Rigusaurus => Vec3::new(1.0, 2.8, 1.3),
                 _ => Vec3::new(1.0, 1.6, 1.3),
             },
             Body::Ship(ship) => ship.dimensions(),
