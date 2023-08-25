@@ -16,6 +16,7 @@ SpawnEntry (
                 (1, (1, 1, "common.entity.wild.peaceful.kelpie")),
                 (8, (2, 6, "common.entity.wild.peaceful.crab")),
                 (2, (1, 1, "common.entity.wild.aggressive.crocodile")),
+                (1, (1, 1, "common.entity.wild.aggressive.rigusaurus")),
             ],
             spawn_mode: Land,
             day_period: [Night, Morning, Noon, Evening],
