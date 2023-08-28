@@ -659,7 +659,8 @@ fn default_main_tool(body: &Body) -> Item {
             | quadruped_low::Species::SeaCrocodile
             | quadruped_low::Species::Alligator
             | quadruped_low::Species::Salamander
-            | quadruped_low::Species::Elbst => Some(Item::new_from_asset_expect(
+            | quadruped_low::Species::Elbst
+            | quadruped_low::Species::Rigusaurus => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.quadlowtail",
             )),
             quadruped_low::Species::Monitor | quadruped_low::Species::Pangolin => Some(
@@ -1169,7 +1170,8 @@ impl LoadoutBuilder {
                 | quadruped_low::Species::Rocksnapper
                 | quadruped_low::Species::Rootsnapper
                 | quadruped_low::Species::Tortoise
-                | quadruped_low::Species::Basilisk => Some("common.items.npc_armor.generic_high"),
+                | quadruped_low::Species::Basilisk
+                | quadruped_low::Species::Rigusaurus => Some("common.items.npc_armor.generic_high"),
                 quadruped_low::Species::Dagon => Some("common.items.npc_armor.quadruped_low.dagon"),
                 _ => None,
             },
