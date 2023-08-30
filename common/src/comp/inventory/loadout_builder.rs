@@ -731,6 +731,9 @@ fn default_main_tool(body: &Body) -> Item {
             theropod::Species::Yale => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.theropod.yale",
             )),
+            theropod::Species::Carnotaurus => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.theropodcharge",
+            )),
             theropod::Species::Dodarock => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.theropodsmall",
             )),
@@ -1184,9 +1187,9 @@ impl LoadoutBuilder {
                 _ => None,
             },
             Body::Theropod(body) => match body.species {
-                theropod::Species::Archaeos | theropod::Species::Ntouka => {
-                    Some("common.items.npc_armor.generic")
-                },
+                theropod::Species::Archaeos
+                | theropod::Species::Ntouka
+                | theropod::Species::Carnotaurus => Some("common.items.npc_armor.generic"),
                 theropod::Species::Dodarock => Some("common.items.npc_armor.generic_high"),
                 _ => None,
             },
