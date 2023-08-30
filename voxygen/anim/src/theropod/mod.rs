@@ -150,6 +150,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (2.0, 1.5),
                 (Ntouka, _) => (2.0, 2.5),
                 (Axebeak, _) => (11.5, 8.5),
+                (Carnotaurus, _) => (7.0, 4.0),
             },
             jaw: match (body.species, body.body_type) {
                 (Archaeos, _) => (1.0, -7.0),
@@ -162,6 +163,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (0.0, -5.0),
                 (Ntouka, _) => (0.0, -4.0),
                 (Axebeak, _) => (2.5, -4.0),
+                (Carnotaurus, _) => (0.0, -2.0),
             },
             neck: match (body.species, body.body_type) {
                 (Archaeos, _) => (4.5, -2.0),
@@ -174,6 +176,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (5.0, -1.0),
                 (Ntouka, _) => (4.0, 0.0),
                 (Axebeak, _) => (-5.5, 0.0),
+                (Carnotaurus, _) => (4.5, -2.0),
             },
             chest_front: match (body.species, body.body_type) {
                 (Archaeos, _) => (0.0, 20.0),
@@ -186,6 +189,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (0.0, 12.0),
                 (Ntouka, _) => (0.0, 13.0),
                 (Axebeak, _) => (0.0, 12.0),
+                (Carnotaurus, _) => (0.0, 20.0),
             },
             chest_back: match (body.species, body.body_type) {
                 (Archaeos, _) => (-5.5, -1.0),
@@ -198,6 +202,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (-4.5, -2.0),
                 (Ntouka, _) => (-4.5, 1.0),
                 (Axebeak, _) => (-5.0, 0.0),
+                (Carnotaurus, _) => (-5.5, -1.0),
             },
             tail_front: match (body.species, body.body_type) {
                 (Archaeos, _) => (-9.0, -1.5),
@@ -210,6 +215,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (-4.5, -4.5),
                 (Ntouka, _) => (-9.5, -3.5),
                 (Axebeak, _) => (-5.5, 4.5),
+                (Carnotaurus, _) => (-9.0, -1.5),
             },
             tail_back: match (body.species, body.body_type) {
                 (Archaeos, _) => (-8.0, -0.5),
@@ -222,6 +228,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (-8.5, -2.0),
                 (Ntouka, _) => (-9.5, -2.0),
                 (Axebeak, _) => (-10.0, 3.0),
+                (Carnotaurus, _) => (-8.0, -0.5),
             },
             hand: match (body.species, body.body_type) {
                 (Archaeos, _) => (3.0, 0.0, -4.0),
@@ -234,6 +241,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (3.5, 3.0, -5.0),
                 (Ntouka, _) => (3.5, 3.0, -4.0),
                 (Axebeak, _) => (1.5, -10.5, 9.5),
+                (Carnotaurus, _) => (3.0, 0.0, -4.0),
             },
             leg: match (body.species, body.body_type) {
                 (Archaeos, _) => (2.5, -3.0, -4.0),
@@ -246,6 +254,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (3.5, 1.5, -4.0),
                 (Ntouka, _) => (4.5, -5.5, -4.0),
                 (Axebeak, _) => (2.5, -0.5, 0.0),
+                (Carnotaurus, _) => (2.5, -3.0, -4.0),
             },
             foot: match (body.species, body.body_type) {
                 (Archaeos, _) => (3.0, -0.5, -7.0),
@@ -258,6 +267,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => (1.5, -1.0, -3.5),
                 (Ntouka, _) => (1.5, -1.0, -2.5),
                 (Axebeak, _) => (2.5, 2.5, -7.0),
+                (Carnotaurus, _) => (3.0, -0.5, -7.0),
             },
             scaler: match (body.species, body.body_type) {
                 (Archaeos, _) => 2.93,
@@ -270,6 +280,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Dodarock, _) => 1.1,
                 (Ntouka, _) => 2.93,
                 (Axebeak, _) => 1.1,
+                (Carnotaurus, _) => 2.0,
             },
             steady_wings: matches!((body.species, body.body_type), (Axebeak, _)),
         }
