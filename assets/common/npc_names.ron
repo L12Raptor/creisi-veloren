@@ -1109,6 +1109,10 @@
             axebeak: (
                 keyword: "axebeak",
                 generic: "Axebeak"
+            ),
+            carnotaurus: (
+                keyword: "carnotaurus",
+                generic: "Carnotaurus"
             )
         )
     ),
