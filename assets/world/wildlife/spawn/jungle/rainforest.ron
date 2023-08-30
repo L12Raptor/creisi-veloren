@@ -10,6 +10,7 @@ SpawnEntry (
                 (9, (2, 3, "common.entity.wild.aggressive.wood_raptor")),
                 (14, (1, 1, "common.entity.wild.aggressive.deadwood")),
                 (18, (2, 6, "common.entity.wild.peaceful.dodo")),
+                (5, (1, 1, "common.entity.wild.aggressive.carnotaurus")),
                 // Rare
                 (10, (1, 1, "common.entity.wild.aggressive.sunlizard")),
                 (1, (1, 1, "common.entity.wild.aggressive.odonto")),
