@@ -9,6 +9,7 @@ SpawnEntry (
                 (5, (1, 3, "common.entity.wild.peaceful.gecko")),
                 (5, (1, 2, "common.entity.wild.peaceful.sand_hare")),
                 (5, (1, 1, "common.entity.wild.aggressive.bonerattler")),
+                (2, (1, 1, "common.entity.wild.aggressive.carnotaurus")),
             ],
             spawn_mode: Land,
             day_period: [Night, Morning, Noon, Evening],
