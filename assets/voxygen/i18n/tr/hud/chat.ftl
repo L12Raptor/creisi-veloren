@@ -8,13 +8,11 @@ hud-chat-pvp_melee_kill_msg = [{ $victim }], [{ $attacker }] tarafından mağlup
 hud-chat-pvp_ranged_kill_msg = [{ $victim }], [{ $attacker }] tarafından vuruldu.
 hud-chat-pvp_explosion_kill_msg = [{ $victim }], [{ $attacker }] tarafından havaya uçuruldu.
 hud-chat-pvp_energy_kill_msg = [{ $victim }], [{ $attacker }] tarafından büyü ile mağlup edildi.
-hud-chat-pvp_buff_kill_msg = [{ $victim }], [{ $attacker }] tarafından öldürüldü.
 hud-chat-npc_melee_kill_msg = [{ $victim }], { $attacker } tarafından mağlup edildi.
 hud-chat-npc_ranged_kill_msg = [{ $victim }], { $attacker } tarafından vuruldu.
 hud-chat-npc_explosion_kill_msg = [{ $victim }], { $attacker } tarafından havaya uçuruldu.
 hud-chat-npc_energy_kill_msg = [{ $victim }], { $attacker } tarafından büyü ile mağlup edildi.
 hud-chat-npc_other_kill_msg = [{ $victim }], { $attacker } tarafından öldürüldü.
-
 hud-chat-loot_fail = Envanterin dolu!
 hud-chat-goodbye = Hoşçakal!
 hud-chat-connection_lost = Bağlantı koptu. { $time } saniye içinde sunucudan atılacaksın.
