@@ -1,6 +1,4 @@
-<p align="center">
-	<img alt="Veloren logo on a screenshot" src="https://cdn.discordapp.com/attachments/541307708146581519/712295605170602075/logo.png">
-</p>
+# ![Veloren logo on a screenshot](https://cdn.discordapp.com/attachments/541307708146581519/712295605170602075/logo.png)
 
 ## Welcome to Creisi Veloren!
 
@@ -12,7 +10,7 @@ Creisi Veloren is a multiplayer voxel RPG written in Rust. It is a fork of Velor
 
 [The Veloren website](https://veloren.net/) - The official Veloren website.
 
-## F.A.Q.
+## FAQ
 
 ### **Q:** How is this game licensed?
 
