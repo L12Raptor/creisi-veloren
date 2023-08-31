@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tweaked dungeons mobs and chests loot tables to be more balanced and rewarding
 - Changed iron ore to iron ingots in the instruments' recipes
 - Changed gold ore to gold ingots in the Brinstone armor set recipes
+- Updated windowing library, wayland may work better.
+- Portal model has been updated by @Nectical
 
 ### Removed
 - Medium and large potions from all loot tables
@@ -55,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Fixed wild roaming cyclop loot table to not drop the quarry key
 - Dungeons now have an outer wall, preventing them from intersecting with caves or leaving holes in sides of mountains.
+- Location names are displayed in character selection dialog
 
 ## [0.15.0] - 2023-07-01
 

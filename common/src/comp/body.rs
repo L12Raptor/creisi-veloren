@@ -392,6 +392,7 @@ impl Body {
                 quadruped_low::Species::Dagon => 600.0,
                 quadruped_low::Species::Basilisk => 800.0,
                 quadruped_low::Species::Driggle => 55.0,
+                quadruped_low::Species::Rigusaurus => 600.0,
             },
             Body::QuadrupedMedium(body) => match body.species {
                 quadruped_medium::Species::Bear => 500.0, // ~✅ (350-700 kg)
@@ -454,6 +455,7 @@ impl Body {
                 theropod::Species::Woodraptor => 500.0,
                 theropod::Species::Yale => 1_000.0,
                 theropod::Species::Axebeak => 300.0,
+                theropod::Species::Carnotaurus => 2_600.0,
             },
             Body::Ship(ship) => ship.mass().0,
             Body::Arthropod(_) => 200.0,
@@ -581,6 +583,7 @@ impl Body {
                 quadruped_low::Species::Tortoise => Vec3::new(1.7, 2.7, 1.5),
                 quadruped_low::Species::Driggle => Vec3::new(1.6, 2.7, 1.0),
                 quadruped_low::Species::HermitAlligator => Vec3::new(2.0, 7.7, 1.8),
+                quadruped_low::Species::Rigusaurus => Vec3::new(1.0, 2.8, 1.3),
                 _ => Vec3::new(1.0, 1.6, 1.3),
             },
             Body::Ship(ship) => ship.dimensions(),
@@ -595,6 +598,7 @@ impl Body {
                 theropod::Species::Woodraptor => Vec3::new(2.0, 3.0, 2.6),
                 theropod::Species::Yale => Vec3::new(2.0, 3.2, 4.0),
                 theropod::Species::Axebeak => Vec3::new(2.0, 3.6, 3.0),
+                theropod::Species::Carnotaurus => Vec3::new(3.5, 6.5, 6.0),
             },
             Body::Arthropod(body) => match body.species {
                 arthropod::Species::Tarantula => Vec3::new(4.0, 4.0, 1.8),
@@ -911,6 +915,7 @@ impl Body {
                 theropod::Species::Dodarock => 200,
                 theropod::Species::Odonto => 300,
                 theropod::Species::Ntouka => 300,
+                theropod::Species::Carnotaurus => 250,
                 _ => 110,
             },
             Body::QuadrupedLow(quadruped_low) => match quadruped_low.species {
@@ -934,6 +939,7 @@ impl Body {
                 quadruped_low::Species::Deadwood => 120,
                 quadruped_low::Species::Mossdrake => 160,
                 quadruped_low::Species::Driggle => 40,
+                quadruped_low::Species::Rigusaurus => 120,
                 _ => 70,
             },
             Body::Arthropod(arthropod) => match arthropod.species {

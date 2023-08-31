@@ -1,6 +1,5 @@
 hud-chat-all = Wszystko
 hud-chat-you = Ty
-hud-chat-mod = Mod
 hud-chat-chat_tab_hover_tooltip = Kliknij prawym aby otworzyć ustawienia
 hud-outcome-burning = zmarł od podpalenia
 hud-outcome-curse = zmarł od klątwy
@@ -27,10 +26,11 @@ hud-chat-npc_ranged_kill_msg = { $attacker } ustrzela [{ $victim }]
 hud-chat-npc_explosion_kill_msg = { $attacker } wysadza [{ $victim }]
 hud-chat-npc_energy_kill_msg = { $attacker } zabija [{ $victim }] magią
 hud-chat-npc_other_kill_msg = { $attacker } zabija [{ $victim }]
-hud-loot-pickup-msg = {$actor} podniósł { $amount ->
-   [one] { $item }
-   *[other] {$amount}x {$item}
-}
+hud-loot-pickup-msg =
+    { $actor } podniósł { $amount ->
+        [one] { $item }
+       *[other] { $amount }x { $item }
+    }
 hud-chat-loot_fail = Twój ekwipunek jest pełen!
 hud-chat-goodbye = Żegnaj!
 hud-chat-connection_lost = Stracono połączenie. Wyrzucanie za { $time } sekund.

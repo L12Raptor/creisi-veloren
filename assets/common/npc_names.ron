@@ -1061,6 +1061,10 @@
             axebeak: (
                 keyword: "axebeak",
                 generic: "Axebeak"
+            ),
+            carnotaurus: (
+                keyword: "carnotaurus",
+                generic: "Carnotaurus"
             )
         )
     ),
@@ -1352,6 +1356,10 @@
             driggle: (
                 keyword: "driggle",
                 generic: "Driggle"
+            ),
+            rigusaurus: (
+                keyword: "rigusaurus",
+                generic: "Rigusaurus"
             ),
         )
     ),

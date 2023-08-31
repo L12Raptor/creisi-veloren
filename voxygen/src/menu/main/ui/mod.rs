@@ -60,7 +60,7 @@ image_ids_ice! {
 }
 
 // Randomly loaded background images
-const BG_IMGS: [&str; 14] = [
+const BG_IMGS: [&str; 16] = [
     "voxygen.background.bg_1",
     "voxygen.background.bg_2",
     "voxygen.background.bg_3",
@@ -75,6 +75,8 @@ const BG_IMGS: [&str; 14] = [
     "voxygen.background.bg_12",
     "voxygen.background.bg_13",
     "voxygen.background.bg_14",
+    "voxygen.background.bg_female_rigusaurus_with_lowis",
+    "voxygen.background.bg_carnotaurus",
 ];
 
 pub enum Event {
