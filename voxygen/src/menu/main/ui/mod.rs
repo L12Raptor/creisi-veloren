@@ -86,7 +86,7 @@ const BG_IMGS: [&str; 16] = [
     "voxygen.background.bg_13",
     "voxygen.background.bg_14",
     "voxygen.background.bg_female_rigusaurus_with_lowis",
-    "voxygen.background.bg_carnotaurus"
+    "voxygen.background.bg_carnotaurus",
 ];
 
 #[cfg(feature = "singleplayer")]
