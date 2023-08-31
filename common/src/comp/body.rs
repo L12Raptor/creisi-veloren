@@ -455,6 +455,7 @@ impl Body {
                 theropod::Species::Woodraptor => 500.0,
                 theropod::Species::Yale => 1_000.0,
                 theropod::Species::Axebeak => 300.0,
+                theropod::Species::Carnotaurus => 2_600.0,
             },
             Body::Ship(ship) => ship.mass().0,
             Body::Arthropod(_) => 200.0,
@@ -597,6 +598,7 @@ impl Body {
                 theropod::Species::Woodraptor => Vec3::new(2.0, 3.0, 2.6),
                 theropod::Species::Yale => Vec3::new(2.0, 3.2, 4.0),
                 theropod::Species::Axebeak => Vec3::new(2.0, 3.6, 3.0),
+                theropod::Species::Carnotaurus => Vec3::new(3.5, 6.5, 6.0),
             },
             Body::Arthropod(body) => match body.species {
                 arthropod::Species::Tarantula => Vec3::new(4.0, 4.0, 1.8),
@@ -913,6 +915,7 @@ impl Body {
                 theropod::Species::Dodarock => 200,
                 theropod::Species::Odonto => 300,
                 theropod::Species::Ntouka => 300,
+                theropod::Species::Carnotaurus => 250,
                 _ => 110,
             },
             Body::QuadrupedLow(quadruped_low) => match quadruped_low.species {
