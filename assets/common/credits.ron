@@ -109,10 +109,7 @@
         license: "OFL",
         license_link: "https://scripts.sil.org/OFL",
     ),],
-    other_art: [(
-        name: "Lowis",
-        contributions: "Main developer of Creisi Veloren, this game, fork of Veloren",
-    )],
+    other_art: [],
     /// Entry format:
     /// ```
     /// (
@@ -146,5 +143,8 @@
         name: "Christof",
     ), (
         name: "AngelOnFira",
+    ), (
+        name: "Lowis",
+        contributions: "Main developer of the Creisi Veloren \"mod\"",
     )],
 )
