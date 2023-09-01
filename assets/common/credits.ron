@@ -143,5 +143,8 @@
         name: "Christof",
     ), (
         name: "AngelOnFira",
+    ), (
+        name: "Lowis",
+        contributions: "Main developer of the Creisi Veloren \"mod\"",
     )],
 )
