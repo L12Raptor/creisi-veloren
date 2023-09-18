@@ -1,0 +1,16 @@
+#![enable(implicit_some)]
+(
+    name: Name("Lemoncio"),
+    body: RandomWith("lemoncio"),
+    alignment: Alignment(Wild),
+    loot: LootTable("common.loot_tables.creature.biped_small.lemoncio"),
+    inventory: (
+        loadout: Inline((
+            inherit: Choice([
+                (1, Asset("common.loadout.spots.lemoncio.male")),
+                (1, Asset("common.loadout.spots.lemoncio.female")),
+            ]),
+        )),
+    ),
+    meta: [],
+)

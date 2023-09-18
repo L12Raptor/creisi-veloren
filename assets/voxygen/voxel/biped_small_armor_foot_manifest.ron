@@ -240,5 +240,21 @@
                  vox_spec: ("npc.flamekeeper.foot_r", (-2.5, -4.5, -7.0)),
             )
         ),
+        "common.items.npc_armor.biped_small.lemoncio.foot.male": (
+            left: (
+                vox_spec: ("npc.lemoncio.male.foot_r", (-1.5, -2.0, -4.0)),
+            ),
+            right: (
+                 vox_spec: ("npc.lemoncio.male.foot_r", (-1.5, -2.0, -4.0)),
+            )
+        ),
+        "common.items.npc_armor.biped_small.lemoncio.foot.female": (
+            left: (
+                vox_spec: ("npc.lemoncio.female.foot_r", (-1.5, -2.0, -4.0)),
+            ),
+            right: (
+                 vox_spec: ("npc.lemoncio.female.foot_r", (-1.5, -2.0, -4.0)),
+            )
+        ),
     },
 ))
