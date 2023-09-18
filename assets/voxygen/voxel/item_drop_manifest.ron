@@ -842,6 +842,7 @@
     Simple("common.items.food.meat.beast_large_cooked"): "voxel.sprite.food.meat.beast_large_cooked",
     Simple("common.items.food.plainsalad"): "voxel.sprite.food.salad_plain",
     Simple("common.items.food.tomatosalad"): "voxel.sprite.food.salad_tomato",
+    Simple("common.items.food.lemon"): "voxel.sprite.fruit.lemon_half",
     // Throwables
     Simple("common.items.utility.bomb"): "voxel.object.bomb",
     Simple("common.items.utility.firework_blue"): "voxel.weapon.projectile.fireworks_blue-0",
