@@ -1,0 +1,16 @@
+#![enable(unwrap_newtypes)]
+
+[
+    (
+        specifier: "world.structure.natural.lemoncio_cave",
+        center: (23, 25, 17),
+        custom_indices: {
+            8: Filled(Air, (r: 255, g: 255, b: 255)),
+            20: Sprite(ShortGrass),
+            19: Sprite(Mushroom),
+            18: Sprite(Apple),
+            17: Sprite(Lemon),
+            242: EntitySpawner("common.entity.spot.lemoncio", 0.5),
+         },
+    ),
+]
