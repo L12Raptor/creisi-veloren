@@ -984,6 +984,7 @@ impl Body {
                 biped_small::Species::ShamanicSpirit => 240,
                 biped_small::Species::Jiangshi => 250,
                 biped_small::Species::Flamekeeper => 2000,
+                biped_small::Species::Lemoncio => 100,
                 _ => 60,
             },
             Body::Object(object) => match object {

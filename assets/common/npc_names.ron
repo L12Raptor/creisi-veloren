@@ -1237,6 +1237,10 @@
                 keyword: "treasure_egg",
                 generic: "Treasure Egg",
             ),
+            lemoncio: (
+                keyword: "lemoncio",
+                generic: "Lemoncio",
+            ),
         )
     ),
     fish_small: (
