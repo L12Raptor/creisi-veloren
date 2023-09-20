@@ -467,7 +467,7 @@ impl Spot {
         Self::generate_spots(
             Spot::LemoncioCave,
             world,
-            5.0,
+            1.0,
             |g, c| {
                 g < 0.25
                     && !c.near_cliffs()
