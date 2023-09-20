@@ -4609,4 +4609,14 @@ HotSurface: Some((
     variations: [],
     wind_sway: 0.0,
 )),
+Lemon: Some((
+    variations: [
+        (
+            model: "voxygen.voxel.sprite.fruit.lemon",
+            offset: (-3.5, -3.5, 0.0),
+            lod_axes: (1.0, 1.0, 1.0),
+        )
+    ],
+    wind_sway: 0.0,
+)),
 }

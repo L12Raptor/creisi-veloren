@@ -4,6 +4,8 @@ mod connecting;
 mod credits;
 mod login;
 mod servers;
+#[cfg(feature = "singleplayer")]
+mod world_selector;
 
 use crate::{
     credits::Credits,
@@ -53,6 +55,12 @@ image_ids_ice! {
         selection: "voxygen.element.ui.generic.frames.selection",
         selection_hover: "voxygen.element.ui.generic.frames.selection_hover",
         selection_press: "voxygen.element.ui.generic.frames.selection_press",
+
+        #[cfg(feature = "singleplayer")]
+        slider_range: "voxygen.element.ui.generic.slider.track",
+        #[cfg(feature = "singleplayer")]
+        slider_indicator: "voxygen.element.ui.generic.slider.indicator",
+
         unlock: "voxygen.element.ui.generic.buttons.unlock",
         unlock_hover: "voxygen.element.ui.generic.buttons.unlock_hover",
         unlock_press: "voxygen.element.ui.generic.buttons.unlock_press",
@@ -60,7 +68,7 @@ image_ids_ice! {
 }
 
 // Randomly loaded background images
-const BG_IMGS: [&str; 16] = [
+const BG_IMGS: [&str; 17] = [
     "voxygen.background.bg_1",
     "voxygen.background.bg_2",
     "voxygen.background.bg_3",
@@ -77,7 +85,49 @@ const BG_IMGS: [&str; 16] = [
     "voxygen.background.bg_14",
     "voxygen.background.bg_female_rigusaurus_with_lowis",
     "voxygen.background.bg_carnotaurus",
+    "voxygen.background.bg_lemoncio_and_lowis",
 ];
+
+#[cfg(feature = "singleplayer")]
+#[derive(Clone)]
+pub enum WorldChange {
+    Name(String),
+    Seed(u32),
+    SizeX(u32),
+    SizeY(u32),
+    Scale(f64),
+    MapKind(common::resources::MapKind),
+    ErosionQuality(f32),
+    DefaultGenOps,
+}
+
+#[cfg(feature = "singleplayer")]
+impl WorldChange {
+    pub fn apply(self, world: &mut crate::singleplayer::SingleplayerWorld) {
+        let mut def = Default::default();
+        let gen_opts = world.gen_opts.as_mut().unwrap_or(&mut def);
+        match self {
+            WorldChange::Name(name) => world.name = name,
+            WorldChange::Seed(seed) => world.seed = seed,
+            WorldChange::SizeX(s) => gen_opts.x_lg = s,
+            WorldChange::SizeY(s) => gen_opts.y_lg = s,
+            WorldChange::Scale(scale) => gen_opts.scale = scale,
+            WorldChange::MapKind(kind) => gen_opts.map_kind = kind,
+            WorldChange::ErosionQuality(q) => gen_opts.erosion_quality = q,
+            WorldChange::DefaultGenOps => world.gen_opts = Some(Default::default()),
+        }
+    }
+}
+
+#[cfg(feature = "singleplayer")]
+#[derive(Clone)]
+pub enum WorldsChange {
+    SetActive(Option<usize>),
+    Delete(usize),
+    Regenerate(usize),
+    AddNew,
+    CurrentWorldChange(WorldChange),
+}
 
 pub enum Event {
     LoginAttempt {
@@ -89,6 +139,10 @@ pub enum Event {
     ChangeLanguage(LanguageMetadata),
     #[cfg(feature = "singleplayer")]
     StartSingleplayer,
+    #[cfg(feature = "singleplayer")]
+    InitSingleplayer,
+    #[cfg(feature = "singleplayer")]
+    SinglePlayerChange(WorldsChange),
     Quit,
     // Note: Keeping in case we re-add the disclaimer
     //DisclaimerAccepted,
@@ -129,6 +183,26 @@ enum Screen {
         screen: connecting::Screen,
         connection_state: ConnectionState,
     },
+    #[cfg(feature = "singleplayer")]
+    WorldSelector {
+        screen: world_selector::Screen,
+    },
+}
+
+#[derive(PartialEq, Eq)]
+enum Showing {
+    Login,
+    Languages,
+}
+
+impl Showing {
+    fn toggle(&mut self, other: Showing) {
+        if *self == other {
+            *self = Showing::Login;
+        } else {
+            *self = other;
+        }
+    }
 }
 
 struct Controls {
@@ -149,7 +223,7 @@ struct Controls {
     selected_server_index: Option<usize>,
     login_info: LoginInfo,
 
-    is_selecting_language: bool,
+    show: Showing,
     selected_language_index: Option<usize>,
 
     time: f64,
@@ -165,6 +239,14 @@ enum Message {
     ShowCredits,
     #[cfg(feature = "singleplayer")]
     Singleplayer,
+    #[cfg(feature = "singleplayer")]
+    SingleplayerPlay,
+    #[cfg(feature = "singleplayer")]
+    WorldChanged(WorldsChange),
+    #[cfg(feature = "singleplayer")]
+    WorldCancelConfirmation,
+    #[cfg(feature = "singleplayer")]
+    WorldConfirmation(world_selector::Confirmation),
     Multiplayer,
     UnlockServerField,
     LanguageChanged(usize),
@@ -204,7 +286,7 @@ impl Controls {
             }
         } else { */
             Screen::Login {
-                screen: Box::new(login::Screen::new()),
+                screen: Box::default(),
                 error: None,
             };
         //};
@@ -239,7 +321,7 @@ impl Controls {
             selected_server_index,
             login_info,
 
-            is_selecting_language: false,
+            show: Showing::Login,
             selected_language_index,
 
             time: 0.0,
@@ -253,6 +335,7 @@ impl Controls {
         settings: &Settings,
         key_layout: &Option<KeyLayout>,
         dt: f32,
+        #[cfg(feature = "singleplayer")] worlds: &crate::singleplayer::SingleplayerWorlds,
     ) -> Element<Message> {
         self.time += dt as f64;
 
@@ -308,7 +391,7 @@ impl Controls {
                 &self.login_info,
                 error.as_deref(),
                 &self.i18n.read(),
-                self.is_selecting_language,
+                &self.show,
                 self.selected_language_index,
                 &language_metadatas,
                 button_style,
@@ -336,6 +419,14 @@ impl Controls {
                 &settings.controls,
                 key_layout,
             ),
+            #[cfg(feature = "singleplayer")]
+            Screen::WorldSelector { screen } => screen.view(
+                &self.fonts,
+                &self.imgs,
+                worlds,
+                &self.i18n.read(),
+                button_style,
+            ),
         };
 
         Container::new(
@@ -362,7 +453,7 @@ impl Controls {
             Message::Quit => events.push(Event::Quit),
             Message::Back => {
                 self.screen = Screen::Login {
-                    screen: Box::new(login::Screen::new()),
+                    screen: Box::default(),
                     error: None,
                 };
             },
@@ -382,11 +473,51 @@ impl Controls {
             },
             #[cfg(feature = "singleplayer")]
             Message::Singleplayer => {
+                self.screen = Screen::WorldSelector {
+                    screen: world_selector::Screen::default(),
+                };
+                events.push(Event::InitSingleplayer);
+            },
+            #[cfg(feature = "singleplayer")]
+            Message::SingleplayerPlay => {
                 self.screen = Screen::Connecting {
                     screen: connecting::Screen::new(ui),
                     connection_state: ConnectionState::InProgress,
                 };
                 events.push(Event::StartSingleplayer);
+            },
+            #[cfg(feature = "singleplayer")]
+            Message::WorldChanged(change) => {
+                match change {
+                    WorldsChange::Delete(_) | WorldsChange::Regenerate(_) => {
+                        if let Screen::WorldSelector {
+                            screen: world_selector::Screen { confirmation, .. },
+                        } = &mut self.screen
+                        {
+                            *confirmation = None;
+                        }
+                    },
+                    _ => {},
+                }
+                events.push(Event::SinglePlayerChange(change))
+            },
+            #[cfg(feature = "singleplayer")]
+            Message::WorldCancelConfirmation => {
+                if let Screen::WorldSelector {
+                    screen: world_selector::Screen { confirmation, .. },
+                } = &mut self.screen
+                {
+                    *confirmation = None;
+                }
+            },
+            #[cfg(feature = "singleplayer")]
+            Message::WorldConfirmation(new_confirmation) => {
+                if let Screen::WorldSelector {
+                    screen: world_selector::Screen { confirmation, .. },
+                } = &mut self.screen
+                {
+                    *confirmation = Some(new_confirmation);
+                }
             },
             Message::Multiplayer => {
                 self.screen = Screen::Connecting {
@@ -405,7 +536,7 @@ impl Controls {
             Message::LanguageChanged(new_value) => {
                 events.push(Event::ChangeLanguage(language_metadatas.remove(new_value)));
             },
-            Message::OpenLanguageMenu => self.is_selecting_language = !self.is_selecting_language,
+            Message::OpenLanguageMenu => self.show.toggle(Showing::Languages),
             Message::Password(new_value) => self.login_info.password = new_value,
             Message::Server(new_value) => {
                 self.login_info.server = new_value;
@@ -453,7 +584,7 @@ impl Controls {
                 if let Screen::Disclaimer { .. } = &self.screen {
                     events.push(Event::DisclaimerAccepted);
                     self.screen = Screen::Login {
-                        screen: login::Screen::new(),
+                        screen: login::Screen::default(),
                         error: None,
                     };
                 }
@@ -465,7 +596,7 @@ impl Controls {
     fn exit_connect_screen(&mut self) {
         if matches!(&self.screen, Screen::Connecting { .. }) {
             self.screen = Screen::Login {
-                screen: Box::new(login::Screen::new()),
+                screen: Box::default(),
                 error: None,
             }
         }
@@ -493,7 +624,7 @@ impl Controls {
             || matches!(&self.screen, Screen::Login { .. })
         {
             self.screen = Screen::Login {
-                screen: Box::new(login::Screen::new()),
+                screen: Box::default(),
                 error: Some(error),
             }
         } else {
@@ -628,11 +759,21 @@ impl MainMenuUi {
     pub fn maintain(&mut self, global_state: &mut GlobalState, dt: Duration) -> Vec<Event> {
         let mut events = Vec::new();
 
+        #[cfg(feature = "singleplayer")]
+        let worlds_default = crate::singleplayer::SingleplayerWorlds::default();
+        #[cfg(feature = "singleplayer")]
+        let worlds = global_state
+            .singleplayer
+            .as_init()
+            .unwrap_or(&worlds_default);
+
         let (messages, _) = self.ui.maintain(
             self.controls.view(
                 &global_state.settings,
                 &global_state.window.key_layout,
                 dt.as_secs_f32(),
+                #[cfg(feature = "singleplayer")]
+                worlds,
             ),
             global_state.window.renderer_mut(),
             None,
