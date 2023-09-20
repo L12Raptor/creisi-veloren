@@ -72,7 +72,7 @@ use common::grid::Grid;
 use common::{
     assets::AssetExt,
     calendar::Calendar,
-    character::CharacterId,
+    character::{CharacterId, CharacterItem},
     cmd::ServerChatCommand,
     comp,
     event::{EventBus, ServerEvent},
@@ -131,8 +131,8 @@ use {
 use crate::persistence::character_loader::CharacterScreenResponseKind;
 use common::comp::Anchor;
 #[cfg(feature = "worldgen")]
-use world::{
-    sim::{FileOpts, WorldOpts, DEFAULT_WORLD_MAP},
+pub use world::{
+    sim::{FileOpts, GenOpts, WorldOpts, DEFAULT_WORLD_MAP},
     IndexOwned, World,
 };
 
@@ -652,6 +652,24 @@ impl Server {
     /// Get a reference to the server's world.
     pub fn world(&self) -> &World { &self.world }
 
+    fn parse_locations(&self, character_list_data: &mut [CharacterItem]) {
+        character_list_data.iter_mut().for_each(|c| {
+            let name = c
+                .location
+                .as_ref()
+                .and_then(|s| {
+                    persistence::parse_waypoint(s)
+                        .ok()
+                        .and_then(|(waypoint, _)| waypoint.map(|w| w.get_pos()))
+                })
+                .and_then(|wpos| {
+                    self.world
+                        .get_location_name(self.index.as_index_ref(), wpos.xy().as_::<i32>())
+                });
+            c.location = name;
+        });
+    }
+
     /// Execute a single server tick, handle input and update the game state by
     /// the given duration.
     pub fn tick(&mut self, _input: Input, dt: Duration) -> Result<Vec<Event>, Error> {
@@ -903,23 +921,7 @@ impl Server {
                     match response.response_kind {
                         CharacterScreenResponseKind::CharacterList(result) => match result {
                             Ok(mut character_list_data) => {
-                                character_list_data.iter_mut().for_each(|c| {
-                                    let name = c
-                                        .location
-                                        .as_ref()
-                                        .and_then(|s| {
-                                            persistence::parse_waypoint(s).ok().and_then(
-                                                |(waypoint, _)| waypoint.map(|w| w.get_pos()),
-                                            )
-                                        })
-                                        .and_then(|wpos| {
-                                            self.world.get_location_name(
-                                                self.index.as_index_ref(),
-                                                wpos.xy().as_::<i32>(),
-                                            )
-                                        });
-                                    c.location = name;
-                                });
+                                self.parse_locations(&mut character_list_data);
                                 self.notify_client(
                                     response.target_entity,
                                     ServerGeneral::CharacterListUpdate(character_list_data),
@@ -931,7 +933,8 @@ impl Server {
                             ),
                         },
                         CharacterScreenResponseKind::CharacterCreation(result) => match result {
-                            Ok((character_id, list)) => {
+                            Ok((character_id, mut list)) => {
+                                self.parse_locations(&mut list);
                                 self.notify_client(
                                     response.target_entity,
                                     ServerGeneral::CharacterListUpdate(list),
@@ -947,7 +950,8 @@ impl Server {
                             ),
                         },
                         CharacterScreenResponseKind::CharacterEdit(result) => match result {
-                            Ok((character_id, list)) => {
+                            Ok((character_id, mut list)) => {
+                                self.parse_locations(&mut list);
                                 self.notify_client(
                                     response.target_entity,
                                     ServerGeneral::CharacterListUpdate(list),
@@ -1436,6 +1440,15 @@ impl Server {
         self.state
             .create_persister(pos, view_distance, &self.world, &self.index)
             .build();
+    }
+
+    /// Used by benchmarking code.
+    pub fn chunks_pending(&mut self) -> bool {
+        self.state_mut()
+            .mut_resource::<ChunkGenerator>()
+            .pending_chunks()
+            .next()
+            .is_some()
     }
 
     /// Sets the SQL log mode at runtime
