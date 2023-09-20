@@ -602,8 +602,14 @@ impl Window {
                     if settings.modifier_buttons.contains(button) {
                         if is_pressed {
                             modifiers.push(*button);
-                        } else {
-                            let index = modifiers.iter().position(|x| x == button).unwrap();
+                        // There is a possibility of voxygen not having
+                        // registered the initial press event (either because it
+                        // hadn't started yet, or whatever else) hence the
+                        // modifier has no position in the list, unwrapping
+                        // here would cause a crash in those cases
+                        } else if let Some(index) =
+                            modifiers.iter().position(|modifier| modifier == button)
+                        {
                             modifiers.remove(index);
                         }
                     }
@@ -1034,8 +1040,8 @@ impl Window {
         self.window.set_cursor_visible(!grab);
         let res = if grab {
             self.window
-                .set_cursor_grab(CursorGrabMode::Confined)
-                .or_else(|_e| self.window.set_cursor_grab(CursorGrabMode::Locked))
+                .set_cursor_grab(CursorGrabMode::Locked)
+                .or_else(|_e| self.window.set_cursor_grab(CursorGrabMode::Confined))
         } else {
             self.window.set_cursor_grab(CursorGrabMode::None)
         };
