@@ -1,4 +1,4 @@
-# ![Veloren logo on a screenshot](https://cdn.discordapp.com/attachments/541307708146581519/712295605170602075/logo.png)
+# ![Creisi Veloren logo](./logo.jpg)
 
 ## Welcome to Creisi Veloren!
 
