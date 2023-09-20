@@ -293,6 +293,7 @@ sprites! {
         PotionMinor = 0x36,
         PotionDummy = 0x37,
         VialEmpty   = 0x38,
+        Lemon = 0x39,
     },
     // Structural elements including doors and building parts
     Structural = 5 has Ori {
@@ -528,7 +529,8 @@ impl SpriteKind {
             | SpriteKind::DoorBars
             | SpriteKind::KeyholeBars
             | SpriteKind::WoodBarricades
-            | SpriteKind::DiamondLight => 1.0,
+            | SpriteKind::DiamondLight
+            | SpriteKind::Lemon => 1.0,
             // TODO: Figure out if this should be solid or not.
             SpriteKind::Shelf => 1.0,
             SpriteKind::Lantern => 0.9,
@@ -705,6 +707,7 @@ impl SpriteKind {
             SpriteKind::Frostwood => item("common.items.log.frostwood"),
             SpriteKind::Eldwood => item("common.items.log.eldwood"),
             SpriteKind::MagicalBarrier => table("common.loot_tables.sprite.chest"),
+            SpriteKind::Lemon => item("common.items.food.lemon"),
             SpriteKind::Keyhole
             | SpriteKind::BoneKeyhole
             | SpriteKind::HaniwaKeyhole
