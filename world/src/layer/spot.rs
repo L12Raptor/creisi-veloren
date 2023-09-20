@@ -71,6 +71,7 @@ pub enum Spot {
     JungleTemple,
     SaurokTotem,
     JungleOutpost,
+    LemoncioCave,
     RonFile(&'static SpotProperties),
 }
 
@@ -463,6 +464,20 @@ impl Spot {
             false,
         );
 
+        Self::generate_spots(
+            Spot::LemoncioCave,
+            world,
+            1.0,
+            |g, c| {
+                g < 0.25
+                    && !c.near_cliffs()
+                    && !c.river.near_water()
+                    && !c.path.0.is_way()
+                    && matches!(c.get_biome(), Forest | Grassland)
+            },
+            false,
+        );
+
         // Missing:
         /*
         Bandit Camp
@@ -728,6 +743,13 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
                 base_structures: Some("spots.grave_small"),
                 entity_radius: 2.0,
                 entities: &[],
+            },
+            Spot::LemoncioCave => SpotConfig {
+                base_structures: Some("spots_general.lemoncio_cave"),
+                entity_radius: 10.0,
+                entities: &[
+                    (5..10, "common.entity.spot.lemoncio"),
+                ],
             },
             Spot::RonFile(properties) => SpotConfig {
                 base_structures: Some(&properties.base_structures),

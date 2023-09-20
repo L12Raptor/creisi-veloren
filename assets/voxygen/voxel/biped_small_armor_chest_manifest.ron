@@ -90,5 +90,11 @@
         "common.items.npc_armor.biped_small.flamekeeper.chest.flamekeeper": (
             vox_spec: ("npc.flamekeeper.chest", (-6.0, -11.0, -5.5)),
         ),
+        "common.items.npc_armor.biped_small.lemoncio.chest.male": (
+            vox_spec: ("npc.lemoncio.male.chest", (-5.0, -3.0, -2.5)),
+        ),
+        "common.items.npc_armor.biped_small.lemoncio.chest.female": (
+            vox_spec: ("npc.lemoncio.female.chest", (-5.0, -3.0, -2.5)),
+        ),
     },
 ))

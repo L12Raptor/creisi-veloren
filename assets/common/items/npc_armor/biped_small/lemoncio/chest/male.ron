@@ -1,0 +1,13 @@
+ItemDef(
+    name: "Lemoncio",
+    description: "Male lemoncio chest",
+    kind: Armor((
+        kind: Chest,
+        stats: Direct((
+            protection: Some(Normal(5.0)),
+            poise_resilience: Some(Normal(1.0)),
+        )),
+    )),
+    quality: Low,
+    tags: [],
+)

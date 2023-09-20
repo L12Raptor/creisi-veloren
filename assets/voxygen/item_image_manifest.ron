@@ -3327,6 +3327,10 @@
         "voxel.sprite.food.salad_tomato",
         (0.0, 0.0, 0.0), (-50.0, 30.0, 20.0), 0.8,
     ),
+    Simple("common.items.food.lemon"): VoxTrans(
+        "voxel.sprite.fruit.lemon_half",
+        (-1.0, 0.5, 0.0), (-60.0, -45.0, -15.0), 0.9,
+    ),
     // Admin consumables
     Simple("common.items.debug.golden_cheese"): VoxTrans(
         "voxel.object.item_cheese",
