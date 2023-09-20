@@ -464,6 +464,20 @@ impl Spot {
             false,
         );
 
+        Self::generate_spots(
+            Spot::LemoncioCave,
+            world,
+            5.0,
+            |g, c| {
+                g < 0.25
+                    && !c.near_cliffs()
+                    && !c.river.near_water()
+                    && !c.path.0.is_way()
+                    && matches!(c.get_biome(), Forest | Grassland)
+            },
+            false,
+        );
+
         // Missing:
         /*
         Bandit Camp
