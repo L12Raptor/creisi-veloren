@@ -1,4 +1,4 @@
-# ![Veloren logo on a screenshot](https://cdn.discordapp.com/attachments/541307708146581519/712295605170602075/logo.png)
+# ![Creisi Veloren logo](./logo.jpg)
 
 ## Welcome to Creisi Veloren!
 
@@ -18,4 +18,4 @@ Creisi Veloren is a multiplayer voxel RPG written in Rust. It is a fork of Velor
 
 ### **Q:** What platforms are supported?
 
-**A:** Creisi Veloren can run on Windows, macOS and Linux, on all CPU architectures. However, the x86_64 architecture is the main focus in development. Official builds for the ARM64 architecture are also provided for macOS and Linux. It is likely possible to compile the game on other platforms as well.
+**A:** Creisi Veloren can run on Windows and Linux, on x86_64 and ARM64 CPU architectures.
