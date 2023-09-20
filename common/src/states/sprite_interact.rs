@@ -180,7 +180,8 @@ impl From<SpriteKind> for Option<SpriteInteractKind> {
             | SpriteKind::Hardwood
             | SpriteKind::Ironwood
             | SpriteKind::Frostwood
-            | SpriteKind::Eldwood => Some(SpriteInteractKind::Harvestable),
+            | SpriteKind::Eldwood
+            | SpriteKind::Lemon => Some(SpriteInteractKind::Harvestable),
             SpriteKind::Stones
             | SpriteKind::Twigs
             | SpriteKind::VialEmpty
