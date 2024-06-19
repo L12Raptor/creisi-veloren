@@ -1022,10 +1022,10 @@ impl Body {
                 theropod::Species::Woodraptor => 110,
                 // T3A
                 theropod::Species::Yale => 610,
+                theropod::Species::Carnotaurus => 525,
                 // T3B
                 theropod::Species::Archaeos => 880,
                 theropod::Species::Ntouka => 880,
-                theropod::Species::Carnotaurus => 525,
                 theropod::Species::Odonto => 1320,
             },
             Body::QuadrupedLow(quadruped_low) => match quadruped_low.species {
