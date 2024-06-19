@@ -11,7 +11,7 @@ use common::{
         item::tool::{AbilityContext, ToolKind},
         slot::{InvSlotId, Slot},
         ActiveAbilities, Body, CharacterState, Combo, Energy, Inventory, Item, ItemKey, SkillSet,
-        Stance,
+        Stance, Stats,
     },
     recipe::ComponentRecipeBook,
 };
@@ -36,7 +36,7 @@ pub type SlotManager = slot::SlotManager<SlotKind>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InventorySlot {
-    pub slot: InvSlotId,
+    pub slot: Slot,
     pub entity: EcsEntity,
     pub ours: bool,
 }
@@ -45,12 +45,12 @@ impl SlotKey<Inventory, ItemImgs> for InventorySlot {
     type ImageKey = ItemKey;
 
     fn image_key(&self, source: &Inventory) -> Option<(Self::ImageKey, Option<Color>)> {
-        source.get(self.slot).map(|i| (i.into(), None))
+        source.get_slot(self.slot).map(|i| (i.into(), None))
     }
 
     fn amount(&self, source: &Inventory) -> Option<u32> {
         source
-            .get(self.slot)
+            .get_slot(self.slot)
             .map(|item| item.amount())
             .filter(|amount| *amount > 1)
     }
@@ -90,7 +90,7 @@ impl SlotKey<Inventory, ItemImgs> for TradeSlot {
     fn image_key(&self, source: &Inventory) -> Option<(Self::ImageKey, Option<Color>)> {
         self.invslot.and_then(|inv_id| {
             InventorySlot {
-                slot: inv_id,
+                slot: Slot::Inventory(inv_id),
                 ours: self.ours,
                 entity: self.entity,
             }
@@ -102,7 +102,7 @@ impl SlotKey<Inventory, ItemImgs> for TradeSlot {
         self.invslot
             .and_then(|inv_id| {
                 InventorySlot {
-                    slot: inv_id,
+                    slot: Slot::Inventory(inv_id),
                     ours: self.ours,
                     entity: self.entity,
                 }
@@ -133,6 +133,7 @@ type HotbarSource<'a> = (
     Option<&'a Combo>,
     Option<&'a CharacterState>,
     Option<&'a Stance>,
+    Option<&'a Stats>,
 );
 type HotbarImageSource<'a> = (&'a ItemImgs, &'a img_ids::Imgs);
 
@@ -152,6 +153,7 @@ impl<'a> SlotKey<HotbarSource<'a>, HotbarImageSource<'a>> for HotbarSlot {
             combo,
             char_state,
             stance,
+            stats,
         ): &HotbarSource<'a>,
     ) -> Option<(Self::ImageKey, Option<Color>)> {
         const GREYED_OUT: Color = Color::Rgba(0.3, 0.3, 0.3, 0.8);
@@ -168,7 +170,12 @@ impl<'a> SlotKey<HotbarSource<'a>, HotbarImageSource<'a>> for HotbarSlot {
                     a.auxiliary_set(Some(inventory), Some(skillset))
                         .get(i)
                         .and_then(|a| {
-                            Ability::from(*a).ability_id(Some(inventory), Some(skillset), contexts)
+                            Ability::from(*a).ability_id(
+                                *char_state,
+                                Some(inventory),
+                                Some(skillset),
+                                contexts,
+                            )
                         })
                 });
 
@@ -184,6 +191,7 @@ impl<'a> SlotKey<HotbarSource<'a>, HotbarImageSource<'a>> for HotbarSlot {
                                     Some(body),
                                     *char_state,
                                     contexts,
+                                    *stats,
                                 )
                             })
                             .map(|(ability, _, _)| {
@@ -241,6 +249,8 @@ type AbilitiesSource<'a> = (
     &'a Inventory,
     &'a SkillSet,
     &'a AbilityContext,
+    Option<&'a CharacterState>,
+    Option<&'a Stats>,
 );
 
 impl<'a> SlotKey<AbilitiesSource<'a>, img_ids::Imgs> for AbilitySlot {
@@ -248,7 +258,7 @@ impl<'a> SlotKey<AbilitiesSource<'a>, img_ids::Imgs> for AbilitySlot {
 
     fn image_key(
         &self,
-        (active_abilities, inventory, skillset, contexts): &AbilitiesSource<'a>,
+        (active_abilities, inventory, skillset, contexts, char_state, stats): &AbilitiesSource<'a>,
     ) -> Option<(Self::ImageKey, Option<Color>)> {
         let ability_id = match self {
             Self::Slot(index) => active_abilities
@@ -256,11 +266,15 @@ impl<'a> SlotKey<AbilitiesSource<'a>, img_ids::Imgs> for AbilitySlot {
                     AbilityInput::Auxiliary(*index),
                     Some(inventory),
                     Some(skillset),
+                    *stats,
                 )
-                .ability_id(Some(inventory), Some(skillset), contexts),
-            Self::Ability(ability) => {
-                Ability::from(*ability).ability_id(Some(inventory), Some(skillset), contexts)
-            },
+                .ability_id(*char_state, Some(inventory), Some(skillset), contexts),
+            Self::Ability(ability) => Ability::from(*ability).ability_id(
+                *char_state,
+                Some(inventory),
+                Some(skillset),
+                contexts,
+            ),
         };
 
         ability_id.map(|id| (String::from(id), None))
@@ -286,6 +300,7 @@ impl CraftSlot {
         match self.slot {
             Some(Slot::Inventory(slot)) => inv.get(slot),
             Some(Slot::Equip(slot)) => inv.equipped(slot),
+            Some(Slot::Overflow(_)) => None,
             None => None,
         }
     }

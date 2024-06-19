@@ -137,7 +137,11 @@ impl VoxelMinimap {
                 // since otherwise trees would cause ceiling removal to trigger
                 // when running under a branch.
                 let is_filled = block.map_or(true, |b| {
-                    b.is_filled() && !matches!(b.kind(), BlockKind::Leaves | BlockKind::Wood)
+                    b.is_filled()
+                        && !matches!(
+                            b.kind(),
+                            BlockKind::Leaves | BlockKind::ArtLeaves | BlockKind::Wood
+                        )
                 });
                 let rgba = rgba.unwrap_or_else(|| Rgba::new(0, 0, 0, 255));
                 (rgba, is_filled)
@@ -694,7 +698,8 @@ impl<'a> Widget for MiniMap<'a> {
                 };
                 let difficulty = match &site.kind {
                     SiteKind::Town => None,
-                    SiteKind::ChapelSite => Some(0),
+                    SiteKind::ChapelSite => Some(4),
+                    SiteKind::Terracotta => Some(5),
                     SiteKind::Dungeon { difficulty } => Some(*difficulty),
                     SiteKind::Castle => None,
                     SiteKind::Cave => None,
@@ -702,12 +707,16 @@ impl<'a> Widget for MiniMap<'a> {
                     SiteKind::Gnarling => Some(0),
                     SiteKind::Bridge => None,
                     SiteKind::Adlet => Some(1),
+                    SiteKind::Sahagin => Some(2),
+                    SiteKind::Haniwa => Some(3),
+                    SiteKind::Cultist => Some(5),
                     SiteKind::DwarvenMine => Some(5),
                 };
 
                 Image::new(match &site.kind {
                     SiteKind::Town => self.imgs.mmap_site_town_bg,
                     SiteKind::ChapelSite => self.imgs.mmap_site_sea_chapel_bg,
+                    SiteKind::Terracotta => self.imgs.mmap_site_terracotta_bg,
                     SiteKind::Dungeon { .. } => self.imgs.mmap_site_dungeon_bg,
                     SiteKind::Castle => self.imgs.mmap_site_castle_bg,
                     SiteKind::Cave => self.imgs.mmap_site_cave_bg,
@@ -715,6 +724,9 @@ impl<'a> Widget for MiniMap<'a> {
                     SiteKind::Gnarling => self.imgs.mmap_site_gnarling_bg,
                     SiteKind::Bridge => self.imgs.mmap_site_bridge_bg,
                     SiteKind::Adlet => self.imgs.mmap_site_adlet_bg,
+                    SiteKind::Haniwa => self.imgs.mmap_site_haniwa_bg,
+                    SiteKind::Cultist => self.imgs.mmap_site_cultist_bg,
+                    SiteKind::Sahagin => self.imgs.mmap_site_sahagin_bg,
                     SiteKind::DwarvenMine => self.imgs.mmap_site_mine_bg,
                 })
                 .x_y_position_relative_to(
@@ -736,6 +748,7 @@ impl<'a> Widget for MiniMap<'a> {
                 Image::new(match &site.kind {
                     SiteKind::Town => self.imgs.mmap_site_town,
                     SiteKind::ChapelSite => self.imgs.mmap_site_sea_chapel,
+                    SiteKind::Terracotta => self.imgs.mmap_site_terracotta,
                     SiteKind::Dungeon { .. } => self.imgs.mmap_site_dungeon,
                     SiteKind::Castle => self.imgs.mmap_site_castle,
                     SiteKind::Cave => self.imgs.mmap_site_cave,
@@ -743,6 +756,9 @@ impl<'a> Widget for MiniMap<'a> {
                     SiteKind::Gnarling => self.imgs.mmap_site_gnarling,
                     SiteKind::Bridge => self.imgs.mmap_site_bridge,
                     SiteKind::Adlet => self.imgs.mmap_site_adlet,
+                    SiteKind::Haniwa => self.imgs.mmap_site_haniwa,
+                    SiteKind::Cultist => self.imgs.mmap_site_cultist,
+                    SiteKind::Sahagin => self.imgs.mmap_site_sahagin,
                     SiteKind::DwarvenMine => self.imgs.mmap_site_mine,
                 })
                 .middle_of(state.ids.mmap_site_icons_bgs[i])

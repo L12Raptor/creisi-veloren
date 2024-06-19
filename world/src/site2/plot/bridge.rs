@@ -8,8 +8,6 @@ use num::integer::Roots;
 use rand::prelude::*;
 use vek::*;
 
-use inline_tweak::tweak;
-
 enum RoofKind {
     Crenelated,
     Hipped,
@@ -227,7 +225,7 @@ fn render_flat(bridge: &Bridge, painter: &Painter) {
     }
     .made_valid();
 
-    let [ramp_aabr, aabr] = bridge.dir.split_aabr(aabr, height);
+    let [ramp_aabr, aabr] = bridge.dir.split_aabr_offset(aabr, height);
 
     let ramp_prim = |ramp_aabr: Aabr<i32>, offset: i32| {
         painter
@@ -254,7 +252,7 @@ fn render_flat(bridge: &Bridge, painter: &Painter) {
     let vault_offset = 5;
     let bridge_thickness = 4;
 
-    let [vault, _] = bridge.dir.split_aabr(aabr, vault_width);
+    let [vault, _] = bridge.dir.split_aabr_offset(aabr, vault_width);
 
     let len = bridge.dir.select(aabr.size());
     let true_offset = vault_width + vault_offset;
@@ -321,8 +319,11 @@ fn render_heightened_viaduct(bridge: &Bridge, painter: &Painter, data: &Heighten
     }
     .made_valid();
 
-    let [_start_aabr, rest] = bridge.dir.split_aabr(aabr, bridge_start_z - bridge.start.z);
-    let [_end_aabr, bridge_aabr] = (-bridge.dir).split_aabr(rest, bridge_start_z - bridge.end.z);
+    let [_start_aabr, rest] = bridge
+        .dir
+        .split_aabr_offset(aabr, bridge_start_z - bridge.start.z);
+    let [_end_aabr, bridge_aabr] =
+        (-bridge.dir).split_aabr_offset(rest, bridge_start_z - bridge.end.z);
     let under = bridge.center.z - 15;
 
     let bridge_prim = |bridge_width: i32| {
@@ -334,11 +335,14 @@ fn render_heightened_viaduct(bridge: &Bridge, painter: &Painter, data: &Heighten
         }
         .made_valid();
 
-        let [start_aabr, rest] = bridge.dir.split_aabr(aabr, bridge_start_z - bridge.start.z);
-        let [end_aabr, bridge_aabr] = (-bridge.dir).split_aabr(rest, bridge_start_z - bridge.end.z);
+        let [start_aabr, rest] = bridge
+            .dir
+            .split_aabr_offset(aabr, bridge_start_z - bridge.start.z);
+        let [end_aabr, bridge_aabr] =
+            (-bridge.dir).split_aabr_offset(rest, bridge_start_z - bridge.end.z);
         let [bridge_start, bridge_end] = bridge
             .dir
-            .split_aabr(bridge_aabr, bridge.dir.select(bridge_aabr.size()) / 2);
+            .split_aabr_offset(bridge_aabr, bridge.dir.select(bridge_aabr.size()) / 2);
 
         let ramp_in_aabr = |aabr: Aabr<i32>, dir: Dir, zmin, zmax| {
             let inset = dir.select(aabr.size());
@@ -505,8 +509,11 @@ fn render_heightened_viaduct(bridge: &Bridge, painter: &Painter, data: &Heighten
     let mut rng = thread_rng();
     if rng.gen_bool(0.1) {
         painter.spawn(
-            EntityInfo::at(c.with_z(bridge.center.z).as_())
-                .with_asset_expect("common.entity.wild.aggressive.swamp_troll", &mut rng),
+            EntityInfo::at(c.with_z(bridge.center.z).as_()).with_asset_expect(
+                "common.entity.wild.aggressive.swamp_troll",
+                &mut rng,
+                None,
+            ),
         );
     }
 }
@@ -592,7 +599,7 @@ fn render_tower(bridge: &Bridge, painter: &Painter, roof_kind: &RoofKind) {
     let aabr = bridge
         .dir
         .rotated_cw()
-        .split_aabr(tower_aabr, stair_thickness + 1)[1];
+        .split_aabr_offset(tower_aabr, stair_thickness + 1)[1];
 
     painter
         .aabb(aabb(
@@ -609,7 +616,7 @@ fn render_tower(bridge: &Bridge, painter: &Painter, roof_kind: &RoofKind) {
         .fill(rock.clone());
 
     let offset = tower_size * 2 - 2;
-    let d = tweak!(2);
+    let d = 2;
     let n = (bridge.end.z - bridge.start.z - d) / offset;
     let p = (bridge.end.z - bridge.start.z - d) / n;
 
@@ -748,7 +755,7 @@ fn render_hang(bridge: &Bridge, painter: &Painter) {
     let top_offset = 4;
     let top = bridge.end.z + top_offset;
 
-    let [ramp_f, aabr] = bridge.dir.split_aabr(aabr, top - bridge.start.z + 1);
+    let [ramp_f, aabr] = bridge.dir.split_aabr_offset(aabr, top - bridge.start.z + 1);
 
     painter
         .aabb(aabb(
@@ -764,7 +771,7 @@ fn render_hang(bridge: &Bridge, painter: &Painter) {
         )
         .fill(rock.clone());
 
-    let [ramp_b, aabr] = (-bridge.dir).split_aabr(aabr, top_offset + 1);
+    let [ramp_b, aabr] = (-bridge.dir).split_aabr_offset(aabr, top_offset + 1);
     painter
         .aabb(aabb(
             ramp_b.min.with_z(bridge.end.z - 10),
@@ -878,7 +885,7 @@ impl Bridge {
         let min_water_dist = 5;
         let find_edge = |start: Vec2<i32>, end: Vec2<i32>| {
             let mut test_start = start;
-            let dir = Dir::from_vector(end - start).to_vec2();
+            let dir = Dir::from_vec2(end - start).to_vec2();
             let mut last_alt = if let Some(col) = land.column_sample(start, index) {
                 col.alt as i32
             } else {
@@ -932,7 +939,7 @@ impl Bridge {
             start,
             end,
             center,
-            dir: Dir::from_vector(end.xy() - start.xy()),
+            dir: Dir::from_vec2(end.xy() - start.xy()),
             kind: bridge,
             biome: land
                 .get_chunk_wpos(center.xy())

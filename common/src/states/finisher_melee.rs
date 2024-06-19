@@ -1,5 +1,5 @@
 use crate::{
-    combat::{CombatBuff, CombatEffect},
+    combat::{self, CombatBuff, CombatEffect},
     comp::{character_state::OutputEvents, CharacterState, MeleeConstructor, StateUpdate},
     states::{
         behavior::{CharacterBehavior, JoinData},
@@ -74,9 +74,11 @@ impl CharacterBehavior for Data {
                         c.exhausted = true;
                     }
 
-                    self.static_data
-                        .combo_consumption
-                        .consume(data, output_events);
+                    self.static_data.combo_consumption.consume(
+                        data,
+                        output_events,
+                        self.static_data.minimum_combo,
+                    );
                     let mut melee_constructor = self.static_data.melee_constructor;
 
                     if let Some(scaling) = self.static_data.scaling {
@@ -102,12 +104,12 @@ impl CharacterBehavior for Data {
                         }
                     }
 
-                    let crit_data = get_crit_data(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     let tool_stats = get_tool_stats(data, self.static_data.ability_info);
 
                     data.updater.insert(
                         data.entity,
-                        melee_constructor.create_melee(crit_data, tool_stats),
+                        melee_constructor.create_melee(precision_mult, tool_stats),
                     );
                 } else if self.timer < self.static_data.swing_duration {
                     // Swings
@@ -126,7 +128,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recovery
                     if let CharacterState::FinisherMelee(c) = &mut update.character {
-                        c.timer = tick_attack_or_default(data, self.timer, None);
+                        c.timer = tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        );
                     }
                 } else {
                     // Done

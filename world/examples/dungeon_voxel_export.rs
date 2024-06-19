@@ -12,7 +12,7 @@ use common::{
 use rayon::ThreadPoolBuilder;
 use vek::{Vec2, Vec3};
 use veloren_world::{
-    sim::{FileOpts, WorldOpts, DEFAULT_WORLD_MAP},
+    sim::{FileOpts, WorldOpts, DEFAULT_WORLD_MAP, DEFAULT_WORLD_SEED},
     site2::{plot::PlotKind, Fill, Structure},
     CanvasInfo, Land, World,
 };
@@ -25,13 +25,14 @@ fn main() -> Result {
     let pool = ThreadPoolBuilder::new().build().unwrap();
     println!("Loading world");
     let (world, index) = World::generate(
-        59686,
+        DEFAULT_WORLD_SEED,
         WorldOpts {
             seed_elements: true,
             world_file: FileOpts::LoadAsset(DEFAULT_WORLD_MAP.into()),
             calendar: None,
         },
         &pool,
+        &|_| {},
     );
     println!("Loaded world");
     let export_path = "dungeon.vox";

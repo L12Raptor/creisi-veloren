@@ -8,7 +8,7 @@ use specs::{Entities, Join, Read, ReadStorage, WriteStorage};
 
 // How long floaters last (in seconds)
 pub const HP_SHOWTIME: f32 = 3.0;
-pub const CRIT_SHOWTIME: f32 = 0.7;
+pub const PRECISE_SHOWTIME: f32 = 0.7;
 pub const MY_HP_SHOWTIME: f32 = 2.5;
 
 #[derive(Default)]
@@ -27,7 +27,7 @@ impl<'a> System<'a> for Sys {
     const ORIGIN: Origin = Origin::Frontend("voxygen");
     const PHASE: Phase = Phase::Create;
 
-    #[allow(clippy::blocks_in_if_conditions)] // TODO: Pending review in #587
+    #[allow(clippy::blocks_in_conditions)] // TODO: Pending review in #587
     fn run(
         _job: &mut Job<Self>,
         (entities, my_entity, dt, pos, healths, mut hp_floater_lists): Self::SystemData,
@@ -68,7 +68,7 @@ impl<'a> System<'a> for Sys {
                 .as_mut()
                 .map(|t| *t += dt.0);
 
-            for mut floater in hp_floater_list.floaters.iter_mut() {
+            for floater in hp_floater_list.floaters.iter_mut() {
                 // Increment timer
                 floater.timer += dt.0;
                 floater.jump_timer += dt.0;

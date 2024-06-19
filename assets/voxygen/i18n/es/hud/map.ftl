@@ -33,3 +33,7 @@ hud-map-gnarling = Fortaleza de gnarlings
 hud-map-chapel_site = Capilla marina
 hud-map-placed_by = Colocado por { $name }
 hud-map-bridge = Puente
+hud-map-df_mine = Mina
+hud-map-haniwa = Catacumbas haniwa
+hud-map-terracotta = Ruinas terracota
+hud-map-adlet = Fortaleza adlet

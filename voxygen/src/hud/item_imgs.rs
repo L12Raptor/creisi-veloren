@@ -1,6 +1,6 @@
 use crate::ui::{Graphic, SampleStrat, Transform, Ui};
 use common::{
-    assets::{self, AssetExt, AssetHandle, DotVoxAsset, ReloadWatcher},
+    assets::{self, AssetCombined, AssetExt, AssetHandle, Concatenate, DotVoxAsset, ReloadWatcher},
     comp::item::item_key::ItemKey,
     figure::Segment,
 };
@@ -17,7 +17,7 @@ pub fn animate_by_pulse(ids: &[Id], pulse: f32) -> Id {
     ids[animation_frame % ids.len()]
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ImageSpec {
     Png(String),
     Vox(String, #[serde(default)] u32),
@@ -25,7 +25,7 @@ pub enum ImageSpec {
     VoxTrans(String, [f32; 3], [f32; 3], f32, #[serde(default)] u32),
 }
 impl ImageSpec {
-    fn create_graphic(&self) -> Graphic {
+    pub fn create_graphic(&self) -> Graphic {
         match self {
             ImageSpec::Png(specifier) => Graphic::Image(graceful_load_img(specifier), None),
             ImageSpec::Vox(specifier, model_index) => Graphic::Voxel(
@@ -62,6 +62,9 @@ impl assets::Asset for ItemImagesSpec {
 
     const EXTENSION: &'static str = "ron";
 }
+impl Concatenate for ItemImagesSpec {
+    fn concatenate(self, b: Self) -> Self { ItemImagesSpec(self.0.concatenate(b.0)) }
+}
 
 // TODO: when there are more images don't load them all into memory
 pub struct ItemImgs {
@@ -73,7 +76,7 @@ pub struct ItemImgs {
 
 impl ItemImgs {
     pub fn new(ui: &mut Ui, not_found: Id) -> Self {
-        let manifest = ItemImagesSpec::load_expect("voxygen.item_image_manifest");
+        let manifest = ItemImagesSpec::load_expect_combined_static("voxygen.item_image_manifest");
         let map = manifest
             .read()
             .0
@@ -112,7 +115,7 @@ impl ItemImgs {
     }
 
     pub fn img_ids(&self, item_key: ItemKey) -> Vec<Id> {
-        if let ItemKey::TagExamples(keys) = item_key {
+        if let ItemKey::TagExamples(keys, _) = item_key {
             return keys
                 .iter()
                 .filter_map(|k| self.map.get(k))

@@ -292,6 +292,7 @@ impl Default for UpscaleMode {
 pub enum PresentMode {
     Mailbox,
     Immediate,
+    FifoRelaxed,
     #[default]
     #[serde(other)]
     Fifo, // has to be last for `#[serde(other)]`
@@ -301,8 +302,23 @@ impl From<PresentMode> for wgpu::PresentMode {
     fn from(mode: PresentMode) -> Self {
         match mode {
             PresentMode::Fifo => wgpu::PresentMode::Fifo,
+            PresentMode::FifoRelaxed => wgpu::PresentMode::FifoRelaxed,
             PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
             PresentMode::Immediate => wgpu::PresentMode::Immediate,
+        }
+    }
+}
+
+impl TryFrom<wgpu::PresentMode> for PresentMode {
+    type Error = ();
+
+    fn try_from(mode: wgpu::PresentMode) -> Result<Self, ()> {
+        match mode {
+            wgpu::PresentMode::Fifo => Ok(PresentMode::Fifo),
+            wgpu::PresentMode::FifoRelaxed => Ok(PresentMode::FifoRelaxed),
+            wgpu::PresentMode::Mailbox => Ok(PresentMode::Mailbox),
+            wgpu::PresentMode::Immediate => Ok(PresentMode::Immediate),
+            _ => Err(()),
         }
     }
 }
@@ -513,8 +529,8 @@ pub enum ExperimentalShader {
     LowGlowNearCamera,
     /// Disable the fake voxel effect on LoD features.
     NoLodVoxels,
-    /// Disable the 'pop-in' effect when loading terrain.
-    NoTerrainPop,
+    /// Enable a 'pop-in' effect when loading terrain.
+    TerrainPop,
     /// Display grid lines to visualize the distribution of shadow map texels
     /// for the directional light from the sun.
     DirectionalShadowMapTexelGrid,
@@ -545,4 +561,8 @@ pub enum ExperimentalShader {
     ColorDithering,
     /// Cinematic color grading.
     Cinematic,
+    /// Glittering snow.
+    SnowGlitter,
+    /// Enables optimizations when shaderc is processing shaders.
+    EnableShadercOptimization,
 }

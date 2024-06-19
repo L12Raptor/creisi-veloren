@@ -7,24 +7,26 @@ use common::{
         PosVelOriDefer, PreviousPhysCache, Projectile, Scale, Stats, Sticky, Vel,
     },
     consts::{AIR_DENSITY, FRIC_GROUND, GRAVITY},
-    event::{EventBus, ServerEvent},
+    event::{EmitExt, EventBus, LandOnGroundEvent},
+    event_emitters,
     link::Is,
     mounting::{Rider, VolumeRider},
     outcome::Outcome,
-    resources::{DeltaTime, GameMode},
+    resources::{DeltaTime, GameMode, TimeOfDay},
     states,
-    terrain::{Block, BlockKind, TerrainGrid},
+    terrain::{Block, BlockKind, CoordinateConversions, SiteKindMeta, TerrainGrid, NEIGHBOR_DELTA},
     uid::Uid,
     util::{Projection, SpatialGrid},
     vol::{BaseVol, ReadVol},
+    weather::WeatherGrid,
 };
 use common_base::{prof_span, span};
 use common_ecs::{Job, Origin, ParMode, Phase, PhysicsMetrics, System};
+use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use specs::{
-    shred::{ResourceId, World},
-    Entities, Entity, Join, ParJoin, Read, ReadExpect, ReadStorage, SystemData, Write, WriteExpect,
-    WriteStorage,
+    shred, Entities, Entity, Join, LendJoin, ParJoin, Read, ReadExpect, ReadStorage, SystemData,
+    Write, WriteExpect, WriteStorage,
 };
 use std::ops::Range;
 use vek::*;
@@ -115,6 +117,153 @@ fn integrate_forces(
     vel
 }
 
+/// Simulates winds based on weather and terrain data for specific position
+// TODO: Consider exporting it if one wants to build nice visuals
+fn simulated_wind_vel(
+    pos: &Pos,
+    weather: &WeatherGrid,
+    terrain: &TerrainGrid,
+    time_of_day: &TimeOfDay,
+) -> Result<Vec3<f32>, ()> {
+    prof_span!(guard, "Apply Weather INIT");
+
+    let pos_2d = pos.0.as_().xy();
+    let chunk_pos: Vec2<i32> = pos_2d.wpos_to_cpos();
+    let Some(current_chunk) = terrain.get_key(chunk_pos) else {
+        return Err(());
+    };
+
+    let meta = current_chunk.meta();
+
+    let interp_weather = weather.get_interpolated(pos.0.xy());
+    // Weather sim wind
+    let interp_alt = terrain
+        .get_interpolated(pos_2d, |c| c.meta().alt())
+        .unwrap_or(0.);
+    let interp_tree_density = terrain
+        .get_interpolated(pos_2d, |c| c.meta().tree_density())
+        .unwrap_or(0.);
+    let interp_town = terrain
+        .get_interpolated(pos_2d, |c| match c.meta().site() {
+            Some(SiteKindMeta::Settlement(_)) => 2.7,
+            _ => 1.0,
+        })
+        .unwrap_or(0.);
+    let normal = terrain
+        .get_interpolated(pos_2d, |c| {
+            c.meta()
+                .approx_chunk_terrain_normal()
+                .unwrap_or(Vec3::unit_z())
+        })
+        .unwrap_or(Vec3::unit_z());
+    let above_ground = pos.0.z - interp_alt;
+    let wind_velocity = interp_weather.wind_vel();
+
+    let surrounding_chunks_metas = NEIGHBOR_DELTA
+        .iter()
+        .map(move |&(x, y)| chunk_pos + Vec2::new(x, y))
+        .filter_map(|cpos| terrain.get_key(cpos).map(|c| c.meta()))
+        .collect::<Vec<_>>();
+
+    drop(guard);
+
+    prof_span!(guard, "thermals");
+
+    // === THERMALS ===
+
+    // Sun angle of incidence.
+    //
+    // 0.0..1.0, 0.25 morning, 0.45 midday, 0.66 evening, 0.79 night, 0.0/1.0
+    // midnight
+    let sun_dir = time_of_day.get_sun_dir().normalized();
+    let mut lift = ((sun_dir - normal.normalized()).magnitude() - 0.5).max(0.2) * 2.3;
+
+    // TODO: potential source of harsh edges in wind speed.
+    let temperatures = surrounding_chunks_metas.iter().map(|m| m.temp()).minmax();
+
+    // More thermals if hot chunks border cold chunks
+    lift *= match temperatures {
+        itertools::MinMaxResult::NoElements | itertools::MinMaxResult::OneElement(_) => 1.0,
+        itertools::MinMaxResult::MinMax(a, b) => 0.8 + ((a - b).abs() * 1.1),
+    }
+    .min(2.0);
+
+    // TODO: potential source of harsh edges in wind speed.
+    //
+    // Way more thermals in strong rain as its often caused by strong thermals.
+    // Less in weak rain or cloudy ..
+    lift *= if interp_weather.rain.is_between(0.5, 1.0) && interp_weather.cloud.is_between(0.6, 1.0)
+    {
+        1.5
+    } else if interp_weather.rain.is_between(0.2, 0.5) && interp_weather.cloud.is_between(0.3, 0.6)
+    {
+        0.8
+    } else {
+        1.0
+    };
+
+    // The first 15 blocks are weaker. Starting from the ground should be difficult.
+    lift *= (above_ground / 15.).min(1.);
+    lift *= (220. - above_ground / 20.).clamp(0.0, 1.0);
+
+    // TODO: Smooth this, and increase height some more (500 isnt that much higher
+    // than the spires)
+    if interp_alt > 500.0 {
+        lift *= 0.8;
+    }
+
+    // More thermals above towns, the materials tend to heat up more.
+    lift *= interp_town;
+
+    // Bodies of water cool the air, causing less thermals.
+    lift *= terrain
+        .get_interpolated(pos_2d, |c| 1. - c.meta().near_water() as i32 as f32)
+        .unwrap_or(1.);
+
+    drop(guard);
+
+    // === Ridge/Wave lift ===
+
+    let mut ridge_lift = {
+        const RIDGE_LIFT_COEFF: f32 = 1.0;
+
+        let steepness = normal.angle_between(Vec3::unit_z());
+
+        // angle between normal and wind
+        let mut angle = wind_velocity.angle_between(normal.xy()); // 1.4 radians of zero
+
+        // a deadzone of +-1.5 radians if wind is blowing away from
+        // the mountainside.
+        angle = (angle - 1.3).max(0.0);
+
+        // the ridge lift is based on the angle and the velocity of the wind
+        angle * steepness * wind_velocity.magnitude() * RIDGE_LIFT_COEFF
+    };
+
+    // Cliffs mean more lift
+    // 44 seems to be max, according to a lerp in WorldSim::generate_cliffs
+    ridge_lift *= 0.9 + (meta.cliff_height() / 44.0) * 1.2;
+
+    // Height based fall-off (https://www.desmos.com/calculator/jijqfunchg)
+    ridge_lift *= 1. / (1. + (1.3f32.powf(0.1 * above_ground - 15.)));
+
+    // More flat wind above ground (https://www.desmos.com/calculator/jryiyqsdnx)
+    let wind_factor = 1. / (0.25 + (0.96f32.powf(0.1 * above_ground - 15.)));
+
+    let mut wind_vel = (wind_velocity * wind_factor).with_z(lift + ridge_lift);
+
+    // probably 0. to 1. src: SiteKind::is_suitable_loc comparisons
+    wind_vel *= (1.0 - interp_tree_density).max(0.7);
+
+    // Clamp magnitude, we never want to throw players around way too fast.
+    let magn = wind_vel.magnitude_squared().max(0.0001);
+
+    // 600 here is compared to squared ~ 25. this limits the magnitude of the wind.
+    wind_vel *= magn.min(600.) / magn;
+
+    Ok(wind_vel)
+}
+
 fn calc_z_limit(char_state_maybe: Option<&CharacterState>, collider: &Collider) -> (f32, f32) {
     let modifier = if char_state_maybe.map_or(false, |c_s| c_s.is_dodge() || c_s.is_glide()) {
         0.5
@@ -124,6 +273,12 @@ fn calc_z_limit(char_state_maybe: Option<&CharacterState>, collider: &Collider) 
     collider.get_z_limits(modifier)
 }
 
+event_emitters! {
+    struct Events[Emitters] {
+        land_on_ground: LandOnGroundEvent,
+    }
+}
+
 /// This system applies forces and calculates new positions and velocities.
 #[derive(Default)]
 pub struct Sys;
@@ -131,10 +286,10 @@ pub struct Sys;
 #[derive(SystemData)]
 pub struct PhysicsRead<'a> {
     entities: Entities<'a>,
+    events: Events<'a>,
     uids: ReadStorage<'a, Uid>,
     terrain: ReadExpect<'a, TerrainGrid>,
     dt: Read<'a, DeltaTime>,
-    event_bus: Read<'a, EventBus<ServerEvent>>,
     game_mode: ReadExpect<'a, GameMode>,
     scales: ReadStorage<'a, Scale>,
     stickies: ReadStorage<'a, Sticky>,
@@ -144,11 +299,12 @@ pub struct PhysicsRead<'a> {
     is_ridings: ReadStorage<'a, Is<Rider>>,
     is_volume_ridings: ReadStorage<'a, Is<VolumeRider>>,
     projectiles: ReadStorage<'a, Projectile>,
-    char_states: ReadStorage<'a, CharacterState>,
-    bodies: ReadStorage<'a, Body>,
     character_states: ReadStorage<'a, CharacterState>,
+    bodies: ReadStorage<'a, Body>,
     densities: ReadStorage<'a, Density>,
     stats: ReadStorage<'a, Stats>,
+    weather: Option<Read<'a, WeatherGrid>>,
+    time_of_day: Read<'a, TimeOfDay>,
 }
 
 #[derive(SystemData)]
@@ -222,7 +378,7 @@ impl<'a> PhysicsData<'a> {
         }
 
         // Update PreviousPhysCache
-        for (_, vel, position, ori, mut phys_cache, collider, scale, cs) in (
+        for (_, vel, position, ori, phys_cache, collider, scale, cs) in (
             &self.read.entities,
             &self.write.velocities,
             &self.write.positions,
@@ -230,7 +386,7 @@ impl<'a> PhysicsData<'a> {
             &mut self.write.previous_phys_cache,
             &self.read.colliders,
             self.read.scales.maybe(),
-            self.read.char_states.maybe(),
+            self.read.character_states.maybe(),
         )
             .join()
         {
@@ -363,7 +519,7 @@ impl<'a> PhysicsData<'a> {
             // moving whether it should interact into the collider component
             // or into a separate component.
             read.projectiles.maybe(),
-            read.char_states.maybe(),
+            read.character_states.maybe(),
         )
             .par_join()
             .map_init(
@@ -432,7 +588,7 @@ impl<'a> PhysicsData<'a> {
                                 previous_cache,
                                 mass,
                                 collider,
-                                read.char_states.get(entity),
+                                read.character_states.get(entity),
                                 read.is_ridings.get(entity),
                             ))
                         })
@@ -562,10 +718,11 @@ impl<'a> PhysicsData<'a> {
         let radius_cutoff = 64;
         let mut spatial_grid = SpatialGrid::new(lg2_cell_size, lg2_large_cell_size, radius_cutoff);
         // TODO: give voxel colliders their own component type
-        for (entity, pos, collider, ori) in (
+        for (entity, pos, collider, scale, ori) in (
             &read.entities,
             &write.positions,
             &read.colliders,
+            read.scales.maybe(),
             &write.orientations,
         )
             .join()
@@ -573,7 +730,7 @@ impl<'a> PhysicsData<'a> {
             let vol = collider.get_vol(&voxel_colliders_manifest);
 
             if let Some(vol) = vol {
-                let sphere = voxel_collider_bounding_sphere(vol, pos, ori);
+                let sphere = voxel_collider_bounding_sphere(vol, pos, ori, scale);
                 let radius = sphere.radius.ceil() as u32;
                 let pos_2d = sphere.center.xy().map(|e| e as i32);
                 const POS_TRUNCATION_ERROR: u32 = 1;
@@ -593,6 +750,59 @@ impl<'a> PhysicsData<'a> {
             ref read,
             ref mut write,
         } = self;
+
+        prof_span!(guard, "Apply Weather");
+        if let Some(weather) = &read.weather {
+            for (_, state, pos, phys) in (
+                &read.entities,
+                &read.character_states,
+                &write.positions,
+                &mut write.physics_states,
+            )
+                .join()
+            {
+                // Always reset air_vel to zero
+                let mut air_vel = Vec3::zero();
+
+                'simulation: {
+                    // Don't simulate for non-gliding, for now
+                    if !state.is_glide() {
+                        break 'simulation;
+                    }
+
+                    let pos_2d = pos.0.as_().xy();
+                    let chunk_pos: Vec2<i32> = pos_2d.wpos_to_cpos();
+                    let Some(current_chunk) = &read.terrain.get_key(chunk_pos) else {
+                        // oopsie
+                        break 'simulation;
+                    };
+
+                    let meta = current_chunk.meta();
+
+                    // Skip simulating for entites deeply under the ground
+                    if pos.0.z < meta.alt() - 25.0 {
+                        break 'simulation;
+                    }
+
+                    // If couldn't simulate wind for some reason, skip
+                    if let Ok(simulated_vel) =
+                        simulated_wind_vel(pos, weather, &read.terrain, &read.time_of_day)
+                    {
+                        air_vel = simulated_vel
+                    };
+                }
+
+                phys.in_fluid = phys.in_fluid.map(|f| match f {
+                    Fluid::Air { elevation, .. } => Fluid::Air {
+                        vel: Vel(air_vel),
+                        elevation,
+                    },
+                    fluid => fluid,
+                });
+            }
+        }
+
+        drop(guard);
 
         prof_span!(guard, "insert PosVelOriDefer");
         // NOTE: keep in sync with join below
@@ -797,7 +1007,7 @@ impl<'a> PhysicsData<'a> {
                     ori,
                     body,
                     character_state,
-                    mut physics_state,
+                    physics_state,
                     pos_vel_ori_defer,
                     previous_cache,
                     _,
@@ -863,6 +1073,21 @@ impl<'a> PhysicsData<'a> {
                     let climbing =
                         character_state.map_or(false, |cs| matches!(cs, CharacterState::Climb(_)));
 
+                    let friction_factor = |vel: Vec3<f32>| {
+                        if let Some(Body::Ship(ship)) = body
+                            && ship.has_wheels()
+                        {
+                            vel.try_normalized()
+                                .and_then(|dir| {
+                                    Some(orientations.get(entity)?.right().dot(dir).abs())
+                                })
+                                .unwrap_or(1.0)
+                                .max(0.2)
+                        } else {
+                            1.0
+                        }
+                    };
+
                     match &collider {
                         Collider::Voxel { .. } | Collider::Volume(_) => {
                             // For now, treat entities with voxel colliders
@@ -894,6 +1119,7 @@ impl<'a> PhysicsData<'a> {
                                 },
                                 read,
                                 &ori,
+                                friction_factor,
                             );
                             tgt_pos = cpos.0;
                         },
@@ -928,6 +1154,7 @@ impl<'a> PhysicsData<'a> {
                                 },
                                 read,
                                 &ori,
+                                friction_factor,
                             );
 
                             // Sticky things shouldn't move when on a surface
@@ -1070,15 +1297,17 @@ impl<'a> PhysicsData<'a> {
                     voxel_collider_spatial_grid
                         .in_circle_aabr(query_center, query_radius)
                         .filter_map(|entity| {
-                            positions
-                                .get(entity)
-                                .and_then(|l| velocities.get(entity).map(|r| (l, r)))
-                                .and_then(|l| previous_phys_cache.get(entity).map(|r| (l, r)))
-                                .and_then(|l| read.colliders.get(entity).map(|r| (l, r)))
-                                .and_then(|l| orientations.get(entity).map(|r| (l, r)))
-                                .map(|((((pos, vel), previous_cache), collider), ori)| {
-                                    (entity, pos, vel, previous_cache, collider, ori)
-                                })
+                            positions.get(entity).and_then(|pos| {
+                                Some((
+                                    entity,
+                                    pos,
+                                    velocities.get(entity)?,
+                                    previous_phys_cache.get(entity)?,
+                                    read.colliders.get(entity)?,
+                                    read.scales.get(entity),
+                                    orientations.get(entity)?,
+                                ))
+                            })
                         })
                         .for_each(
                             |(
@@ -1087,6 +1316,7 @@ impl<'a> PhysicsData<'a> {
                                 vel_other,
                                 previous_cache_other,
                                 collider_other,
+                                scale_other,
                                 ori_other,
                             )| {
                                 if entity == entity_other {
@@ -1112,6 +1342,7 @@ impl<'a> PhysicsData<'a> {
                                         voxel_collider,
                                         pos_other,
                                         ori_other,
+                                        scale_other,
                                     );
                                     // Early check
                                     if voxel_sphere.center.distance_squared(path_sphere.center)
@@ -1214,6 +1445,7 @@ impl<'a> PhysicsData<'a> {
                                             },
                                             read,
                                             &ori,
+                                            |vel| friction_factor(previous_cache_other.ori * vel),
                                         );
 
                                         // Transform entity attributes back into world space now
@@ -1342,16 +1574,16 @@ impl<'a> PhysicsData<'a> {
         }
         drop(guard);
 
-        let mut event_emitter = read.event_bus.emitter();
-        land_on_grounds
-            .into_iter()
-            .for_each(|(entity, vel, surface_normal)| {
-                event_emitter.emit(ServerEvent::LandOnGround {
+        let mut emitters = read.events.get_emitters();
+        emitters.emit_many(
+            land_on_grounds
+                .into_iter()
+                .map(|(entity, vel, surface_normal)| LandOnGroundEvent {
                     entity,
                     vel: vel.0,
                     surface_normal,
-                });
-            });
+                }),
+        );
     }
 
     fn update_cached_spatial_grid(&mut self) {
@@ -1433,6 +1665,8 @@ fn box_voxel_collision<T: BaseVol<Vox = Block> + ReadVol>(
     mut land_on_ground: impl FnMut(Entity, Vel, Vec3<f32>),
     read: &PhysicsRead,
     ori: &Ori,
+    // Get the proportion of surface friction that should be applied based on the current velocity
+    friction_factor: impl Fn(Vec3<f32>) -> f32,
 ) {
     // We cap out scale at 10.0 to prevent an enormous amount of lag
     let scale = read.scales.get(entity).map_or(1.0, |s| s.0.min(10.0));
@@ -1905,7 +2139,8 @@ fn box_voxel_collision<T: BaseVol<Vox = Block> + ReadVol>(
         } * physics_state
             .on_ground
             .map(|b| b.get_friction())
-            .unwrap_or(0.0);
+            .unwrap_or(0.0)
+            * friction_factor(vel.0);
         let wall_fric = if physics_state.on_wall.is_some() && climbing {
             FRIC_GROUND
         } else {
@@ -1924,6 +2159,7 @@ fn voxel_collider_bounding_sphere(
     voxel_collider: &VoxelCollider,
     pos: &Pos,
     ori: &Ori,
+    scale: Option<&Scale>,
 ) -> Sphere<f32, f32> {
     let origin_offset = voxel_collider.translation;
     use common::vol::SizedVol;
@@ -1946,7 +2182,7 @@ fn voxel_collider_bounding_sphere(
 
     Sphere {
         center: wpos_center,
-        radius,
+        radius: radius * scale.map_or(1.0, |s| s.0),
     }
 }
 
@@ -2175,6 +2411,43 @@ fn closest_points(n: LineSegment2<f32>, m: LineSegment2<f32>) -> (Vec2<f32>, Vec
             (close_n, proj_m)
         }
     }
+}
+
+// Get closest point between 2 3D line segments https://math.stackexchange.com/a/4289668
+pub fn closest_points_3d(n: LineSegment3<f32>, m: LineSegment3<f32>) -> (Vec3<f32>, Vec3<f32>) {
+    let p1 = n.start;
+    let p2 = n.end;
+    let p3 = m.start;
+    let p4 = m.end;
+
+    let d1 = p2 - p1;
+    let d2 = p4 - p3;
+    let d21 = p3 - p1;
+
+    let v22 = d2.dot(d2);
+    let v11 = d1.dot(d1);
+    let v21 = d2.dot(d1);
+    let v21_1 = d21.dot(d1);
+    let v21_2 = d21.dot(d2);
+
+    let denom = v21 * v21 - v22 * v11;
+
+    let (s, t) = if denom == 0.0 {
+        let s = 0.0;
+        let t = (v11 * s - v21_1) / v21;
+        (s, t)
+    } else {
+        let s = (v21_2 * v21 - v22 * v21_1) / denom;
+        let t = (-v21_1 * v21 + v11 * v21_2) / denom;
+        (s, t)
+    };
+
+    let (s, t) = (s.clamp(0.0, 1.0), t.clamp(0.0, 1.0));
+
+    let p_a = p1 + s * d1;
+    let p_b = p3 + t * d2;
+
+    (p_a, p_b)
 }
 
 /// Find pushback vector and collision_distance we assume between this

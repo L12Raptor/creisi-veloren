@@ -60,7 +60,7 @@ where
         "veloren_server::events::entity_manipulation=info",
         "hyper=info",
         "prometheus_hyper=info",
-        "mio::pool=info",
+        "mio::poll=info",
         "mio::sys::windows=info",
         "h2=info",
         "tokio_util=info",
@@ -75,6 +75,7 @@ where
         "refinery_core::traits::divergent=off",
         "veloren_server::persistence::character=info",
         "veloren_server::settings=info",
+        "veloren_query_server=info",
     ];
 
     for s in default_directives {
@@ -108,7 +109,9 @@ where
 
     // Create the terminal writer layer.
     #[cfg(feature = "tracy")]
-    let registry = registry.with(tracing_tracy::TracyLayer::new().with_stackdepth(0));
+    let registry = registry.with(tracing_tracy::TracyLayer::new(
+        tracing_tracy::DefaultConfig::default(),
+    ));
     #[cfg(not(feature = "tracy"))]
     let registry = {
         let (non_blocking, stdio_guard) = tracing_appender::non_blocking(terminal.make_writer());

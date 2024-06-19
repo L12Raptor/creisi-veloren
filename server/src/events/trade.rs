@@ -7,7 +7,8 @@ use common::{
             Inventory,
         },
     },
-    trade::{PendingTrade, ReducedInventory, TradeAction, TradeId, TradeResult, Trades},
+    event::ProcessTradeActionEvent,
+    trade::{PendingTrade, ReducedInventory, TradeAction, TradeResult, Trades},
 };
 use common_net::{
     msg::ServerGeneral,
@@ -15,12 +16,13 @@ use common_net::{
 };
 use hashbrown::{hash_map::Entry, HashMap};
 use specs::{world::WorldExt, Entity as EcsEntity};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, num::NonZeroU32};
 use tracing::{error, trace};
+#[cfg(feature = "worldgen")]
 use world::IndexOwned;
 
-fn notify_agent_simple(
-    mut agents: specs::WriteStorage<Agent>,
+pub fn notify_agent_simple(
+    agents: &mut specs::WriteStorage<Agent>,
     entity: EcsEntity,
     event: AgentEvent,
 ) {
@@ -29,6 +31,7 @@ fn notify_agent_simple(
     }
 }
 
+#[cfg(feature = "worldgen")]
 fn notify_agent_prices(
     mut agents: specs::WriteStorage<Agent>,
     index: &IndexOwned,
@@ -55,9 +58,7 @@ fn notify_agent_prices(
 /// Invoked when the trade UI is up, handling item changes, accepts, etc
 pub(super) fn handle_process_trade_action(
     server: &mut Server,
-    entity: EcsEntity,
-    trade_id: TradeId,
-    action: TradeAction,
+    ProcessTradeActionEvent(entity, trade_id, action): ProcessTradeActionEvent,
 ) {
     if let Some(uid) = server.state.ecs().uid_from_entity(entity) {
         let mut trades = server.state.ecs().write_resource::<Trades>();
@@ -68,7 +69,7 @@ pub(super) fn handle_process_trade_action(
                 .map(|e| {
                     server.notify_client(e, ServerGeneral::FinishedTrade(TradeResult::Declined));
                     notify_agent_simple(
-                        server.state.ecs().write_storage::<Agent>(),
+                        &mut server.state.ecs().write_storage(),
                         e,
                         AgentEvent::FinishedTrade(TradeResult::Declined),
                     );
@@ -95,7 +96,7 @@ pub(super) fn handle_process_trade_action(
                         if let Some(e) = server.state.ecs().entity_from_uid(*party) {
                             server.notify_client(e, ServerGeneral::FinishedTrade(result.clone()));
                             notify_agent_simple(
-                                server.state.ecs().write_storage::<Agent>(),
+                                &mut server.state.ecs().write_storage(),
                                 e,
                                 AgentEvent::FinishedTrade(result.clone()),
                             );
@@ -105,7 +106,10 @@ pub(super) fn handle_process_trade_action(
                 } else {
                     let mut entities: [Option<specs::Entity>; 2] = [None, None];
                     let mut inventories: [Option<ReducedInventory>; 2] = [None, None];
+                    #[cfg(feature = "worldgen")]
                     let mut prices = None;
+                    #[cfg(not(feature = "worldgen"))]
+                    let prices = None;
                     let agents = server.state.ecs().read_storage::<Agent>();
                     // sadly there is no map and collect on arrays
                     for i in 0..2 {
@@ -185,7 +189,7 @@ pub(crate) fn cancel_trades_for(state: &mut common_state::State, entity: EcsEnti
                 c.send_fallible(ServerGeneral::FinishedTrade(TradeResult::Declined));
             }
             notify_agent_simple(
-                ecs.write_storage::<Agent>(),
+                &mut ecs.write_storage::<Agent>(),
                 e,
                 AgentEvent::FinishedTrade(TradeResult::Declined),
             );
@@ -376,13 +380,14 @@ fn commit_trade(ecs: &specs::World, trade: &PendingTrade) -> TradeResult {
     let msm = ecs.read_resource::<MaterialStatManifest>();
     for who in [0, 1].iter().cloned() {
         for (slot, quantity) in trade.offers[who].iter() {
-            // Take the items one by one, to benefit from Inventory's stack handling
-            for _ in 0..*quantity {
-                inventories
+            if let Some(quantity) = NonZeroU32::new(*quantity) {
+                if let Some(item) = inventories
                     .get_mut(entities[who])
                     .expect(invmsg)
-                    .take(*slot, &ability_map, &msm)
-                    .map(|item| items[who].push(item));
+                    .take_amount(*slot, quantity, &ability_map, &msm)
+                {
+                    items[who].push(item);
+                }
             }
         }
     }

@@ -1,7 +1,8 @@
 use crate::{
     comp::{
         ability::Capability,
-        buff::{Buff, BuffChange, BuffData, BuffKind, BuffSource},
+        aura::{AuraKindVariant, EnteredAuras},
+        buff::{Buff, BuffChange, BuffData, BuffKind, BuffSource, DestInfo},
         inventory::{
             item::{
                 armor::Protection,
@@ -12,9 +13,12 @@ use crate::{
         },
         skillset::SkillGroupKind,
         Alignment, Body, Buffs, CharacterState, Combo, Energy, Group, Health, HealthChange,
-        Inventory, Ori, Player, Poise, PoiseChange, SkillSet, Stats,
+        Inventory, Mass, Ori, Player, Poise, PoiseChange, SkillSet, Stats,
     },
-    event::ServerEvent,
+    event::{
+        BuffEvent, ComboChangeEvent, EmitExt, EnergyChangeEvent, EntityAttackedHookEvent,
+        HealthChangeEvent, KnockbackEvent, ParryHookEvent, PoiseChangeEvent,
+    },
     outcome::Outcome,
     resources::{Secs, Time},
     states::utils::StageSection,
@@ -40,8 +44,26 @@ pub enum AttackSource {
     Beam,
     GroundShockwave,
     AirShockwave,
+    UndodgeableShockwave,
     Explosion,
 }
+
+pub const FULL_FLANK_ANGLE: f32 = std::f32::consts::PI / 4.0;
+pub const PARTIAL_FLANK_ANGLE: f32 = std::f32::consts::PI * 3.0 / 4.0;
+// NOTE: Do we want to change this to be a configurable parameter on body?
+pub const PROJECTILE_HEADSHOT_PROPORTION: f32 = 0.1;
+pub const BEAM_DURATION_PRECISION: f32 = 2.5;
+pub const MAX_BACK_FLANK_PRECISION: f32 = 0.75;
+pub const MAX_SIDE_FLANK_PRECISION: f32 = 0.25;
+pub const MAX_HEADSHOT_PRECISION: f32 = 1.0;
+pub const MAX_TOP_HEADSHOT_PRECISION: f32 = 0.5;
+pub const MAX_BEAM_DUR_PRECISION: f32 = 0.25;
+pub const MAX_MELEE_POISE_PRECISION: f32 = 0.5;
+pub const MAX_BLOCK_POISE_COST: f32 = 25.0;
+pub const PARRY_BONUS_MULTIPLIER: f32 = 2.0;
+pub const FALLBACK_BLOCK_STRENGTH: f32 = 5.0;
+pub const BEHIND_TARGET_ANGLE: f32 = 45.0;
+pub const BASE_PARRIED_POISE_PUNISHMENT: f32 = 100.0 / 3.5;
 
 #[derive(Copy, Clone)]
 pub struct AttackerInfo<'a> {
@@ -52,8 +74,10 @@ pub struct AttackerInfo<'a> {
     pub combo: Option<&'a Combo>,
     pub inventory: Option<&'a Inventory>,
     pub stats: Option<&'a Stats>,
+    pub mass: Option<&'a Mass>,
 }
 
+#[derive(Copy, Clone)]
 pub struct TargetInfo<'a> {
     pub entity: EcsEntity,
     pub uid: Uid,
@@ -65,21 +89,26 @@ pub struct TargetInfo<'a> {
     pub char_state: Option<&'a CharacterState>,
     pub energy: Option<&'a Energy>,
     pub buffs: Option<&'a Buffs>,
+    pub mass: Option<&'a Mass>,
 }
 
 #[derive(Clone, Copy)]
 pub struct AttackOptions {
     pub target_dodging: bool,
-    pub may_harm: bool,
+    /// Result of [`permit_pvp`]
+    pub permit_pvp: bool,
     pub target_group: GroupTarget,
+    /// When set to `true`, entities in the same group or pets & pet owners may
+    /// hit eachother albeit the target_group being OutOfGroup
+    pub allow_friendly_fire: bool,
+    pub precision_mult: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)] // TODO: Yeet clone derive
 pub struct Attack {
     damages: Vec<AttackDamage>,
     effects: Vec<AttackEffect>,
-    crit_chance: f32,
-    crit_multiplier: f32,
+    precision_multiplier: f32,
 }
 
 impl Default for Attack {
@@ -87,8 +116,7 @@ impl Default for Attack {
         Self {
             damages: Vec::new(),
             effects: Vec::new(),
-            crit_chance: 0.0,
-            crit_multiplier: 1.0,
+            precision_multiplier: 1.0,
         }
     }
 }
@@ -107,18 +135,21 @@ impl Attack {
     }
 
     #[must_use]
-    pub fn with_crit(mut self, crit_chance: f32, crit_multiplier: f32) -> Self {
-        self.crit_chance = crit_chance;
-        self.crit_multiplier = crit_multiplier;
+    pub fn with_precision(mut self, precision_multiplier: f32) -> Self {
+        self.precision_multiplier = precision_multiplier;
         self
     }
 
     #[must_use]
-    pub fn with_combo(self, combo: i32) -> Self {
+    pub fn with_combo_requirement(self, combo: i32, requirement: CombatRequirement) -> Self {
         self.with_effect(
-            AttackEffect::new(None, CombatEffect::Combo(combo))
-                .with_requirement(CombatRequirement::AnyDamage),
+            AttackEffect::new(None, CombatEffect::Combo(combo)).with_requirement(requirement),
         )
+    }
+
+    #[must_use]
+    pub fn with_combo(self, combo: i32) -> Self {
+        self.with_combo_requirement(combo, CombatRequirement::AnyDamage)
     }
 
     #[must_use]
@@ -126,15 +157,85 @@ impl Attack {
 
     pub fn effects(&self) -> impl Iterator<Item = &AttackEffect> { self.effects.iter() }
 
-    pub fn compute_damage_reduction(
+    pub fn compute_block_damage_decrement(
         attacker: Option<&AttackerInfo>,
+        damage_reduction: f32,
         target: &TargetInfo,
         source: AttackSource,
         dir: Dir,
         damage: Damage,
         msm: &MaterialStatManifest,
-        mut emit: impl FnMut(ServerEvent),
+        time: Time,
+        emitters: &mut (impl EmitExt<ParryHookEvent> + EmitExt<PoiseChangeEvent>),
         mut emit_outcome: impl FnMut(Outcome),
+    ) -> f32 {
+        if damage.value > 0.0 {
+            if let (Some(char_state), Some(ori), Some(inventory)) =
+                (target.char_state, target.ori, target.inventory)
+            {
+                let is_parry = char_state.is_parry(source);
+                let is_block = char_state.is_block(source);
+                let damage_value = damage.value * (1.0 - damage_reduction);
+                let mut block_strength = block_strength(inventory, char_state);
+
+                if ori.look_vec().angle_between(-dir.with_z(0.0)) < char_state.block_angle()
+                    && (is_parry || is_block)
+                    && block_strength > 0.0
+                {
+                    if is_parry {
+                        block_strength *= PARRY_BONUS_MULTIPLIER;
+
+                        emitters.emit(ParryHookEvent {
+                            defender: target.entity,
+                            attacker: attacker.map(|a| a.entity),
+                            source,
+                            poise_multiplier: 2.0 - (damage_value / block_strength).min(1.0),
+                        });
+                    }
+
+                    let poise_cost =
+                        (damage_value / block_strength).min(1.0) * MAX_BLOCK_POISE_COST;
+
+                    let poise_change = Poise::apply_poise_reduction(
+                        poise_cost,
+                        target.inventory,
+                        msm,
+                        target.char_state,
+                        target.stats,
+                    );
+
+                    emit_outcome(Outcome::Block {
+                        parry: is_parry,
+                        pos: target.pos,
+                        uid: target.uid,
+                    });
+                    emitters.emit(PoiseChangeEvent {
+                        entity: target.entity,
+                        change: PoiseChange {
+                            amount: -poise_change,
+                            impulse: *dir,
+                            by: attacker.map(|x| (*x).into()),
+                            cause: Some(damage.source),
+                            time,
+                        },
+                    });
+                    block_strength
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+    }
+
+    pub fn compute_damage_reduction(
+        attacker: Option<&AttackerInfo>,
+        target: &TargetInfo,
+        damage: Damage,
+        msm: &MaterialStatManifest,
     ) -> f32 {
         if damage.value > 0.0 {
             let attacker_penetration = attacker
@@ -143,39 +244,12 @@ impl Attack {
                 .clamp(0.0, 1.0);
             let raw_damage_reduction =
                 Damage::compute_damage_reduction(Some(damage), target.inventory, target.stats, msm);
-            let damage_reduction = (1.0 - attacker_penetration) * raw_damage_reduction;
-            let block_reduction =
-                if let (Some(char_state), Some(ori)) = (target.char_state, target.ori) {
-                    if ori.look_vec().angle_between(-*dir) < char_state.block_angle() {
-                        if char_state.is_parry(source) {
-                            emit_outcome(Outcome::Block {
-                                parry: true,
-                                pos: target.pos,
-                                uid: target.uid,
-                            });
-                            emit(ServerEvent::ParryHook {
-                                defender: target.entity,
-                                attacker: attacker.map(|a| a.entity),
-                                source,
-                            });
-                            1.0
-                        } else if let Some(block_strength) = char_state.block_strength(source) {
-                            emit_outcome(Outcome::Block {
-                                parry: false,
-                                pos: target.pos,
-                                uid: target.uid,
-                            });
-                            block_strength
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-            1.0 - (1.0 - damage_reduction) * (1.0 - block_reduction)
+
+            if raw_damage_reduction >= 1.0 {
+                raw_damage_reduction
+            } else {
+                (1.0 - attacker_penetration) * raw_damage_reduction
+            }
         } else {
             0.0
         }
@@ -192,7 +266,16 @@ impl Attack {
         strength_modifier: f32,
         attack_source: AttackSource,
         time: Time,
-        mut emit: impl FnMut(ServerEvent),
+        emitters: &mut (
+                 impl EmitExt<HealthChangeEvent>
+                 + EmitExt<EnergyChangeEvent>
+                 + EmitExt<ParryHookEvent>
+                 + EmitExt<KnockbackEvent>
+                 + EmitExt<BuffEvent>
+                 + EmitExt<PoiseChangeEvent>
+                 + EmitExt<ComboChangeEvent>
+                 + EmitExt<EntityAttackedHookEvent>
+             ),
         mut emit_outcome: impl FnMut(Outcome),
         rng: &mut rand::rngs::ThreadRng,
         damage_instance_offset: u64,
@@ -202,31 +285,41 @@ impl Attack {
 
         let AttackOptions {
             target_dodging,
-            may_harm,
+            permit_pvp,
+            allow_friendly_fire,
             target_group,
+            precision_mult,
         } = options;
 
         // target == OutOfGroup is basic heuristic that this
         // "attack" has negative effects.
         //
         // so if target dodges this "attack" or we don't want to harm target,
-        // it should avoid such "damage" or effect
+        // it should avoid such "damage" or effect, unless friendly fire is enabled
         let avoid_damage = |attack_damage: &AttackDamage| {
-            matches!(attack_damage.target, Some(GroupTarget::OutOfGroup))
-                && (target_dodging || !may_harm)
+            (matches!(attack_damage.target, Some(GroupTarget::OutOfGroup)) && !allow_friendly_fire)
+                && (target_dodging || !permit_pvp)
         };
         let avoid_effect = |attack_effect: &AttackEffect| {
-            matches!(attack_effect.target, Some(GroupTarget::OutOfGroup))
-                && (target_dodging || !may_harm)
+            (matches!(attack_effect.target, Some(GroupTarget::OutOfGroup)) && !allow_friendly_fire)
+                && (target_dodging || !permit_pvp)
         };
-        let crit_chance = attacker
+
+        let from_precision_mult = attacker
             .and_then(|a| a.stats)
-            .map(|s| s.crit_chance_modifier)
-            .map_or(self.crit_chance, |cc_mod| {
-                self.crit_chance * cc_mod.mult_mod + cc_mod.add_mod
-            })
-            .clamp(0.0, 1.0);
-        let is_crit = rng.gen::<f32>() < crit_chance;
+            .and_then(|s| s.precision_multiplier_override)
+            .or(precision_mult);
+
+        let from_precision_vulnerability_mult = target
+            .stats
+            .and_then(|s| s.precision_vulnerability_multiplier_override);
+
+        let precision_mult = match (from_precision_mult, from_precision_vulnerability_mult) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        };
+
         let mut is_applied = false;
         let mut accumulated_damage = 0.0;
         let damage_modifier = attacker
@@ -235,26 +328,34 @@ impl Attack {
         for damage in self
             .damages
             .iter()
-            .filter(|d| d.target.map_or(true, |t| t == target_group))
+            .filter(|d| allow_friendly_fire || d.target.map_or(true, |t| t == target_group))
             .filter(|d| !avoid_damage(d))
         {
             let damage_instance = damage.instance + damage_instance_offset;
             is_applied = true;
-            let damage_reduction = Attack::compute_damage_reduction(
+
+            let damage_reduction =
+                Attack::compute_damage_reduction(attacker.as_ref(), target, damage.damage, msm);
+
+            let block_damage_decrement = Attack::compute_block_damage_decrement(
                 attacker.as_ref(),
+                damage_reduction,
                 target,
                 attack_source,
                 dir,
                 damage.damage,
                 msm,
-                &mut emit,
+                time,
+                emitters,
                 &mut emit_outcome,
             );
+
             let change = damage.damage.calculate_health_change(
                 damage_reduction,
+                block_damage_decrement,
                 attacker.map(|x| x.into()),
-                is_crit,
-                self.crit_multiplier,
+                precision_mult,
+                self.precision_multiplier,
                 strength_modifier * damage_modifier,
                 time,
                 damage_instance,
@@ -263,7 +364,7 @@ impl Attack {
             accumulated_damage += applied_damage;
 
             if change.amount.abs() > Health::HEALTH_EPSILON {
-                emit(ServerEvent::HealthChange {
+                emitters.emit(HealthChangeEvent {
                     entity: target.entity,
                     change,
                 });
@@ -282,15 +383,15 @@ impl Attack {
                                     by: attacker.map(|x| x.into()),
                                     cause: Some(damage.damage.source),
                                     time,
-                                    crit: is_crit,
+                                    precise: precision_mult.is_some(),
                                     instance: damage_instance,
                                 };
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: target.entity,
                                     change: health_change,
                                 });
                             }
-                            emit(ServerEvent::EnergyChange {
+                            emitters.emit(EnergyChangeEvent {
                                 entity: target.entity,
                                 change: -energy_change,
                             });
@@ -333,15 +434,15 @@ impl Attack {
                                     by: attacker.map(|x| x.into()),
                                     cause: Some(damage.damage.source),
                                     instance: damage_instance,
-                                    crit: is_crit,
+                                    precise: precision_mult.is_some(),
                                     time,
                                 };
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: target.entity,
                                     change: health_change,
                                 });
                             } else {
-                                emit(ServerEvent::PoiseChange {
+                                emitters.emit(PoiseChangeEvent {
                                     entity: target.entity,
                                     change: poise_change,
                                 });
@@ -358,7 +459,7 @@ impl Attack {
                             let impulse =
                                 kb.calculate_impulse(dir, target.char_state) * strength_modifier;
                             if !impulse.is_approx_zero() {
-                                emit(ServerEvent::Knockback {
+                                emitters.emit(KnockbackEvent {
                                     entity: target.entity,
                                     impulse,
                                 });
@@ -366,7 +467,7 @@ impl Attack {
                         },
                         CombatEffect::EnergyReward(ec) => {
                             if let Some(attacker) = attacker {
-                                emit(ServerEvent::EnergyChange {
+                                emitters.emit(EnergyChangeEvent {
                                     entity: attacker.entity,
                                     change: *ec
                                         * compute_energy_reward_mod(attacker.inventory, msm)
@@ -377,13 +478,12 @@ impl Attack {
                         },
                         CombatEffect::Buff(b) => {
                             if rng.gen::<f32>() < b.chance {
-                                emit(ServerEvent::Buff {
+                                emitters.emit(BuffEvent {
                                     entity: target.entity,
                                     buff_change: BuffChange::Add(b.to_buff(
                                         time,
-                                        attacker.map(|a| a.uid),
-                                        target.stats,
-                                        target.health,
+                                        attacker,
+                                        target,
                                         applied_damage,
                                         strength_modifier,
                                     )),
@@ -398,11 +498,11 @@ impl Attack {
                                     by: attacker.map(|a| a.into()),
                                     cause: None,
                                     time,
-                                    crit: false,
+                                    precise: false,
                                     instance: rand::random(),
                                 };
                                 if change.amount.abs() > Health::HEALTH_EPSILON {
-                                    emit(ServerEvent::HealthChange {
+                                    emitters.emit(HealthChangeEvent {
                                         entity: attacker_entity,
                                         change,
                                     });
@@ -428,7 +528,7 @@ impl Attack {
                                     cause: Some(damage.damage.source),
                                     time,
                                 };
-                                emit(ServerEvent::PoiseChange {
+                                emitters.emit(PoiseChangeEvent {
                                     entity: target.entity,
                                     change: poise_change,
                                 });
@@ -440,11 +540,11 @@ impl Attack {
                                 by: attacker.map(|a| a.into()),
                                 cause: None,
                                 time,
-                                crit: false,
+                                precise: false,
                                 instance: rand::random(),
                             };
                             if change.amount.abs() > Health::HEALTH_EPSILON {
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: target.entity,
                                     change,
                                 });
@@ -453,7 +553,7 @@ impl Attack {
                         CombatEffect::Combo(c) => {
                             // Not affected by strength modifier as integer
                             if let Some(attacker_entity) = attacker.map(|a| a.entity) {
-                                emit(ServerEvent::ComboChange {
+                                emitters.emit(ComboChangeEvent {
                                     entity: attacker_entity,
                                     change: *c,
                                 });
@@ -469,7 +569,7 @@ impl Attack {
                                     change.amount *= damage;
                                     change
                                 };
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: target.entity,
                                     change,
                                 });
@@ -477,7 +577,7 @@ impl Attack {
                         },
                         CombatEffect::RefreshBuff(chance, b) => {
                             if rng.gen::<f32>() < *chance {
-                                emit(ServerEvent::Buff {
+                                emitters.emit(BuffEvent {
                                     entity: target.entity,
                                     buff_change: BuffChange::Refresh(*b),
                                 });
@@ -490,7 +590,7 @@ impl Attack {
                                     change.amount *= damage;
                                     change
                                 };
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: target.entity,
                                     change,
                                 });
@@ -503,10 +603,25 @@ impl Attack {
                                     change.amount *= damage;
                                     change
                                 };
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: target.entity,
                                     change,
                                 });
+                            }
+                        },
+                        CombatEffect::SelfBuff(b) => {
+                            if let Some(attacker) = attacker {
+                                if rng.gen::<f32>() < b.chance {
+                                    emitters.emit(BuffEvent {
+                                        entity: attacker.entity,
+                                        buff_change: BuffChange::Add(b.to_self_buff(
+                                            time,
+                                            attacker,
+                                            applied_damage,
+                                            strength_modifier,
+                                        )),
+                                    });
+                                }
                             }
                         },
                     }
@@ -522,7 +637,7 @@ impl Attack {
                     .iter()
                     .flat_map(|stats| stats.effects_on_attack.iter()),
             )
-            .filter(|e| e.target.map_or(true, |t| t == target_group))
+            .filter(|e| allow_friendly_fire || e.target.map_or(true, |t| t == target_group))
             .filter(|e| !avoid_effect(e))
         {
             let requirements_met = effect.requirements.iter().all(|req| match req {
@@ -536,7 +651,7 @@ impl Attack {
                     {
                         let sufficient_energy = e.current() >= *r;
                         if sufficient_energy {
-                            emit(ServerEvent::EnergyChange {
+                            emitters.emit(EnergyChangeEvent {
                                 entity,
                                 change: -*r,
                             });
@@ -556,7 +671,7 @@ impl Attack {
                     {
                         let sufficient_combo = c.counter() >= *r;
                         if sufficient_combo {
-                            emit(ServerEvent::ComboChange {
+                            emitters.emit(ComboChangeEvent {
                                 entity,
                                 change: -(*r as i32),
                             });
@@ -570,6 +685,19 @@ impl Attack {
                 CombatRequirement::TargetHasBuff(buff) => {
                     target.buffs.map_or(false, |buffs| buffs.contains(*buff))
                 },
+                CombatRequirement::TargetPoised => {
+                    target.char_state.map_or(false, |cs| cs.is_stunned())
+                },
+                CombatRequirement::BehindTarget => {
+                    if let Some(ori) = target.ori {
+                        ori.look_vec().angle_between(dir.with_z(0.0)) < BEHIND_TARGET_ANGLE
+                    } else {
+                        false
+                    }
+                },
+                CombatRequirement::TargetBlocking => target.char_state.map_or(false, |cs| {
+                    cs.is_block(attack_source) || cs.is_parry(attack_source)
+                }),
             });
             if requirements_met {
                 is_applied = true;
@@ -578,7 +706,7 @@ impl Attack {
                         let impulse =
                             kb.calculate_impulse(dir, target.char_state) * strength_modifier;
                         if !impulse.is_approx_zero() {
-                            emit(ServerEvent::Knockback {
+                            emitters.emit(KnockbackEvent {
                                 entity: target.entity,
                                 impulse,
                             });
@@ -586,7 +714,7 @@ impl Attack {
                     },
                     CombatEffect::EnergyReward(ec) => {
                         if let Some(attacker) = attacker {
-                            emit(ServerEvent::EnergyChange {
+                            emitters.emit(EnergyChangeEvent {
                                 entity: attacker.entity,
                                 change: ec
                                     * compute_energy_reward_mod(attacker.inventory, msm)
@@ -597,13 +725,12 @@ impl Attack {
                     },
                     CombatEffect::Buff(b) => {
                         if rng.gen::<f32>() < b.chance {
-                            emit(ServerEvent::Buff {
+                            emitters.emit(BuffEvent {
                                 entity: target.entity,
                                 buff_change: BuffChange::Add(b.to_buff(
                                     time,
-                                    attacker.map(|a| a.uid),
-                                    target.stats,
-                                    target.health,
+                                    attacker,
+                                    target,
                                     accumulated_damage,
                                     strength_modifier,
                                 )),
@@ -618,11 +745,11 @@ impl Attack {
                                 by: attacker.map(|a| a.into()),
                                 cause: None,
                                 time,
-                                crit: false,
+                                precise: false,
                                 instance: rand::random(),
                             };
                             if change.amount.abs() > Health::HEALTH_EPSILON {
-                                emit(ServerEvent::HealthChange {
+                                emitters.emit(HealthChangeEvent {
                                     entity: attacker_entity,
                                     change,
                                 });
@@ -648,7 +775,7 @@ impl Attack {
                                 cause: Some(attack_source.into()),
                                 time,
                             };
-                            emit(ServerEvent::PoiseChange {
+                            emitters.emit(PoiseChangeEvent {
                                 entity: target.entity,
                                 change: poise_change,
                             });
@@ -660,11 +787,11 @@ impl Attack {
                             by: attacker.map(|a| a.into()),
                             cause: None,
                             time,
-                            crit: false,
+                            precise: false,
                             instance: rand::random(),
                         };
                         if change.amount.abs() > Health::HEALTH_EPSILON {
-                            emit(ServerEvent::HealthChange {
+                            emitters.emit(HealthChangeEvent {
                                 entity: target.entity,
                                 change,
                             });
@@ -673,7 +800,7 @@ impl Attack {
                     CombatEffect::Combo(c) => {
                         // Not affected by strength modifier as integer
                         if let Some(attacker_entity) = attacker.map(|a| a.entity) {
-                            emit(ServerEvent::ComboChange {
+                            emitters.emit(ComboChangeEvent {
                                 entity: attacker_entity,
                                 change: c,
                             });
@@ -683,7 +810,7 @@ impl Attack {
                     CombatEffect::StageVulnerable(_, _) => {},
                     CombatEffect::RefreshBuff(chance, b) => {
                         if rng.gen::<f32>() < chance {
-                            emit(ServerEvent::Buff {
+                            emitters.emit(BuffEvent {
                                 entity: target.entity,
                                 buff_change: BuffChange::Refresh(b),
                             });
@@ -691,20 +818,54 @@ impl Attack {
                     },
                     // Only has an effect when attached to a damage
                     CombatEffect::BuffsVulnerable(_, _) => {},
+                    // Only has an effect when attached to a damage
                     CombatEffect::StunnedVulnerable(_) => {},
+                    CombatEffect::SelfBuff(b) => {
+                        if let Some(attacker) = attacker {
+                            if rng.gen::<f32>() < b.chance {
+                                emitters.emit(BuffEvent {
+                                    entity: target.entity,
+                                    buff_change: BuffChange::Add(b.to_self_buff(
+                                        time,
+                                        attacker,
+                                        accumulated_damage,
+                                        strength_modifier,
+                                    )),
+                                });
+                            }
+                        }
+                    },
                 }
             }
         }
         // Emits event to handle things that should happen for any successful attack,
         // regardless of if the attack had any damages or effects in it
         if is_applied {
-            emit(ServerEvent::EntityAttackedHook {
+            emitters.emit(EntityAttackedHookEvent {
                 entity: target.entity,
                 attacker: attacker.map(|a| a.entity),
             });
         }
         is_applied
     }
+}
+
+pub fn allow_friendly_fire(
+    entered_auras: &ReadStorage<EnteredAuras>,
+    attacker: EcsEntity,
+    target: EcsEntity,
+) -> bool {
+    entered_auras
+        .get(attacker)
+        .zip(entered_auras.get(target))
+        .and_then(|(attacker, target)| {
+            Some((
+                attacker.auras.get(&AuraKindVariant::FriendlyFire)?,
+                target.auras.get(&AuraKindVariant::FriendlyFire)?,
+            ))
+        })
+        // Only allow friendly fire if both entities are affectd by the same FriendlyFire aura
+        .is_some_and(|(attacker, target)| attacker.intersection(target).next().is_some())
 }
 
 /// Function that checks for unintentional PvP between players.
@@ -716,9 +877,10 @@ impl Attack {
 /// If both players have PvP mode enabled, interact with NPC and
 /// in any other case, this function will return `true`
 // TODO: add parameter for doing self-harm?
-pub fn may_harm(
+pub fn permit_pvp(
     alignments: &ReadStorage<Alignment>,
     players: &ReadStorage<Player>,
+    entered_auras: &ReadStorage<EnteredAuras>,
     id_maps: &IdMaps,
     attacker: Option<EcsEntity>,
     target: EcsEntity,
@@ -744,12 +906,34 @@ pub fn may_harm(
     };
 
     // "Dereference" to owner if this is a pet.
-    let attacker = owner_if_pet(attacker);
-    let target = owner_if_pet(target);
+    let attacker_owner = owner_if_pet(attacker);
+    let target_owner = owner_if_pet(target);
+
+    // If both players are in the same ForcePvP aura, allow them to harm eachother
+    if let (Some(attacker_auras), Some(target_auras)) = (
+        entered_auras.get(attacker_owner),
+        entered_auras.get(target_owner),
+    ) && attacker_auras
+        .auras
+        .get(&AuraKindVariant::ForcePvP)
+        .zip(target_auras.auras.get(&AuraKindVariant::ForcePvP))
+        // Only allow forced pvp if both entities are affectd by the same FriendlyFire aura
+        .is_some_and(|(attacker, target)| attacker.intersection(target).next().is_some())
+    {
+        return true;
+    }
+
+    // Prevent PvP between pets, unless friendly fire is enabled
+    //
+    // This code is NOT intended to prevent pet <-> owner combat,
+    // pets and their owners being in the same group should take care of that
+    if attacker_owner == target_owner {
+        return allow_friendly_fire(entered_auras, attacker, target);
+    }
 
     // Get player components
-    let attacker_info = players.get(attacker);
-    let target_info = players.get(target);
+    let attacker_info = players.get(attacker_owner);
+    let target_info = players.get(target_owner);
 
     // Return `true` if not players.
     attacker_info
@@ -783,7 +967,7 @@ impl AttackDamage {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AttackEffect {
     target: Option<GroupTarget>,
     effect: CombatEffect,
@@ -840,6 +1024,8 @@ pub enum CombatEffect {
     // TODO: Maybe try to make it do something if tied to attack, not sure if it should double
     // count in that instance?
     StunnedVulnerable(f32),
+    /// Applies buff to yourself after attack is applied
+    SelfBuff(CombatBuff),
 }
 
 impl CombatEffect {
@@ -878,21 +1064,46 @@ impl CombatEffect {
             CombatEffect::StunnedVulnerable(v) => {
                 CombatEffect::StunnedVulnerable(v * stats.effect_power)
             },
+            CombatEffect::SelfBuff(CombatBuff {
+                kind,
+                dur_secs,
+                strength,
+                chance,
+            }) => CombatEffect::SelfBuff(CombatBuff {
+                kind,
+                dur_secs,
+                strength: strength * stats.buff_strength,
+                chance,
+            }),
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum CombatRequirement {
     AnyDamage,
     Energy(f32),
     Combo(u32),
     TargetHasBuff(BuffKind),
+    TargetPoised,
+    BehindTarget,
+    TargetBlocking,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum DamagedEffect {
     Combo(i32),
+    Energy(f32),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum DeathEffect {
+    /// Adds buff to the attacker that killed this entity
+    AttackerBuff {
+        kind: BuffKind,
+        strength: f32,
+        duration: Option<Secs>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -948,7 +1159,9 @@ impl From<AttackSource> for DamageSource {
             AttackSource::Melee => DamageSource::Melee,
             AttackSource::Projectile => DamageSource::Projectile,
             AttackSource::Explosion => DamageSource::Explosion,
-            AttackSource::AirShockwave | AttackSource::GroundShockwave => DamageSource::Shockwave,
+            AttackSource::AirShockwave
+            | AttackSource::GroundShockwave
+            | AttackSource::UndodgeableShockwave => DamageSource::Shockwave,
             AttackSource::Beam => DamageSource::Energy,
         }
     }
@@ -969,11 +1182,12 @@ pub enum DamageKind {
     Energy,
 }
 
-const PIERCING_PENETRATION_FRACTION: f32 = 1.5;
+const PIERCING_PENETRATION_FRACTION: f32 = 0.5;
 const SLASHING_ENERGY_FRACTION: f32 = 0.5;
 const CRUSHING_POISE_FRACTION: f32 = 1.0;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Damage {
     pub source: DamageSource,
     pub kind: DamageKind,
@@ -1010,46 +1224,50 @@ impl Damage {
         };
 
         let stats_dr = if let Some(stats) = stats {
-            stats.damage_reduction
+            stats.damage_reduction.modifier()
         } else {
             0.0
         };
-        1.0 - (1.0 - inventory_dr) * (1.0 - stats_dr)
+        // Return 100% if either DR is at 100% (admin tabard or safezone buff)
+        if protection.is_none() || stats_dr >= 1.0 {
+            1.0
+        } else {
+            1.0 - (1.0 - inventory_dr) * (1.0 - stats_dr)
+        }
     }
 
     pub fn calculate_health_change(
         self,
         damage_reduction: f32,
+        block_damage_decrement: f32,
         damage_contributor: Option<DamageContributor>,
-        is_crit: bool,
-        crit_mult: f32,
+        precision_mult: Option<f32>,
+        precision_power: f32,
         damage_modifier: f32,
         time: Time,
         instance: u64,
     ) -> HealthChange {
         let mut damage = self.value * damage_modifier;
-        let critdamage = if is_crit {
-            damage * (crit_mult - 1.0)
-        } else {
-            0.0
-        };
+        let precise_damage = damage * precision_mult.unwrap_or(0.0) * (precision_power - 1.0);
         match self.source {
             DamageSource::Melee
             | DamageSource::Projectile
             | DamageSource::Explosion
             | DamageSource::Shockwave
             | DamageSource::Energy => {
-                // Critical hit
-                damage += critdamage;
+                // Precise hit
+                damage += precise_damage;
                 // Armor
                 damage *= 1.0 - damage_reduction;
+                // Block
+                damage = f32::max(damage - block_damage_decrement, 0.0);
 
                 HealthChange {
                     amount: -damage,
                     by: damage_contributor,
                     cause: Some(self.source),
                     time,
-                    crit: is_crit,
+                    precise: precision_mult.is_some(),
                     instance,
                 }
             },
@@ -1063,7 +1281,7 @@ impl Damage {
                     by: None,
                     cause: Some(self.source),
                     time,
-                    crit: false,
+                    precise: false,
                     instance,
                 }
             },
@@ -1072,7 +1290,7 @@ impl Damage {
                 by: None,
                 cause: Some(self.source),
                 time,
-                crit: false,
+                precise: false,
                 instance,
             },
         }
@@ -1171,17 +1389,20 @@ impl CombatBuff {
     fn to_buff(
         self,
         time: Time,
-        uid: Option<Uid>,
-        tgt_stats: Option<&Stats>,
-        tgt_health: Option<&Health>,
+        attacker_info: Option<AttackerInfo>,
+        target_info: &TargetInfo,
         damage: f32,
         strength_modifier: f32,
     ) -> Buff {
         // TODO: Generate BufCategoryId vec (probably requires damage overhaul?)
-        let source = if let Some(uid) = uid {
+        let source = if let Some(uid) = attacker_info.map(|a| a.uid) {
             BuffSource::Character { by: uid }
         } else {
             BuffSource::Unknown
+        };
+        let dest_info = DestInfo {
+            stats: target_info.stats,
+            mass: target_info.mass,
         };
         Buff::new(
             self.kind,
@@ -1192,8 +1413,37 @@ impl CombatBuff {
             Vec::new(),
             source,
             time,
-            tgt_stats,
-            tgt_health,
+            dest_info,
+            attacker_info.and_then(|a| a.mass),
+        )
+    }
+
+    fn to_self_buff(
+        self,
+        time: Time,
+        attacker_info: AttackerInfo,
+        damage: f32,
+        strength_modifier: f32,
+    ) -> Buff {
+        // TODO: Generate BufCategoryId vec (probably requires damage overhaul?)
+        let source = BuffSource::Character {
+            by: attacker_info.uid,
+        };
+        let dest_info = DestInfo {
+            stats: attacker_info.stats,
+            mass: attacker_info.mass,
+        };
+        Buff::new(
+            self.kind,
+            BuffData::new(
+                self.strength.to_strength(damage, strength_modifier),
+                Some(Secs(self.dur_secs as f64)),
+            ),
+            Vec::new(),
+            source,
+            time,
+            dest_info,
+            attacker_info.mass,
         )
     }
 }
@@ -1221,7 +1471,6 @@ pub fn get_weapon_kinds(inv: &Inventory) -> (Option<ToolKind>, Option<ToolKind>)
 fn weapon_rating<T: ItemDesc>(item: &T, _msm: &MaterialStatManifest) -> f32 {
     const POWER_WEIGHT: f32 = 2.0;
     const SPEED_WEIGHT: f32 = 3.0;
-    const CRIT_CHANCE_WEIGHT: f32 = 1.5;
     const RANGE_WEIGHT: f32 = 0.8;
     const EFFECT_WEIGHT: f32 = 1.5;
     const EQUIP_TIME_WEIGHT: f32 = 0.0;
@@ -1237,7 +1486,6 @@ fn weapon_rating<T: ItemDesc>(item: &T, _msm: &MaterialStatManifest) -> f32 {
 
         let power_rating = stats.power;
         let speed_rating = stats.speed - 1.0;
-        let crit_chance_rating = (stats.crit_chance - 0.1) * 10.0;
         let range_rating = stats.range - 1.0;
         let effect_rating = stats.effect_power - 1.0;
         let equip_time_rating = 0.5 - stats.equip_time_secs;
@@ -1246,7 +1494,6 @@ fn weapon_rating<T: ItemDesc>(item: &T, _msm: &MaterialStatManifest) -> f32 {
 
         power_rating * POWER_WEIGHT
             + speed_rating * SPEED_WEIGHT
-            + crit_chance_rating * CRIT_CHANCE_WEIGHT
             + range_rating * RANGE_WEIGHT
             + effect_rating * EFFECT_WEIGHT
             + equip_time_rating * EQUIP_TIME_WEIGHT
@@ -1303,7 +1550,7 @@ pub fn combat_rating(
     const ENERGY_WEIGHT: f32 = 0.5;
     const SKILLS_WEIGHT: f32 = 1.0;
     const POISE_WEIGHT: f32 = 0.5;
-    const CRIT_WEIGHT: f32 = 0.5;
+    const PRECISION_WEIGHT: f32 = 0.5;
     // Normalized with a standard max health of 100
     let health_rating = health.base_max()
         / 100.0
@@ -1320,8 +1567,8 @@ pub fn combat_rating(
         / (1.0 - Poise::compute_poise_damage_reduction(Some(inventory), msm, None, None))
             .max(0.00001);
 
-    // Normalized with a standard crit multiplier of 1.2
-    let crit_rating = compute_crit_mult(Some(inventory), msm) / 1.2;
+    // Normalized with a standard precision multiplier of 1.2
+    let precision_rating = compute_precision_mult(Some(inventory), msm) / 1.2;
 
     // Assumes a standard person has earned 20 skill points in the general skill
     // tree and 10 skill points for the weapon skill tree
@@ -1334,13 +1581,13 @@ pub fn combat_rating(
     let combined_rating = (health_rating * HEALTH_WEIGHT
         + energy_rating * ENERGY_WEIGHT
         + poise_rating * POISE_WEIGHT
-        + crit_rating * CRIT_WEIGHT
+        + precision_rating * PRECISION_WEIGHT
         + skills_rating * SKILLS_WEIGHT
         + weapon_rating * WEAPON_WEIGHT)
         / (HEALTH_WEIGHT
             + ENERGY_WEIGHT
             + POISE_WEIGHT
-            + CRIT_WEIGHT
+            + PRECISION_WEIGHT
             + SKILLS_WEIGHT
             + WEAPON_WEIGHT);
 
@@ -1349,22 +1596,25 @@ pub fn combat_rating(
     combined_rating * body.combat_multiplier()
 }
 
-pub fn compute_crit_mult(inventory: Option<&Inventory>, msm: &MaterialStatManifest) -> f32 {
-    // Starts with a value of 1.25 when summing the stats from each armor piece, and
-    // defaults to a value of 1.25 if no inventory is equipped
-    inventory.map_or(1.25, |inv| {
-        inv.equipped_items()
-            .filter_map(|item| {
-                if let ItemKind::Armor(armor) = &*item.kind() {
-                    armor
-                        .stats(msm, item.stats_durability_multiplier())
-                        .crit_power
-                } else {
-                    None
-                }
-            })
-            .fold(1.25, |a, b| a + b)
-    })
+pub fn compute_precision_mult(inventory: Option<&Inventory>, msm: &MaterialStatManifest) -> f32 {
+    // Starts with a value of 0.1 when summing the stats from each armor piece, and
+    // defaults to a value of 0.1 if no inventory is equipped. Precision multiplier
+    // cannot go below 1
+    1.0 + inventory
+        .map_or(0.1, |inv| {
+            inv.equipped_items()
+                .filter_map(|item| {
+                    if let ItemKind::Armor(armor) = &*item.kind() {
+                        armor
+                            .stats(msm, item.stats_durability_multiplier())
+                            .precision_power
+                    } else {
+                        None
+                    }
+                })
+                .fold(0.1, |a, b| a + b)
+        })
+        .max(0.0)
 }
 
 /// Computes the energy reward modifier from worn armor
@@ -1465,4 +1715,129 @@ pub fn compute_protection(
             })
             .sum::<Option<f32>>()
     })
+}
+
+/// Computes the total resilience provided from armor. Is used to determine the
+/// reduction applied to poise damage received by an entity. None indicates that
+/// the armor equipped makes the entity invulnerable to poise damage.
+pub fn compute_poise_resilience(
+    inventory: Option<&Inventory>,
+    msm: &MaterialStatManifest,
+) -> Option<f32> {
+    inventory.map_or(Some(0.0), |inv| {
+        inv.equipped_items()
+            .filter_map(|item| {
+                if let ItemKind::Armor(armor) = &*item.kind() {
+                    armor
+                        .stats(msm, item.stats_durability_multiplier())
+                        .poise_resilience
+                } else {
+                    None
+                }
+            })
+            .map(|protection| match protection {
+                Protection::Normal(protection) => Some(protection),
+                Protection::Invincible => None,
+            })
+            .sum::<Option<f32>>()
+    })
+}
+
+/// Used to compute the precision multiplier achieved by flanking a target
+pub fn precision_mult_from_flank(
+    attack_dir: Vec3<f32>,
+    target_ori: Option<&Ori>,
+    precision_flank_multipliers: FlankMults,
+    precision_flank_invert: bool,
+) -> Option<f32> {
+    let angle = target_ori.map(|t_ori| {
+        t_ori.look_dir().angle_between(if precision_flank_invert {
+            -attack_dir
+        } else {
+            attack_dir
+        })
+    });
+    match angle {
+        Some(angle) if angle < FULL_FLANK_ANGLE => Some(
+            MAX_BACK_FLANK_PRECISION
+                * if precision_flank_invert {
+                    precision_flank_multipliers.front
+                } else {
+                    precision_flank_multipliers.back
+                },
+        ),
+        Some(angle) if angle < PARTIAL_FLANK_ANGLE => {
+            Some(MAX_SIDE_FLANK_PRECISION * precision_flank_multipliers.side)
+        },
+        Some(_) | None => None,
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FlankMults {
+    pub back: f32,
+    pub front: f32,
+    pub side: f32,
+}
+
+impl Default for FlankMults {
+    fn default() -> Self {
+        FlankMults {
+            back: 1.0,
+            front: 1.0,
+            side: 1.0,
+        }
+    }
+}
+
+pub fn block_strength(inventory: &Inventory, char_state: &CharacterState) -> f32 {
+    match char_state {
+        CharacterState::BasicBlock(data) => data.static_data.block_strength,
+        CharacterState::RiposteMelee(data) => data.static_data.block_strength,
+        _ => char_state
+            .ability_info()
+            .map(|ability| (ability.ability_meta.capabilities, ability.hand))
+            .map(|(capabilities, hand)| {
+                (
+                    if capabilities.contains(Capability::PARRIES)
+                        || capabilities.contains(Capability::PARRIES_MELEE)
+                        || capabilities.contains(Capability::BLOCKS)
+                    {
+                        FALLBACK_BLOCK_STRENGTH
+                    } else {
+                        0.0
+                    },
+                    hand.and_then(|hand| inventory.equipped(hand.to_equip_slot()))
+                        .map_or(1.0, |item| match &*item.kind() {
+                            ItemKind::Tool(tool) => {
+                                tool.stats(item.stats_durability_multiplier()).power
+                            },
+                            _ => 1.0,
+                        }),
+                )
+            })
+            .map_or(0.0, |(capability_strength, tool_block_strength)| {
+                capability_strength * tool_block_strength
+            }),
+    }
+}
+
+pub fn get_equip_slot_by_block_priority(inventory: Option<&Inventory>) -> EquipSlot {
+    inventory
+        .map(get_weapon_kinds)
+        .map_or(
+            EquipSlot::ActiveMainhand,
+            |weapon_kinds| match weapon_kinds {
+                (Some(mainhand), Some(offhand)) => {
+                    if mainhand.block_priority() >= offhand.block_priority() {
+                        EquipSlot::ActiveMainhand
+                    } else {
+                        EquipSlot::ActiveOffhand
+                    }
+                },
+                (Some(_), None) => EquipSlot::ActiveMainhand,
+                (None, Some(_)) => EquipSlot::ActiveOffhand,
+                (None, None) => EquipSlot::ActiveMainhand,
+            },
+        )
 }

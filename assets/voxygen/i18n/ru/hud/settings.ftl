@@ -48,7 +48,7 @@ hud-settings-invert_scroll_zoom =
 hud-settings-invert_mouse_y_axis =
     Инвентировать ось
     Y мыши
-hud-settings-invert_controller_y_axis = 
+hud-settings-invert_controller_y_axis =
     Инвентировать ось
     X контроллера
 hud-settings-enable_mouse_smoothing = Сглаживание камеры
@@ -167,3 +167,14 @@ hud-settings-group_only = Только группа
 hud-settings-reset_chat = По умолчанию
 hud-settings-third_party_integrations = Сторонние интеграции
 hud-settings-enable_discord_integration = Включить интеграцию Discord
+hud-settings-autopress_behavior-toggle = Переключить
+hud-settings-autopress_behavior-auto = Авто
+hud-settings-slots = Слоты
+hud-settings-subtitles = Субтитры
+hud-settings-combat_music = Боевая музыка
+hud-settings-prefix_switch_point = Ограничение разряда для переключения префикса СИ
+hud-settings-zoom_lock_behavior = Функция блокировки удаленности камеры
+hud-settings-zoom_lock = Блокировка удаленности камеры
+hud-settings-use_prefixes = Использование префиксов СИ для обозначения количества
+hud-settings-walking_speed_behavior = Настройка скорости ходьбы
+hud-settings-walking_speed = Скорость ходьбы

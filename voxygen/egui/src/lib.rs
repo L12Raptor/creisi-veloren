@@ -1,4 +1,7 @@
 #![feature(stmt_expr_attributes)]
+#![allow(
+    clippy::needless_pass_by_ref_mut //until we find a better way for specs
+)]
 
 #[cfg(all(feature = "be-dyn-lib", feature = "use-dyn-lib"))]
 compile_error!("Can't use both \"be-dyn-lib\" and \"use-dyn-lib\" features at once");
@@ -8,7 +11,7 @@ mod character_states;
 mod experimental_shaders;
 mod widgets;
 
-use client::{Client, Join, World, WorldExt};
+use client::{Client, Join, LendJoin, World, WorldExt};
 use common::{
     cmd::ServerChatCommand,
     comp,
@@ -16,17 +19,17 @@ use common::{
     resources::Time,
 };
 use core::mem;
-use egui::{
-    plot::{Plot, Value},
-    widgets::plot::Curve,
-    CollapsingHeader, Color32, Grid, Pos2, ScrollArea, Slider, Ui, Window,
-};
+use egui::{CollapsingHeader, Color32, Grid, Pos2, ScrollArea, Slider, Ui, Window};
+use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::{
     admin::draw_admin_commands_window, character_states::draw_char_state_group,
     experimental_shaders::draw_experimental_shaders_window, widgets::two_col_row,
 };
-use common::comp::{aura::AuraKind::Buff, Body, Fluid};
+use common::comp::{
+    aura::AuraKind::{Buff, ForcePvP, FriendlyFire},
+    Body, Fluid,
+};
 use egui_winit_platform::Platform;
 use std::time::Duration;
 #[cfg(feature = "use-dyn-lib")]
@@ -96,6 +99,7 @@ pub struct EguiInnerState {
     selected_entity_cylinder_height: f32,
     frame_times: Vec<f32>,
     windows: EguiWindows,
+    debug_vectors_enabled: bool,
 }
 
 #[derive(Clone, Default)]
@@ -118,6 +122,7 @@ impl Default for EguiInnerState {
             selected_entity_cylinder_height: 10.0,
             frame_times: Vec::new(),
             windows: EguiWindows::default(),
+            debug_vectors_enabled: false,
         }
     }
 }
@@ -142,6 +147,7 @@ pub enum EguiAction {
     },
     DebugShape(EguiDebugShapeAction),
     SetExperimentalShader(String, bool),
+    SetShowDebugVector(bool),
 }
 
 #[derive(Default)]
@@ -225,6 +231,7 @@ pub fn maintain_egui_inner(
     let mut max_entity_distance = egui_state.max_entity_distance;
     let mut selected_entity_cylinder_height = egui_state.selected_entity_cylinder_height;
     let mut windows = egui_state.windows.clone();
+    let mut debug_vectors_enabled_mut = egui_state.debug_vectors_enabled;
 
     // If a debug cylinder was added in the last frame, store it against the
     // selected entity
@@ -261,6 +268,7 @@ pub fn maintain_egui_inner(
                     ui.checkbox(&mut windows.ecs_entities, "ECS Entities");
                     ui.checkbox(&mut windows.frame_time, "Frame Time");
                     ui.checkbox(&mut windows.experimental_shaders, "Experimental Shaders");
+                    ui.checkbox(&mut debug_vectors_enabled_mut, "Show Debug Vectors");
                 });
             });
 
@@ -278,13 +286,13 @@ pub fn maintain_egui_inner(
 
     Window::new("🔧 Settings")
         .open(&mut windows.egui_settings)
-        .scroll(true)
+        .vscroll(true)
         .show(ctx, |ui| {
             ctx.settings_ui(ui);
         });
     Window::new("🔍 Inspection")
         .open(&mut windows.egui_inspection)
-        .scroll(true)
+        .vscroll(true)
         .show(ctx, |ui| {
             ctx.inspection_ui(ui);
         });
@@ -301,14 +309,15 @@ pub fn maintain_egui_inner(
         .default_width(200.0)
         .default_height(200.0)
         .show(ctx, |ui| {
-            let plot = Plot::new("Frame Time").curve(Curve::from_values_iter(
-                egui_state
-                    .frame_times
-                    .iter()
-                    .enumerate()
-                    .map(|(i, x)| Value::new(i as f64, *x)),
-            ));
-            ui.add(plot);
+            Plot::new("Frame Time").show(ui, |plot_ui| {
+                plot_ui.line(Line::new(PlotPoints::from_iter(
+                    egui_state
+                        .frame_times
+                        .iter()
+                        .enumerate()
+                        .map(|(i, x)| [i as f64, *x as f64]),
+                )))
+            });
         });
 
     if windows.ecs_entities {
@@ -337,8 +346,8 @@ pub fn maintain_egui_inner(
                         .text("Cylinder height"),
                 );
 
-                let scroll_area = ScrollArea::from_max_height(800.0);
-                let (_current_scroll, _max_scroll) = scroll_area.show(ui, |ui| {
+                let scroll_area = ScrollArea::vertical().max_height(800.0);
+                scroll_area.show(ui, |ui| {
                     Grid::new("entities_grid")
                         .spacing([40.0, 4.0])
                         .max_col_width(300.0)
@@ -509,6 +518,12 @@ pub fn maintain_egui_inner(
             }
         }
     };
+    if debug_vectors_enabled_mut != egui_state.debug_vectors_enabled {
+        egui_actions
+            .actions
+            .push(EguiAction::SetShowDebugVector(debug_vectors_enabled_mut));
+        egui_state.debug_vectors_enabled = debug_vectors_enabled_mut;
+    }
 
     egui_state.max_entity_distance = max_entity_distance;
     egui_state.selected_entity_cylinder_height = selected_entity_cylinder_height;
@@ -605,7 +620,7 @@ fn selected_entity_window(
                             .striped(true)
                             .show(ui, |ui| {
                                 two_col_row(ui, "Name", stats.name.to_string());
-                                two_col_row(ui, "Damage Reduction", format!("{:.1}", stats.damage_reduction));
+                                two_col_row(ui, "Damage Reduction", format!("{:.1}", stats.damage_reduction.modifier()));
                                 two_col_row(ui, "Multiplicative Max Health Modifier", format!("{:.1}", stats.max_health_modifiers.mult_mod));
                                 two_col_row(ui, "Move Speed Modifier", format!("{:.1}", stats.move_speed_modifier));
                             });
@@ -699,7 +714,9 @@ fn selected_entity_window(
                                 ui.end_row();
                                 auras.auras.iter().for_each(|(_, v)| {
                                     ui.label(match v.aura_kind {
-                                        Buff { kind, .. } =>  format!("Buff - {:?}", kind)
+                                        Buff { kind, .. } =>  format!("Buff - {:?}", kind),
+                                        FriendlyFire =>  "Friendly Fire".to_string(),
+                                        ForcePvP =>  "ForcedPvP".to_string(),
                                     });
                                     ui.label(format!("{:1}", v.radius));
                                     ui.label(v.end_time.map_or("-".to_owned(), |x| format!("{:1}s", x.0 - time.0)));
@@ -753,8 +770,7 @@ fn selected_entity_window(
                                 two_col_row(ui, "On Wall", physics_state.on_wall.map_or("-".to_owned(), |x| format!("{:.1},{:.1},{:.1}", x.x, x.y, x.z )));
                                 two_col_row(ui, "Touching Entities", physics_state.touch_entities.len().to_string());
                                 two_col_row(ui, "In Fluid", match physics_state.in_fluid {
-
-                                    Some(Fluid::Air { elevation, .. }) => format!("Air (Elevation: {:.1})", elevation),
+                                    Some(Fluid::Air { elevation, vel, .. }) => format!("Air (Elevation: {:.1}), vel: ({:.1},{:.1},{:.1}) ({:.1} u/s)", elevation, vel.0.x, vel.0.y, vel.0.z, vel.0.magnitude()),
                                     Some(Fluid::Liquid { depth, kind, .. }) => format!("{:?} (Depth: {:.1})", kind, depth),
                                     _ => "None".to_owned() });
                                 });
@@ -785,6 +801,7 @@ fn body_species(body: &Body) -> String {
         Body::QuadrupedLow(body) => format!("{:?}", body.species),
         Body::Arthropod(body) => format!("{:?}", body.species),
         Body::Ship(body) => format!("{:?}", body),
+        Body::Crustacean(body) => format!("{:?}", body.species),
     }
 }
 

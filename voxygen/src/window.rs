@@ -244,7 +244,7 @@ impl KeyMouse {
             Key(PrevTrack) => "Prev Track",
             Key(NextTrack) => "Next Track",
             Key(LAlt) => {
-                if cfg!(macos) {
+                if cfg!(target_os = "macos") {
                     "Left Option ⌥"
                 } else {
                     // Assume Windows, Linux, BSD, etc.
@@ -252,7 +252,7 @@ impl KeyMouse {
                 }
             },
             Key(RAlt) => {
-                if cfg!(macos) {
+                if cfg!(target_os = "macos") {
                     "Right Option ⌥"
                 } else {
                     // Assume Windows, Linux, BSD, etc.
@@ -260,7 +260,7 @@ impl KeyMouse {
                 }
             },
             Key(LControl) => {
-                if cfg!(macos) {
+                if cfg!(target_os = "macos") {
                     "Left Cmd ⌘"
                 } else {
                     // Assume Windows, Linux, BSD, etc.
@@ -268,7 +268,7 @@ impl KeyMouse {
                 }
             },
             Key(RControl) => {
-                if cfg!(macos) {
+                if cfg!(target_os = "macos") {
                     "Right Cmd ⌘"
                 } else {
                     // Assume Windows, Linux, BSD, etc.
@@ -281,9 +281,9 @@ impl KeyMouse {
             // qualifier. The exception to this is Mac OS which doesn't usually have
             // this key at all, so we keep the qualifier to minimise ambiguity.
             Key(LWin) => {
-                if cfg!(windows) {
+                if cfg!(target_family = "windows") {
                     "Win ⊞"
-                } else if cfg!(macos) {
+                } else if cfg!(target_os = "macos") {
                     "Left Cmd ⌘ (Super)" // Extra qualifier because both Ctrl and Win map to Cmd on Mac
                 } else {
                     // Assume Linux, BSD, etc.
@@ -292,9 +292,9 @@ impl KeyMouse {
             },
             // Most keyboards don't have this key, so throw in all the qualifiers
             Key(RWin) => {
-                if cfg!(windows) {
+                if cfg!(target_family = "windows") {
                     "Right Win ⊞"
-                } else if cfg!(macos) {
+                } else if cfg!(target_os = "macos") {
                     "Right Cmd ⌘ (Super)" // Extra qualifier because both Ctrl and Win map to Cmd on Mac
                 } else {
                     // Assume Linux, BSD, etc.
@@ -427,7 +427,7 @@ impl Window {
 
         // Avoid cpal / winit OleInitialize conflict
         // See: https://github.com/rust-windowing/winit/pull/1524
-        #[cfg(target_os = "windows")]
+        #[cfg(target_family = "windows")]
         let win_builder = winit::platform::windows::WindowBuilderExtWindows::with_drag_and_drop(
             win_builder,
             false,
@@ -538,6 +538,7 @@ impl Window {
         }
     }
 
+    #[allow(clippy::get_first)]
     pub fn fetch_events(&mut self) -> Vec<Event> {
         span!(_guard, "fetch_events", "Window::fetch_events");
         // Refresh ui size (used when changing playstates)
@@ -675,6 +676,7 @@ impl Window {
                             .game_analog_button_map
                             .get(&AnalogButton::from((button, code)))
                         {
+                            #[allow(clippy::never_loop)]
                             for action in actions {
                                 match *action {}
                             }
@@ -684,6 +686,7 @@ impl Window {
                             .menu_analog_button_map
                             .get(&AnalogButton::from((button, code)))
                         {
+                            #[allow(clippy::never_loop)]
                             for action in actions {
                                 match *action {}
                             }
@@ -986,7 +989,7 @@ impl Window {
             },
             WindowEvent::CursorMoved { position, .. } => {
                 if self.cursor_grabbed {
-                    self.center_cursor();
+                    self.reset_cursor_position();
                 } else {
                     self.cursor_position = position;
                 }
@@ -1051,22 +1054,15 @@ impl Window {
         }
     }
 
-    /// Moves mouse cursor to center of screen
-    /// based on the window dimensions
-    pub fn center_cursor(&self) {
-        let dimensions: Vec2<f64> = self.logical_size();
-
-        if let Err(err) = self
-            .window
-            .set_cursor_position(winit::dpi::PhysicalPosition::new(
-                dimensions[0] / (2_f64),
-                dimensions[1] / (2_f64),
-            ))
-        {
+    /// Reset the cursor position to the last position
+    /// This is used when handling the CursorMoved event to maintain the cursor
+    /// position when it is grabbed
+    fn reset_cursor_position(&self) {
+        if let Err(err) = self.window.set_cursor_position(self.cursor_position) {
             // Log this error once rather than every frame
             static SPAM_GUARD: std::sync::Once = std::sync::Once::new();
             SPAM_GUARD.call_once(|| {
-                error!("Error centering cursor position: {:?}", err);
+                error!("Error resetting cursor position: {:?}", err);
             })
         }
     }
@@ -1345,7 +1341,7 @@ impl Window {
             // Check if folder exists and create it if it does not
             if !path.exists() {
                 if let Err(e) = std::fs::create_dir_all(&path) {
-                    warn!(?e, "Couldn't create folder for screenshot");
+                    warn!(?e, ?path, "Couldn't create folder for screenshot");
                     let _result =
                         sender.send(String::from("Couldn't create folder for screenshot"));
                 }
@@ -1358,8 +1354,8 @@ impl Window {
                     .unwrap_or(0)
             ));
             // Try to save the image
-            if let Err(e) = image.into_rgba8().save(&path) {
-                warn!(?e, "Couldn't save screenshot");
+            if let Err(e) = image.save(&path) {
+                warn!(?e, ?path, "Couldn't save screenshot");
                 let _result = sender.send(String::from("Couldn't save screenshot"));
             } else {
                 let _result =

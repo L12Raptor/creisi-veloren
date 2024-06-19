@@ -16,21 +16,30 @@ mod settings;
 mod shutdown_coordinator;
 mod tui_runner;
 mod tuilog;
+mod web;
 use crate::{
-    cli::{Admin, ArgvApp, ArgvCommand, Message, SharedCommand, Shutdown},
+    cli::{
+        Admin, ArgvApp, ArgvCommand, BenchParams, Message, MessageReturn, SharedCommand, Shutdown,
+    },
+    settings::Settings,
     shutdown_coordinator::ShutdownCoordinator,
     tui_runner::Tui,
     tuilog::TuiLog,
 };
-use common::{clock::Clock, consts::MIN_RECOMMENDED_TOKIO_THREADS};
+use common::{
+    clock::Clock,
+    comp::{ChatType, Player},
+    consts::MIN_RECOMMENDED_TOKIO_THREADS,
+};
 use common_base::span;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use server::{persistence::DatabaseSettings, settings::Protocol, Event, Input, Server};
 use std::{
     io,
-    sync::{atomic::AtomicBool, mpsc, Arc},
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
+use tokio::sync::Notify;
 use tracing::{info, trace};
 
 lazy_static::lazy_static! {
@@ -53,10 +62,7 @@ fn main() -> io::Result<()> {
     // noninteractive implies basic
     let basic = basic || noninteractive;
 
-    let sigusr1_signal = Arc::new(AtomicBool::new(false));
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let _ = signal_hook::flag::register(signal_hook::consts::SIGUSR1, Arc::clone(&sigusr1_signal));
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
 
     let (_guards, _guards2) = if basic {
         (Vec::new(), common_frontend::init_stdout(None))
@@ -66,6 +72,21 @@ fn main() -> io::Result<()> {
 
     // Load settings
     let settings = settings::Settings::load();
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        for signal in &settings.shutdown_signals {
+            let _ = signal_hook::flag::register(signal.to_signal(), Arc::clone(&shutdown_signal));
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    if !settings.shutdown_signals.is_empty() {
+        tracing::warn!(
+            "Server configuration contains shutdown signals, but your platform does not support \
+             them"
+        );
+    }
 
     // Determine folder to save server data in
     let server_data_dir = {
@@ -185,16 +206,45 @@ fn main() -> io::Result<()> {
     info!("Starting server...");
 
     let protocols_and_addresses = server_settings.gameserver_protocols.clone();
-    let metrics_port = &server_settings.metrics_address.port();
+    let web_port = &settings.web_address.port();
     // Create server
+    #[cfg_attr(not(feature = "worldgen"), allow(unused_mut))]
     let mut server = Server::new(
         server_settings,
         editable_settings,
         database_settings,
         &server_data_dir,
-        runtime,
+        &|_| {},
+        Arc::clone(&runtime),
     )
     .expect("Failed to create server instance!");
+
+    let registry = Arc::clone(server.metrics_registry());
+    let chat = server.chat_cache().clone();
+    let metrics_shutdown = Arc::new(Notify::new());
+    let metrics_shutdown_clone = Arc::clone(&metrics_shutdown);
+    let web_chat_secret = settings.web_chat_secret.clone();
+    let ui_api_secret = settings.ui_api_secret.clone().unwrap_or_else(|| {
+        // when no secret is provided we generate one that we distribute via the /ui
+        // endpoint
+        use rand::distributions::{Alphanumeric, DistString};
+        Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
+    });
+
+    let (web_ui_request_s, web_ui_request_r) = tokio::sync::mpsc::channel(1000);
+
+    runtime.spawn(async move {
+        web::run(
+            registry,
+            chat,
+            web_chat_secret,
+            ui_api_secret,
+            web_ui_request_s,
+            settings.web_address,
+            metrics_shutdown_clone.notified(),
+        )
+        .await
+    });
 
     // Collect addresses that the server is listening to log.
     let gameserver_addresses = protocols_and_addresses
@@ -209,24 +259,48 @@ fn main() -> io::Result<()> {
         });
 
     info!(
-        ?metrics_port,
+        ?web_port,
         ?gameserver_addresses,
         "Server is ready to accept connections."
     );
 
-    let mut shutdown_coordinator = ShutdownCoordinator::new(Arc::clone(&sigusr1_signal));
-
-    // Set up an fps clock
-    let mut clock = Clock::new(Duration::from_secs_f64(1.0 / TPS as f64));
-
+    #[cfg(feature = "worldgen")]
     if let Some(bench) = bench {
-        #[cfg(feature = "worldgen")]
         server.create_centered_persister(bench.view_distance);
     }
+
+    server_loop(
+        server,
+        bench,
+        settings,
+        tui,
+        web_ui_request_r,
+        shutdown_signal,
+    )?;
+
+    metrics_shutdown.notify_one();
+
+    Ok(())
+}
+
+fn server_loop(
+    mut server: Server,
+    bench: Option<BenchParams>,
+    settings: Settings,
+    tui: Option<Tui>,
+    mut web_ui_request_r: tokio::sync::mpsc::Receiver<(
+        Message,
+        tokio::sync::oneshot::Sender<MessageReturn>,
+    )>,
+    shutdown_signal: Arc<AtomicBool>,
+) -> io::Result<()> {
+    // Set up an fps clock
+    let mut clock = Clock::new(Duration::from_secs_f64(1.0 / TPS as f64));
+    let mut shutdown_coordinator = ShutdownCoordinator::new(Arc::clone(&shutdown_signal));
     let mut bench_exit_time = None;
 
     let mut tick_no = 0u64;
-    loop {
+    'outer: loop {
         span!(guard, "work");
         if let Some(bench) = bench {
             if let Some(t) = bench_exit_time {
@@ -264,49 +338,96 @@ fn main() -> io::Result<()> {
             trace!(?tick_no, "keepalive")
         }
 
-        if let Some(tui) = tui.as_ref() {
-            match tui.msg_r.try_recv() {
-                Ok(msg) => match msg {
-                    Message::Shutdown {
-                        command: Shutdown::Cancel,
-                    } => shutdown_coordinator.abort_shutdown(&mut server),
-                    Message::Shutdown {
-                        command: Shutdown::Graceful { seconds, reason },
-                    } => {
-                        shutdown_coordinator.initiate_shutdown(
-                            &mut server,
-                            Duration::from_secs(seconds),
-                            reason,
-                        );
-                    },
-                    Message::Shutdown {
-                        command: Shutdown::Immediate,
-                    } => {
-                        info!("Closing the server");
-                        break;
-                    },
-                    Message::Shared(SharedCommand::Admin {
-                        command: Admin::Add { username, role },
-                    }) => {
-                        server.add_admin(&username, role);
-                    },
-                    Message::Shared(SharedCommand::Admin {
-                        command: Admin::Remove { username },
-                    }) => {
-                        server.remove_admin(&username);
-                    },
-                    Message::LoadArea { view_distance } => {
-                        #[cfg(feature = "worldgen")]
-                        server.create_centered_persister(view_distance);
-                    },
-                    Message::SqlLogMode { mode } => {
-                        server.set_sql_log_mode(mode);
-                    },
-                    Message::DisconnectAllClients => {
-                        server.disconnect_all_clients();
-                    },
+        let mut handle_msg = |msg, response: tokio::sync::oneshot::Sender<MessageReturn>| {
+            use specs::{Join, WorldExt};
+            match msg {
+                Message::Shutdown {
+                    command: Shutdown::Cancel,
+                } => shutdown_coordinator.abort_shutdown(&mut server),
+                Message::Shutdown {
+                    command: Shutdown::Graceful { seconds, reason },
+                } => {
+                    shutdown_coordinator.initiate_shutdown(
+                        &mut server,
+                        Duration::from_secs(seconds),
+                        reason,
+                    );
                 },
-                Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => {},
+                Message::Shutdown {
+                    command: Shutdown::Immediate,
+                } => {
+                    return true;
+                },
+                Message::Shared(SharedCommand::Admin {
+                    command: Admin::Add { username, role },
+                }) => {
+                    server.add_admin(&username, role);
+                },
+                Message::Shared(SharedCommand::Admin {
+                    command: Admin::Remove { username },
+                }) => {
+                    server.remove_admin(&username);
+                },
+                #[cfg(feature = "worldgen")]
+                Message::LoadArea { view_distance } => {
+                    server.create_centered_persister(view_distance);
+                },
+                Message::SqlLogMode { mode } => {
+                    server.set_sql_log_mode(mode);
+                },
+                Message::DisconnectAllClients => {
+                    server.disconnect_all_clients();
+                },
+                Message::ListPlayers => {
+                    let players: Vec<String> = server
+                        .state()
+                        .ecs()
+                        .read_storage::<Player>()
+                        .join()
+                        .map(|p| p.alias.clone())
+                        .collect();
+                    let _ = response.send(MessageReturn::Players(players));
+                },
+                Message::ListLogs => {
+                    let log = LOG.inner.lock().unwrap();
+                    let lines: Vec<_> = log
+                        .lines
+                        .iter()
+                        .rev()
+                        .take(30)
+                        .map(|l| l.to_string())
+                        .collect();
+                    let _ = response.send(MessageReturn::Logs(lines));
+                },
+                Message::SendGlobalMsg { msg } => {
+                    use server::state_ext::StateExt;
+                    let msg = ChatType::Meta.into_plain_msg(msg);
+                    server.state().send_chat(msg);
+                },
+            }
+            false
+        };
+
+        if let Some(tui) = tui.as_ref() {
+            while let Ok(msg) = tui.msg_r.try_recv() {
+                let (sender, mut recv) = tokio::sync::oneshot::channel();
+                if handle_msg(msg, sender) {
+                    info!("Closing the server");
+                    break 'outer;
+                }
+                if let Ok(msg_answ) = recv.try_recv() {
+                    match msg_answ {
+                        MessageReturn::Players(players) => info!("Players: {:?}", players),
+                        MessageReturn::Logs(_) => info!("skipp sending logs to tui"),
+                    };
+                }
+            }
+        }
+
+        while let Ok((msg, sender)) = web_ui_request_r.try_recv() {
+            if handle_msg(msg, sender) {
+                info!("Closing the server");
+                break 'outer;
             }
         }
 
@@ -316,6 +437,5 @@ fn main() -> io::Result<()> {
         #[cfg(feature = "tracy")]
         common_base::tracy_client::frame_mark();
     }
-
     Ok(())
 }

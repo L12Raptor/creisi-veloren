@@ -11,14 +11,12 @@ use serde::{Deserialize, Serialize};
 // SkillTree Modifiers below.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum Skill {
-    General(GeneralSkill),
     Sword(SwordSkill),
     Axe(AxeSkill),
     Hammer(HammerSkill),
     Bow(BowSkill),
     Staff(StaffSkill),
     Sceptre(SceptreSkill),
-    Roll(RollSkill),
     Climb(ClimbSkill),
     Swim(SwimSkill),
     Pick(MiningSkill),
@@ -82,23 +80,25 @@ pub enum AxeSkill {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum HammerSkill {
-    // Single strike upgrades
-    SsKnockback,
-    SsDamage,
-    SsSpeed,
-    SsRegen,
-    // Charged melee upgrades
-    CDamage,
-    CKnockback,
-    CDrain,
-    CSpeed,
-    // Leap upgrades
-    UnlockLeap,
-    LDamage,
-    LCost,
-    LDistance,
-    LKnockback,
-    LRange,
+    ScornfulSwipe,
+    Tremor,
+    VigorousBash,
+    Retaliate,
+    SpineCracker,
+    Breach,
+    IronTempest,
+    Upheaval,
+    Thunderclap,
+    SeismicShock,
+    HeavyWhorl,
+    Intercept,
+    PileDriver,
+    LungPummel,
+    HelmCrusher,
+    Rampart,
+    Tenacity,
+    Earthshaker,
+    Judgement,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
@@ -163,19 +163,6 @@ pub enum SceptreSkill {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
-pub enum GeneralSkill {
-    HealthIncrease,
-    EnergyIncrease,
-}
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
-pub enum RollSkill {
-    Cost,
-    Strength,
-    Duration,
-}
-
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum ClimbSkill {
     Cost,
     Speed,
@@ -226,7 +213,6 @@ impl Skill {
 pub const SKILL_MODIFIERS: SkillTreeModifiers = SkillTreeModifiers::get();
 
 pub struct SkillTreeModifiers {
-    pub hammer_tree: HammerTreeModifiers,
     pub bow_tree: BowTreeModifiers,
     pub staff_tree: StaffTreeModifiers,
     pub sceptre_tree: SceptreTreeModifiers,
@@ -237,58 +223,11 @@ pub struct SkillTreeModifiers {
 impl SkillTreeModifiers {
     const fn get() -> Self {
         Self {
-            hammer_tree: HammerTreeModifiers::get(),
             bow_tree: BowTreeModifiers::get(),
             staff_tree: StaffTreeModifiers::get(),
             sceptre_tree: SceptreTreeModifiers::get(),
             mining_tree: MiningTreeModifiers::get(),
             general_tree: GeneralTreeModifiers::get(),
-        }
-    }
-}
-
-pub struct HammerTreeModifiers {
-    pub single_strike: HammerStrikeModifiers,
-    pub charged: HammerChargedModifers,
-    pub leap: HammerLeapModifiers,
-}
-
-pub struct HammerStrikeModifiers {
-    pub knockback: f32,
-}
-
-pub struct HammerChargedModifers {
-    pub scaled_damage: f32,
-    pub scaled_knockback: f32,
-    pub energy_drain: f32,
-    pub charge_rate: f32,
-}
-
-pub struct HammerLeapModifiers {
-    pub base_damage: f32,
-    pub knockback: f32,
-    pub energy_cost: f32,
-    pub leap_strength: f32,
-    pub range: f32,
-}
-
-impl HammerTreeModifiers {
-    const fn get() -> Self {
-        Self {
-            single_strike: HammerStrikeModifiers { knockback: 1.25 },
-            charged: HammerChargedModifers {
-                scaled_damage: 1.1,
-                scaled_knockback: 1.15,
-                energy_drain: 0.95,
-                charge_rate: 1.1,
-            },
-            leap: HammerLeapModifiers {
-                base_damage: 1.15,
-                knockback: 1.15,
-                energy_cost: 0.85,
-                leap_strength: 1.05,
-                range: 0.25,
-            },
         }
     }
 }
@@ -473,15 +412,8 @@ impl MiningTreeModifiers {
 }
 
 pub struct GeneralTreeModifiers {
-    pub roll: RollTreeModifiers,
     pub swim: SwimTreeModifiers,
     pub climb: ClimbTreeModifiers,
-}
-
-pub struct RollTreeModifiers {
-    pub energy_cost: f32,
-    pub strength: f32,
-    pub duration: f32,
 }
 
 pub struct SwimTreeModifiers {
@@ -496,11 +428,6 @@ pub struct ClimbTreeModifiers {
 impl GeneralTreeModifiers {
     const fn get() -> Self {
         Self {
-            roll: RollTreeModifiers {
-                energy_cost: 0.95,
-                strength: 1.05,
-                duration: 1.05,
-            },
             swim: SwimTreeModifiers { speed: 1.25 },
             climb: ClimbTreeModifiers {
                 energy_cost: 0.8,

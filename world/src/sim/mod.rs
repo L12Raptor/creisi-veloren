@@ -560,7 +560,25 @@ pub type ModernMap = WorldMap_0_7_0;
 /// TODO: Consider using some naming convention to automatically change this
 /// with changing versions, or at least keep it in a constant somewhere that's
 /// easy to change.
-pub const DEFAULT_WORLD_MAP: &str = "world.map.veloren_0_9_0_0";
+// Generation parameters:
+//
+// gen_opts: (
+//     erosion_quality: 1.0,
+//     map_kind: Circle,
+//     scale: 2.098048498703866,
+//     x_lg: 10,
+//     y_lg: 10,
+// )
+// seed: 469876673
+//
+// The biome seed can found below
+pub const DEFAULT_WORLD_MAP: &str = "world.map.veloren_0_16_0_0";
+/// This is *not* the seed used to generate the default map, this seed was used
+/// to generate a better set of biomes on it as the original ones were
+/// unsuitable.
+///
+/// See DEFAULT_WORLD_MAP to get the original worldgen parameters.
+pub const DEFAULT_WORLD_SEED: u32 = 1948292704;
 
 impl WorldFileLegacy {
     #[inline]
@@ -645,6 +663,12 @@ impl WorldFile {
     }
 }
 
+#[derive(Debug)]
+pub enum WorldSimStage {
+    // TODO: Add more stages
+    Erosion(f64),
+}
+
 pub struct WorldSim {
     pub seed: u32,
     /// Base 2 logarithm of the map size.
@@ -663,7 +687,12 @@ pub struct WorldSim {
 }
 
 impl WorldSim {
-    pub fn generate(seed: u32, opts: WorldOpts, threadpool: &rayon::ThreadPool) -> Self {
+    pub fn generate(
+        seed: u32,
+        opts: WorldOpts,
+        threadpool: &rayon::ThreadPool,
+        stage_report: &dyn Fn(WorldSimStage),
+    ) -> Self {
         prof_span!("WorldSim::generate");
         let calendar = opts.calendar; // separate lifetime of elements
         let world_file = opts.world_file;
@@ -829,8 +858,7 @@ impl WorldSim {
                                 (gen_ctx
                                     .alt_nz
                                     .get((wposf.div(10_000.0)).into_array())
-                                    .min(1.0)
-                                    .max(-1.0))
+                                    .clamp(-1.0, 1.0))
                                 .sub(0.05)
                                 .mul(0.35),
                             )
@@ -842,8 +870,7 @@ impl WorldSim {
                                 (gen_ctx
                                     .alt_nz
                                     .get((wposf.div(5_000.0 * gen_opts.scale)).into_array())
-                                    .min(1.0)
-                                    .max(-1.0))
+                                    .clamp(-1.0, 1.0))
                                 .add(
                                     0.2 - ((wposf / world_sizef) * 2.0 - 1.0)
                                         .magnitude_squared()
@@ -1250,6 +1277,9 @@ impl WorldSim {
 
         // Perform some erosion.
 
+        let report_erosion: &dyn Fn(f64) =
+            &move |progress: f64| stage_report(WorldSimStage::Erosion(progress));
+
         let (alt, basement) = if let Some(map) = parsed_world_file {
             (map.alt, map.basement)
         } else {
@@ -1278,6 +1308,7 @@ impl WorldSim {
                 k_d_scale(n_approx),
                 k_da_scale,
                 threadpool,
+                report_erosion,
             );
 
             // Quick "small scale" erosion cycle in order to lower extreme angles.
@@ -1302,6 +1333,7 @@ impl WorldSim {
                 k_d_scale(n_approx),
                 k_da_scale,
                 threadpool,
+                &report_erosion,
             )
         };
 
@@ -1351,6 +1383,7 @@ impl WorldSim {
                 k_d_scale(n_approx),
                 k_da_scale,
                 threadpool,
+                &report_erosion,
             )
         };
 
@@ -1617,6 +1650,26 @@ impl WorldSim {
 
     pub fn generate_oob_chunk(&self) -> TerrainChunk {
         TerrainChunk::water(CONFIG.sea_level as i32)
+    }
+
+    pub fn approx_chunk_terrain_normal(&self, chunk_pos: Vec2<i32>) -> Option<Vec3<f32>> {
+        let curr_chunk = self.get(chunk_pos)?;
+        let downhill_chunk_pos = curr_chunk.downhill?.wpos_to_cpos();
+        let downhill_chunk = self.get(downhill_chunk_pos)?;
+        // special case if chunks are flat
+        if (curr_chunk.alt - downhill_chunk.alt) == 0. {
+            return Some(Vec3::unit_z());
+        }
+        let curr = chunk_pos.cpos_to_wpos_center().as_().with_z(curr_chunk.alt);
+        let down = downhill_chunk_pos
+            .cpos_to_wpos_center()
+            .as_()
+            .with_z(downhill_chunk.alt);
+        let downwards = curr - down;
+        let flat = downwards.with_z(down.z);
+        let mut res = downwards.cross(flat).cross(downwards);
+        res.normalize();
+        Some(res)
     }
 
     /// Draw a map of the world based on chunk information.  Returns a buffer of
@@ -2455,15 +2508,19 @@ impl SimChunk {
         let mut alt = CONFIG.sea_level.add(alt_pre);
         let basement = CONFIG.sea_level.add(basement_pre);
         let water_alt = CONFIG.sea_level.add(water_alt_pre);
-        let downhill = if downhill_pre == -2 {
-            None
+        let (downhill, _gradient) = if downhill_pre == -2 {
+            (None, 0.0)
         } else if downhill_pre < 0 {
             panic!("Uh... shouldn't this never, ever happen?");
         } else {
-            Some(
-                uniform_idx_as_vec2(map_size_lg, downhill_pre as usize)
-                    * TerrainChunkSize::RECT_SIZE.map(|e| e as i32)
-                    + TerrainChunkSize::RECT_SIZE.map(|e| e as i32 / 2),
+            (
+                Some(
+                    uniform_idx_as_vec2(map_size_lg, downhill_pre as usize)
+                        * TerrainChunkSize::RECT_SIZE.map(|e| e as i32)
+                        + TerrainChunkSize::RECT_SIZE.map(|e| e as i32 / 2),
+                ),
+                (alt_pre - gen_cdf.alt[downhill_pre as usize] as f32).abs()
+                    / TerrainChunkSize::RECT_SIZE.x as f32,
             )
         };
 
@@ -2511,10 +2568,12 @@ impl SimChunk {
         let tree_density = if is_underwater {
             0.0
         } else {
-            let tree_density = (gen_ctx.tree_nz.get((wposf.div(1024.0)).into_array()))
-                .mul(0.75)
-                .add(0.55)
-                .clamp(0.0, 1.0);
+            let tree_density = Lerp::lerp(
+                -1.5,
+                2.5,
+                gen_ctx.tree_nz.get((wposf.div(1024.0)).into_array()) * 0.5 + 0.5,
+            )
+            .clamp(0.0, 1.0);
             // Tree density should go (by a lot) with humidity.
             if humidity <= 0.0 || tree_density <= 0.0 {
                 0.0
@@ -2529,8 +2588,9 @@ impl SimChunk {
             .add(0.5)
         } as f32;
         const MIN_TREE_HUM: f32 = 0.15;
-        // Tree density increases exponentially with humidity...
-        let tree_density = (tree_density * (humidity - MIN_TREE_HUM).max(0.0).mul(1.0 + MIN_TREE_HUM) / temp.max(0.75))
+        let tree_density = tree_density
+            // Tree density increases exponentially with humidity...
+            .mul((humidity - MIN_TREE_HUM).max(0.0).mul(1.0 + MIN_TREE_HUM) / temp.max(0.75))
             // Places that are *too* wet (like marshes) also get fewer trees because the ground isn't stable enough for
             // them.
             //.mul((1.0 - flux * 0.05/*(humidity - 0.9).max(0.0) / 0.1*/).max(0.0))

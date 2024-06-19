@@ -1,3 +1,4 @@
+#![allow(non_local_definitions)] // because of WidgetCommon derive
 mod animation;
 mod bag;
 mod buffs;
@@ -78,8 +79,7 @@ use crate::{
     },
     settings::chat::ChatFilter,
     ui::{
-        self, fonts::Fonts, img_ids::Rotations, slot, slot::SlotKey, Graphic, Ingameable,
-        ScaleMode, Ui,
+        fonts::Fonts, img_ids::Rotations, slot, slot::SlotKey, Graphic, Ingameable, ScaleMode, Ui,
     },
     window::Event as WinEvent,
     GlobalState,
@@ -98,18 +98,19 @@ use common::{
         },
         item::{
             tool::{AbilityContext, ToolKind},
-            ItemDesc, MaterialStatManifest, Quality,
+            ItemDefinitionIdOwned, ItemDesc, ItemI18n, MaterialStatManifest, Quality,
         },
         loot_owner::LootOwnerKind,
         pet::is_mountable,
         skillset::{skills::Skill, SkillGroupKind, SkillsPersistenceError},
-        BuffData, BuffKind, Health, Item, MapMarkerChange, PresenceKind,
+        BuffData, BuffKind, Content, Health, Item, MapMarkerChange, PickupItem, PresenceKind,
     },
     consts::MAX_PICKUP_RANGE,
     link::Is,
     mounting::{Mount, Rider, VolumePos},
     outcome::Outcome,
-    resources::{Secs, Time},
+    recipe::RecipeBookManifest,
+    resources::{ProgramTime, Secs, Time},
     slowjob::SlowJobPool,
     terrain::{SpriteKind, TerrainChunk, UnlockKind},
     trade::{ReducedInventory, TradeAction},
@@ -130,7 +131,7 @@ use conrod_core::{
 use hashbrown::{HashMap, HashSet};
 use i18n::Localization;
 use rand::Rng;
-use specs::{Entity as EcsEntity, Join, WorldExt};
+use specs::{Entity as EcsEntity, Join, LendJoin, WorldExt};
 use std::{
     borrow::Cow,
     cmp::Ordering,
@@ -271,6 +272,7 @@ widget_ids! {
         velocity,
         glide_ratio,
         glide_aoe,
+        air_vel,
         orientation,
         look_direction,
         loaded_distance,
@@ -341,6 +343,10 @@ widget_ids! {
         // Auto walk indicator
         auto_walk_txt,
         auto_walk_bg,
+
+        // Walking speed indicator
+        walking_speed_txt,
+        walking_speed_bg,
 
         // Temporal (fading) camera zoom lock indicator
         zoom_lock_txt,
@@ -504,8 +510,8 @@ impl BuffIconKind {
                 data,
                 multiplicity: _,
             } => (
-                get_buff_title(*kind, localized_strings),
-                get_buff_desc(*kind, *data, localized_strings),
+                util::get_buff_title(*kind, localized_strings),
+                util::get_buff_desc(*kind, *data, localized_strings),
             ),
             Self::Stance(stance) => {
                 util::ability_description(stance.pseudo_ability_id(), localized_strings)
@@ -515,28 +521,24 @@ impl BuffIconKind {
 }
 
 impl PartialOrd for BuffIconKind {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl Ord for BuffIconKind {
+    fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (
                 BuffIconKind::Buff { kind, .. },
                 BuffIconKind::Buff {
                     kind: other_kind, ..
                 },
-            ) => Some(kind.cmp(other_kind)),
-            (BuffIconKind::Buff { .. }, BuffIconKind::Stance(_)) => Some(Ordering::Greater),
-            (BuffIconKind::Stance(_), BuffIconKind::Buff { .. }) => Some(Ordering::Less),
+            ) => kind.cmp(other_kind),
+            (BuffIconKind::Buff { .. }, BuffIconKind::Stance(_)) => Ordering::Greater,
+            (BuffIconKind::Stance(_), BuffIconKind::Buff { .. }) => Ordering::Less,
             (BuffIconKind::Stance(stance), BuffIconKind::Stance(stance_other)) => {
-                Some(stance.cmp(stance_other))
+                stance.cmp(stance_other)
             },
         }
-    }
-}
-
-impl Ord for BuffIconKind {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // We know this is safe since we can look at the partialord implementation and
-        // see that every variant is wrapped in Some
-        self.partial_cmp(other).unwrap()
     }
 }
 
@@ -586,7 +588,7 @@ impl BuffIcon {
         buffs
             .iter_active()
             .filter_map(BuffIcon::from_buffs)
-            .chain(stance.and_then(BuffIcon::from_stance).into_iter())
+            .chain(stance.and_then(BuffIcon::from_stance))
             .collect::<Vec<_>>()
     }
 
@@ -669,7 +671,7 @@ pub struct DebugInfo {
 
 pub struct HudInfo {
     pub is_aiming: bool,
-    pub is_mining: bool,
+    pub active_mine_tool: Option<ToolKind>,
     pub is_first_person: bool,
     pub viewpoint_entity: specs::Entity,
     pub mutable_viewpoint: bool,
@@ -1144,28 +1146,6 @@ impl Show {
         self.social_search_key = search_key;
     }
 
-    /// If all of the menus are closed, adjusts coordinates of cursor to center
-    /// of screen
-    fn toggle_cursor_on_menu_close(&self, global_state: &mut GlobalState, ui: &mut Ui) {
-        if !self.bag
-            && !self.trade
-            && !self.esc_menu
-            && !self.map
-            && !self.social
-            && !self.quest
-            && !self.crafting
-            && !self.diary
-            && !self.help
-            && !self.intro
-            && global_state.window.is_cursor_grabbed()
-        {
-            ui.handle_event(ui::Event(
-                conrod_core::input::Motion::MouseCursor { x: 0.0, y: 0.0 }.into(),
-            ));
-            global_state.window.center_cursor();
-        }
-    }
-
     pub fn update_map_markers(&mut self, event: comp::MapMarkerUpdate) {
         match event {
             comp::MapMarkerUpdate::Owned(event) => match event {
@@ -1286,12 +1266,16 @@ pub struct Hud {
     world_map: (/* Id */ Vec<Rotations>, Vec2<u32>),
     imgs: Imgs,
     item_imgs: ItemImgs,
+    item_i18n: ItemI18n,
     fonts: Fonts,
     rot_imgs: ImgsRot,
     failed_block_pickups: HashMap<VolumePos, CollectFailedData>,
     failed_entity_pickups: HashMap<EcsEntity, CollectFailedData>,
     new_loot_messages: VecDeque<LootMessage>,
     new_messages: VecDeque<comp::ChatMsg>,
+    // NOTE Used for storing messages sent while the chat is hidden. This is needed because NPC
+    // speech uses new_messages so we need to clear it every frame.
+    message_backlog: VecDeque<comp::ChatMsg>,
     new_notifications: VecDeque<Notification>,
     speech_bubbles: HashMap<Uid, comp::SpeechBubble>,
     content_bubbles: Vec<(Vec3<f32>, comp::SpeechBubble)>,
@@ -1313,6 +1297,7 @@ pub struct Hud {
     floaters: Floaters,
     voxel_minimap: VoxelMinimap,
     map_drag: Vec2<f64>,
+    force_chat: bool,
 }
 
 impl Hud {
@@ -1341,6 +1326,8 @@ impl Hud {
         let rot_imgs = ImgsRot::load(&mut ui).expect("Failed to load rot images!");
         // Load item images.
         let item_imgs = ItemImgs::new(&mut ui, imgs.not_found);
+        // Load item text ("reference" to name and description)
+        let item_i18n = ItemI18n::new_expect();
         // Load fonts.
         let fonts = Fonts::load(global_state.i18n.read().fonts(), &mut ui)
             .expect("Impossible to load fonts!");
@@ -1380,12 +1367,14 @@ impl Hud {
             world_map,
             rot_imgs,
             item_imgs,
+            item_i18n,
             fonts,
             ids,
             failed_block_pickups: HashMap::default(),
             failed_entity_pickups: HashMap::default(),
             new_loot_messages: VecDeque::new(),
             new_messages: VecDeque::new(),
+            message_backlog: VecDeque::new(),
             new_notifications: VecDeque::new(),
             speech_bubbles: HashMap::new(),
             content_bubbles: Vec::new(),
@@ -1445,6 +1434,7 @@ impl Hud {
                 block_floaters: Vec::new(),
             },
             map_drag: Vec2::zero(),
+            force_chat: false,
         }
     }
 
@@ -1481,6 +1471,7 @@ impl Hud {
         if global_state.settings.interface.map_show_voxel_map {
             self.voxel_minimap.maintain(client, &mut self.ui);
         }
+        let scale = self.ui.scale();
         let (ref mut ui_widgets, ref mut item_tooltip_manager, ref mut tooltip_manager) =
             &mut self.ui.set_widgets();
         // self.ui.set_item_widgets(); pulse time for pulsating elements
@@ -1506,7 +1497,7 @@ impl Hud {
             let interpolated = ecs.read_storage::<vcomp::Interpolated>();
             let scales = ecs.read_storage::<comp::Scale>();
             let bodies = ecs.read_storage::<comp::Body>();
-            let items = ecs.read_storage::<Item>();
+            let items = ecs.read_storage::<PickupItem>();
             let inventories = ecs.read_storage::<comp::Inventory>();
             let msm = ecs.read_resource::<MaterialStatManifest>();
             let entities = ecs.entities();
@@ -1525,26 +1516,30 @@ impl Hud {
                 if let Some(persistence_error) = info.persistence_load_error {
                     let persistence_error = match persistence_error {
                         SkillsPersistenceError::HashMismatch => {
-                            "There was a difference detected in one of your skill groups since you \
-                             last played."
+                            "hud-skill-persistence-hash_mismatch"
                         },
                         SkillsPersistenceError::DeserializationFailure => {
-                            "There was a error in loading some of your skills from the database."
+                            "hud-skill-persistence-deserialization_failure"
                         },
                         SkillsPersistenceError::SpentExpMismatch => {
-                            "The amount of free experience you had in one of your skill groups \
-                             differed from when you last played."
+                            "hud-skill-persistence-spent_experience_missing"
                         },
                         SkillsPersistenceError::SkillsUnlockFailed => {
-                            "Your skills were not able to be obtained in the same order you \
-                             acquired them. Prerequisites or costs may have changed."
+                            "hud-skill-persistence-skills_unlock_failed"
                         },
                     };
+                    let persistence_error = global_state
+                        .i18n
+                        .read()
+                        .get_content(&Content::localized(persistence_error));
 
-                    let common_message = "Some of your skill points have been reset. You will \
-                                          need to reassign them.";
+                    let common_message = global_state
+                        .i18n
+                        .read()
+                        .get_content(&Content::localized("hud-skill-persistence-common_message"));
 
                     warn!("{}\n{}", persistence_error, common_message);
+                    // TODO: Let the player see the more detailed message `persistence_error`?
                     let prompt_dialog = PromptDialogSettings::new(
                         format!("{}\n", common_message),
                         Event::AcknowledgePersistenceLoadError,
@@ -1648,8 +1643,8 @@ impl Hud {
                         .filter(|fl| !fl.floaters.is_empty()),
                     healths.get(me),
                 ) {
-                    let player_font_col = |crit: bool| {
-                        if crit {
+                    let player_font_col = |precise: bool| {
+                        if precise {
                             Rgb::new(1.0, 0.9, 0.0)
                         } else {
                             Rgb::new(1.0, 0.1, 0.0)
@@ -1688,7 +1683,7 @@ impl Hud {
                         } else {
                             format!("{:.1}", floater.info.amount.abs())
                         };
-                        let crit = floater.info.crit;
+                        let precise = floater.info.precise;
 
                         // Timer sets text transparency
                         let hp_fade = calc_fade(floater);
@@ -1696,7 +1691,7 @@ impl Hud {
                         // Increase font size based on fraction of maximum health
                         // "flashes" by having a larger size in the first 100ms
                         let font_size =
-                            30 + (if crit {
+                            30 + (if precise {
                                 (max_hp_frac * 10.0) as u32 * 3 + 10
                             } else {
                                 (max_hp_frac * 10.0) as u32 * 3
@@ -1704,12 +1699,12 @@ impl Hud {
                                 FLASH_MAX
                                     * (((1.0 - floater.jump_timer * 10.0)
                                         * 10.0
-                                        * if crit { 1.25 } else { 1.0 })
+                                        * if precise { 1.25 } else { 1.0 })
                                         as u32)
                             } else {
                                 0
                             };
-                        let font_col = player_font_col(crit);
+                        let font_col = player_font_col(precise);
                         // Timer sets the widget offset
                         let y = if floater.info.amount < 0.0 {
                             floater.timer as f64
@@ -2003,12 +1998,12 @@ impl Hud {
             let pulse = self.pulse;
 
             let make_overitem =
-                |item: &Item, pos, distance, properties, fonts, interaction_options| {
-                    let quality = get_quality_col(item);
+                |item: &PickupItem, pos, distance, properties, fonts, interaction_options| {
+                    let quality = get_quality_col(item.item());
 
                     // Item
                     overitem::Overitem::new(
-                        item.describe().into(),
+                        util::describe(item, i18n, &self.item_i18n).into(),
                         quality,
                         distance,
                         fonts,
@@ -2061,9 +2056,14 @@ impl Hud {
                 && let Some((mat, _, _)) = pos.get_block_and_transform(
                     &ecs.read_resource(),
                     &ecs.read_resource(),
-                    |e| ecs.read_storage::<vcomp::Interpolated>().get(e).map(|interpolated| (comp::Pos(interpolated.pos), interpolated.ori)),
+                    |e| {
+                        ecs.read_storage::<vcomp::Interpolated>()
+                            .get(e)
+                            .map(|interpolated| (comp::Pos(interpolated.pos), interpolated.ori))
+                    },
                     &ecs.read_storage(),
-                ) {
+                )
+            {
                 let overitem_id = overitem_walker.next(
                     &mut self.ids.overitems,
                     &mut ui_widgets.widget_id_generator(),
@@ -2091,68 +2091,69 @@ impl Hud {
                         )]
                     },
                     BlockInteraction::Unlock(kind) => {
+                        let item_name = |item_id: &ItemDefinitionIdOwned| {
+                            // TODO: get ItemKey and use it with i18n?
+                            item_id
+                                .as_ref()
+                                .itemdef_id()
+                                .map(|id| {
+                                    let item = Item::new_from_asset_expect(id);
+                                    util::describe(&item, i18n, &self.item_i18n)
+                                })
+                                .unwrap_or_else(|| "modular item".to_string())
+                        };
+
                         vec![(Some(GameInput::Interact), match kind {
                             UnlockKind::Free => i18n.get_msg("hud-open").to_string(),
-                            UnlockKind::Requires(item) => i18n
+                            UnlockKind::Requires(item_id) => i18n
                                 .get_msg_ctx("hud-unlock-requires", &i18n::fluent_args! {
-                                    "item" => item.as_ref().itemdef_id()
-                                        .map(|id| Item::new_from_asset_expect(id).describe())
-                                        .unwrap_or_else(|| "modular item".to_string()),
+                                    "item" => item_name(item_id),
                                 })
                                 .to_string(),
-                            UnlockKind::Consumes(item) => i18n
+                            UnlockKind::Consumes(item_id) => i18n
                                 .get_msg_ctx("hud-unlock-requires", &i18n::fluent_args! {
-                                    "item" => item.as_ref().itemdef_id()
-                                        .map(|id| Item::new_from_asset_expect(id).describe())
-                                        .unwrap_or_else(|| "modular item".to_string()),
+                                    "item" => item_name(item_id),
                                 })
                                 .to_string(),
                         })]
                     },
                     BlockInteraction::Mine(mine_tool) => {
-                        if info.is_mining {
-                            match mine_tool {
-                                ToolKind::Pick => {
-                                    vec![(
-                                        Some(GameInput::Primary),
-                                        i18n.get_msg("hud-mine").to_string(),
-                                    )]
-                                },
-                                ToolKind::Shovel => {
-                                    vec![(
-                                        Some(GameInput::Primary),
-                                        i18n.get_msg("hud-dig").to_string(),
-                                    )]
-                                },
-                                _ => {
-                                    vec![(
-                                        None,
-                                        i18n.get_msg("hud-mine-needs_unhandled_case").to_string(),
-                                    )]
-                                },
-                            }
-                        } else {
-                            match mine_tool {
-                                ToolKind::Pick => {
-                                    vec![(None, i18n.get_msg("hud-mine-needs_pickaxe").to_string())]
-                                },
-                                ToolKind::Shovel => {
-                                    vec![(None, i18n.get_msg("hud-mine-needs_shovel").to_string())]
-                                }
-                                // TODO: The required tool for mining something may not always be a
-                                // pickaxe!
-                                _ => {
-                                    vec![(
-                                        None,
-                                        i18n.get_msg("hud-mine-needs_unhandled_case").to_string(),
-                                    )]
-                                },
-                            }
+                        match (mine_tool, &info.active_mine_tool) {
+                            (ToolKind::Pick, Some(ToolKind::Pick)) => {
+                                vec![(
+                                    Some(GameInput::Primary),
+                                    i18n.get_msg("hud-mine").to_string(),
+                                )]
+                            },
+                            (ToolKind::Pick, _) => {
+                                vec![(None, i18n.get_msg("hud-mine-needs_pickaxe").to_string())]
+                            },
+                            (ToolKind::Shovel, Some(ToolKind::Shovel)) => {
+                                vec![(
+                                    Some(GameInput::Primary),
+                                    i18n.get_msg("hud-dig").to_string(),
+                                )]
+                            },
+                            (ToolKind::Shovel, _) => {
+                                vec![(None, i18n.get_msg("hud-mine-needs_shovel").to_string())]
+                            },
+                            _ => {
+                                vec![(
+                                    None,
+                                    i18n.get_msg("hud-mine-needs_unhandled_case").to_string(),
+                                )]
+                            },
                         }
                     },
                     BlockInteraction::Mount => {
                         let key = match block.get_sprite() {
                             Some(SpriteKind::Helm) => "hud-steer",
+                            Some(
+                                SpriteKind::Bed
+                                | SpriteKind::Bedroll
+                                | SpriteKind::BedrollSnow
+                                | SpriteKind::BedrollPirate,
+                            ) => "hud-lay",
                             _ => "hud-sit",
                         };
                         vec![(Some(GameInput::Mount), i18n.get_msg(key).to_string())]
@@ -2160,6 +2161,16 @@ impl Hud {
                     BlockInteraction::Read(_) => vec![(
                         Some(GameInput::Interact),
                         i18n.get_msg("hud-read").to_string(),
+                    )],
+                    // TODO: change to turn on/turn off?
+                    BlockInteraction::LightToggle(enable) => vec![(
+                        Some(GameInput::Interact),
+                        i18n.get_msg(if *enable {
+                            "hud-activate"
+                        } else {
+                            "hud-deactivate"
+                        })
+                        .to_string(),
                     )],
                 };
 
@@ -2188,11 +2199,15 @@ impl Hud {
                 // TODO: Handle this better. The items returned from `try_reclaim_from_block`
                 // are based on rng. We probably want some function to get only gauranteed items
                 // from `LootSpec`.
-                else if let Some((amount, mut item)) = Item::try_reclaim_from_block(*block).into_iter().flatten().next() {
+                else if let Some((amount, mut item)) = Item::try_reclaim_from_block(*block)
+                    .into_iter()
+                    .flatten()
+                    .next()
+                {
                     item.set_amount(amount.clamp(1, item.max_amount()))
                         .expect("amount >= 1 and <= max_amount is always a valid amount");
                     make_overitem(
-                        &item,
+                        &PickupItem::new(item, ProgramTime(0.0)),
                         over_pos,
                         pos.distance_squared(player_pos),
                         overitem_properties,
@@ -2268,7 +2283,8 @@ impl Hud {
                                 "hud-activate"
                             } else {
                                 "hud-use"
-                            }).to_string(),
+                            })
+                            .to_string(),
                         )],
                     )
                     .x_y(0.0, 100.0)
@@ -2455,38 +2471,48 @@ impl Hud {
                             ]
                         },
                         Some(comp::Alignment::Owned(owner))
-                            if Some(*owner) == client.uid()
-                                && dist_sqr < common::consts::MAX_MOUNT_RANGE.powi(2) =>
+                            if dist_sqr < common::consts::MAX_MOUNT_RANGE.powi(2) =>
                         {
                             let mut options = Vec::new();
                             if is_mount.is_none() {
-                                options.push((
-                                    GameInput::Trade,
-                                    i18n.get_msg("hud-trade").to_string(),
-                                ));
-                                if !client.is_riding()
-                                    && is_mountable(body, bodies.get(client.entity()))
-                                {
+                                if Some(*owner) == client.uid() {
                                     options.push((
-                                        GameInput::Mount,
-                                        i18n.get_msg("hud-mount").to_string(),
+                                        GameInput::Trade,
+                                        i18n.get_msg("hud-trade").to_string(),
+                                    ));
+                                    if !client.is_riding()
+                                        && is_mountable(body, bodies.get(client.entity()))
+                                    {
+                                        options.push((
+                                            GameInput::Mount,
+                                            i18n.get_msg("hud-mount").to_string(),
+                                        ));
+                                    }
+
+                                    let is_staying = character_activity
+                                        .map_or(false, |activity| activity.is_pet_staying);
+
+                                    options.push((
+                                        GameInput::StayFollow,
+                                        i18n.get_msg(if is_staying {
+                                            "hud-follow"
+                                        } else {
+                                            "hud-stay"
+                                        })
+                                        .to_string(),
                                     ));
                                 }
 
-                                let is_staying = character_activity
-                                    .map_or(false, |activity| activity.is_pet_staying);
-
+                                // Anyone can pet a tamed animal
                                 options.push((
-                                    GameInput::StayFollow,
-                                    i18n.get_msg(if is_staying {
-                                        "hud-follow"
-                                    } else {
-                                        "hud-stay"
-                                    })
-                                    .to_string(),
+                                    GameInput::Interact,
+                                    i18n.get_msg("hud-pet").to_string(),
                                 ));
                             }
                             options
+                        },
+                        Some(comp::Alignment::Tame) => {
+                            vec![(GameInput::Interact, i18n.get_msg("hud-pet").to_string())]
                         },
                         _ => Vec::new(),
                     },
@@ -2499,8 +2525,9 @@ impl Hud {
                 // Enemy SCT
                 if global_state.settings.interface.sct && !hpfl.floaters.is_empty() {
                     fn calc_fade(floater: &HpFloater) -> f32 {
-                        if floater.info.crit {
-                            ((crate::ecs::sys::floater::CRIT_SHOWTIME - floater.timer) * 0.75) + 0.5
+                        if floater.info.precise {
+                            ((crate::ecs::sys::floater::PRECISE_SHOWTIME - floater.timer) * 0.75)
+                                + 0.5
                         } else {
                             ((crate::ecs::sys::floater::HP_SHOWTIME - floater.timer) * 0.25) + 0.2
                         }
@@ -2526,8 +2553,8 @@ impl Hud {
                     ];
                     // Largest value that select the first color is 40, then it shifts colors
                     // every 5
-                    let font_col = |font_size: u32, crit: bool| {
-                        if crit {
+                    let font_col = |font_size: u32, precise: bool| {
+                        if precise {
                             Rgb::new(1.0, 0.9, 0.0)
                         } else {
                             DAMAGE_COLORS[(font_size.saturating_sub(36) / 5).min(5) as usize]
@@ -2556,13 +2583,13 @@ impl Hud {
                         } else {
                             format!("{:.1}", floater.info.amount.abs())
                         };
-                        let crit = floater.info.crit;
+                        let precise = floater.info.precise;
                         // Timer sets text transparency
                         let fade = calc_fade(floater);
                         // Increase font size based on fraction of maximum health
                         // "flashes" by having a larger size in the first 100ms
                         let font_size =
-                            30 + (if crit {
+                            30 + (if precise {
                                 (max_hp_frac * 10.0) as u32 * 3 + 10
                             } else {
                                 (max_hp_frac * 10.0) as u32 * 3
@@ -2570,14 +2597,14 @@ impl Hud {
                                 FLASH_MAX
                                     * (((1.0 - floater.jump_timer * 10.0)
                                         * 10.0
-                                        * if crit { 1.25 } else { 1.0 })
+                                        * if precise { 1.25 } else { 1.0 })
                                         as u32)
                             } else {
                                 0
                             };
-                        let font_col = font_col(font_size, crit);
+                        let font_col = font_col(font_size, precise);
                         // Timer sets the widget offset
-                        let y = if crit {
+                        let y = if precise {
                             ui_widgets.win_h * (floater.rand as f64 % 0.075)
                                 + ui_widgets.win_h * 0.05
                         } else {
@@ -2586,7 +2613,7 @@ impl Hud {
                                 + 100.0
                         };
 
-                        let x = if !crit {
+                        let x = if !precise {
                             0.0
                         } else {
                             (floater.rand as f64 - 0.5) * 0.075 * ui_widgets.win_w
@@ -2732,6 +2759,7 @@ impl Hud {
                 .font_id(self.fonts.cyri.conrod_id)
                 .font_size(self.fonts.cyri.scale(14))
                 .set(self.ids.glide_ratio, ui_widgets);
+            // Glide Angle of Attack
             let glide_angle_text = angle_of_attack_text(
                 debug_info.in_fluid,
                 debug_info.velocity,
@@ -2743,6 +2771,14 @@ impl Hud {
                 .font_id(self.fonts.cyri.conrod_id)
                 .font_size(self.fonts.cyri.scale(14))
                 .set(self.ids.glide_aoe, ui_widgets);
+            // Air velocity
+            let air_vel_text = air_velocity(debug_info.in_fluid);
+            Text::new(&air_vel_text)
+                .color(TEXT_COLOR)
+                .down_from(self.ids.glide_aoe, V_PAD)
+                .font_id(self.fonts.cyri.conrod_id)
+                .font_size(self.fonts.cyri.scale(14))
+                .set(self.ids.air_vel, ui_widgets);
             // Player's orientation vector
             let orientation_text = match debug_info.ori {
                 Some(ori) => {
@@ -2756,7 +2792,7 @@ impl Hud {
             };
             Text::new(&orientation_text)
                 .color(TEXT_COLOR)
-                .down_from(self.ids.glide_aoe, V_PAD)
+                .down_from(self.ids.air_vel, V_PAD)
                 .font_id(self.fonts.cyri.conrod_id)
                 .font_size(self.fonts.cyri.scale(14))
                 .set(self.ids.orientation, ui_widgets);
@@ -3107,6 +3143,7 @@ impl Hud {
         let entity = info.viewpoint_entity;
         let healths = ecs.read_storage::<Health>();
         let inventories = ecs.read_storage::<comp::Inventory>();
+        let rbm = ecs.read_resource::<RecipeBookManifest>();
         let energies = ecs.read_storage::<comp::Energy>();
         let skillsets = ecs.read_storage::<comp::SkillSet>();
         let active_abilities = ecs.read_storage::<comp::ActiveAbilities>();
@@ -3164,12 +3201,14 @@ impl Hud {
                 item_tooltip_manager,
                 &mut self.slot_manager,
                 i18n,
+                &self.item_i18n,
                 &msm,
                 self.floaters.combo_floater,
                 &context,
                 combo,
                 char_states.get(entity),
                 stance,
+                stats.get(entity),
             )
             .set(self.ids.skillbar, ui_widgets)
             {
@@ -3211,6 +3250,7 @@ impl Hud {
                     &mut self.slot_manager,
                     self.pulse,
                     i18n,
+                    &self.item_i18n,
                     player_stats,
                     skill_set,
                     health,
@@ -3255,6 +3295,7 @@ impl Hud {
                 item_tooltip_manager,
                 &mut self.slot_manager,
                 i18n,
+                &self.item_i18n,
                 &msm,
                 self.pulse,
                 &mut self.show,
@@ -3335,12 +3376,14 @@ impl Hud {
                     &self.imgs,
                     &self.fonts,
                     i18n,
+                    &self.item_i18n,
                     self.pulse,
                     &self.rot_imgs,
                     item_tooltip_manager,
                     &mut self.slot_manager,
                     &self.item_imgs,
                     inventory,
+                    &rbm,
                     &msm,
                     tooltip_manager,
                     &mut self.show,
@@ -3428,12 +3471,50 @@ impl Hud {
             }
         }
 
+        if global_state.settings.audio.subtitles {
+            Subtitles::new(
+                client,
+                &global_state.settings,
+                &global_state.audio.get_listener().clone(),
+                &mut global_state.audio.subtitles,
+                &self.fonts,
+                i18n,
+            )
+            .set(self.ids.subtitles, ui_widgets);
+        }
+
+        //Loot
+        LootScroller::new(
+            &mut self.new_loot_messages,
+            client,
+            &info,
+            &self.show,
+            &self.imgs,
+            &self.item_imgs,
+            &self.rot_imgs,
+            &self.fonts,
+            i18n,
+            &self.item_i18n,
+            &msm,
+            item_tooltip_manager,
+            self.pulse,
+        )
+        .set(self.ids.loot_scroller, ui_widgets);
+
+        self.new_loot_messages.clear();
+
         // Don't put NPC messages in chat box.
         self.new_messages
             .retain(|m| !matches!(m.chat_type, comp::ChatType::Npc(_)));
 
         // Chat box
-        if global_state.settings.interface.toggle_chat {
+        // Draw this after loot scroller and subtitles so it can be dragged
+        // even when hovering over them
+        // TODO look into parenting and then settings movable widgets to floating
+        if global_state.settings.interface.toggle_chat || self.force_chat {
+            for hidden in self.message_backlog.drain(..).rev() {
+                self.new_messages.push_front(hidden);
+            }
             for event in Chat::new(
                 &mut self.new_messages,
                 client,
@@ -3442,6 +3523,7 @@ impl Hud {
                 &self.imgs,
                 &self.fonts,
                 i18n,
+                scale,
             )
             .and_then(self.force_chat_input.take(), |c, input| c.input(input))
             .and_then(self.tab_complete.take(), |c, input| {
@@ -3471,43 +3553,28 @@ impl Hud {
                         self.show.settings_tab = SettingsTab::Chat;
                         self.show.settings(true);
                     },
+                    chat::Event::ResizeChat(size) => {
+                        global_state.settings.chat.chat_size_x = size.x;
+                        global_state.settings.chat.chat_size_y = size.y;
+                    },
+                    chat::Event::MoveChat(pos) => {
+                        global_state.settings.chat.chat_pos_x = pos.x;
+                        global_state.settings.chat.chat_pos_y = pos.y;
+                    },
+                    chat::Event::DisableForceChat => {
+                        self.force_chat = false;
+                    },
                 }
+            }
+        } else {
+            self.message_backlog.extend(self.new_messages.drain(..));
+            while self.message_backlog.len() > chat::MAX_MESSAGES {
+                self.message_backlog.pop_front();
             }
         }
 
-        if global_state.settings.audio.subtitles {
-            Subtitles::new(
-                client,
-                &global_state.settings,
-                &global_state.audio.get_listener().clone(),
-                &mut global_state.audio.subtitles,
-                &self.fonts,
-                i18n,
-            )
-            .set(self.ids.subtitles, ui_widgets);
-        }
-
-        self.new_messages = VecDeque::new();
-        self.new_notifications = VecDeque::new();
-
-        //Loot
-        LootScroller::new(
-            &mut self.new_loot_messages,
-            client,
-            &info,
-            &self.show,
-            &self.imgs,
-            &self.item_imgs,
-            &self.rot_imgs,
-            &self.fonts,
-            i18n,
-            &msm,
-            item_tooltip_manager,
-            self.pulse,
-        )
-        .set(self.ids.loot_scroller, ui_widgets);
-
-        self.new_loot_messages = VecDeque::new();
+        self.new_messages.clear();
+        self.new_notifications.clear();
 
         // Windows
 
@@ -3636,6 +3703,7 @@ impl Hud {
             if let (
                 Some(skill_set),
                 Some(inventory),
+                Some(char_state),
                 Some(health),
                 Some(energy),
                 Some(body),
@@ -3643,6 +3711,7 @@ impl Hud {
             ) = (
                 skill_sets.get(entity),
                 inventories.get(entity),
+                char_states.get(entity),
                 healths.get(entity),
                 energies.get(entity),
                 bodies.get(entity),
@@ -3656,6 +3725,7 @@ impl Hud {
                     skill_set,
                     active_abilities.get(entity).unwrap_or(&Default::default()),
                     inventory,
+                    char_state,
                     health,
                     energy,
                     poise,
@@ -3670,6 +3740,7 @@ impl Hud {
                     &mut self.slot_manager,
                     self.pulse,
                     &context,
+                    stats.get(entity),
                 )
                 .set(self.ids.diary, ui_widgets)
                 {
@@ -3872,9 +3943,18 @@ impl Hud {
         'slot_events: for event in self.slot_manager.maintain(ui_widgets) {
             use slots::{AbilitySlot, InventorySlot, SlotKind::*};
             let to_slot = |slot_kind| match slot_kind {
+                Inventory(
+                    i @ InventorySlot {
+                        slot: Slot::Inventory(_) | Slot::Overflow(_),
+                        ours: true,
+                        ..
+                    },
+                ) => Some(i.slot),
                 Inventory(InventorySlot {
-                    slot, ours: true, ..
-                }) => Some(Slot::Inventory(slot)),
+                    slot: Slot::Equip(_),
+                    ours: true,
+                    ..
+                }) => None,
                 Inventory(InventorySlot { ours: false, .. }) => None,
                 Equip(e) => Some(Slot::Equip(e)),
                 Hotbar(_) => None,
@@ -3898,21 +3978,27 @@ impl Hud {
                         Hotbar(h),
                     ) = (a, b)
                     {
-                        if let Some(item) = inventories
-                            .get(info.viewpoint_entity)
-                            .and_then(|inv| inv.get(slot))
-                        {
-                            self.hotbar.add_inventory_link(h, item);
-                            events.push(Event::ChangeHotbarState(Box::new(self.hotbar.to_owned())));
+                        if let Slot::Inventory(slot) = slot {
+                            if let Some(item) = inventories
+                                .get(info.viewpoint_entity)
+                                .and_then(|inv| inv.get(slot))
+                            {
+                                self.hotbar.add_inventory_link(h, item);
+                                events.push(Event::ChangeHotbarState(Box::new(
+                                    self.hotbar.to_owned(),
+                                )));
+                            }
                         }
                     } else if let (Hotbar(a), Hotbar(b)) = (a, b) {
                         self.hotbar.swap(a, b);
                         events.push(Event::ChangeHotbarState(Box::new(self.hotbar.to_owned())));
                     } else if let (Inventory(i), Trade(t)) = (a, b) {
                         if i.ours == t.ours {
-                            if let Some(inventory) = inventories.get(t.entity) {
+                            if let (Some(inventory), Slot::Inventory(slot)) =
+                                (inventories.get(t.entity), i.slot)
+                            {
                                 events.push(Event::TradeAction(TradeAction::AddItem {
-                                    item: i.slot,
+                                    item: slot,
                                     quantity: i.amount(inventory).unwrap_or(1),
                                     ours: i.ours,
                                 }));
@@ -3958,18 +4044,20 @@ impl Hud {
                             (AbilitySlot::Ability(_), AbilitySlot::Ability(_)) => {},
                         }
                     } else if let (Inventory(i), Crafting(c)) = (a, b) {
-                        // Add item to crafting input
-                        if inventories
-                            .get(info.viewpoint_entity)
-                            .and_then(|inv| inv.get(i.slot))
-                            .map_or(false, |item| {
-                                (c.requirement)(item, client.component_recipe_book(), c.info)
-                            })
-                        {
-                            self.show
-                                .crafting_fields
-                                .recipe_inputs
-                                .insert(c.index, Slot::Inventory(i.slot));
+                        if let Slot::Inventory(slot) = i.slot {
+                            // Add item to crafting input
+                            if inventories
+                                .get(info.viewpoint_entity)
+                                .and_then(|inv| inv.get(slot))
+                                .map_or(false, |item| {
+                                    (c.requirement)(item, client.component_recipe_book(), c.info)
+                                })
+                            {
+                                self.show
+                                    .crafting_fields
+                                    .recipe_inputs
+                                    .insert(c.index, i.slot);
+                            }
                         }
                     } else if let (Equip(e), Crafting(c)) = (a, b) {
                         // Add item to crafting input
@@ -4040,21 +4128,27 @@ impl Hud {
                             bypass_dialog: false,
                         });
                     } else if let (Inventory(i), Hotbar(h)) = (a, b) {
-                        if let Some(item) = inventories
-                            .get(info.viewpoint_entity)
-                            .and_then(|inv| inv.get(i.slot))
-                        {
-                            self.hotbar.add_inventory_link(h, item);
-                            events.push(Event::ChangeHotbarState(Box::new(self.hotbar.to_owned())));
+                        if let Slot::Inventory(slot) = i.slot {
+                            if let Some(item) = inventories
+                                .get(info.viewpoint_entity)
+                                .and_then(|inv| inv.get(slot))
+                            {
+                                self.hotbar.add_inventory_link(h, item);
+                                events.push(Event::ChangeHotbarState(Box::new(
+                                    self.hotbar.to_owned(),
+                                )));
+                            }
                         }
                     } else if let (Hotbar(a), Hotbar(b)) = (a, b) {
                         self.hotbar.swap(a, b);
                         events.push(Event::ChangeHotbarState(Box::new(self.hotbar.to_owned())));
                     } else if let (Inventory(i), Trade(t)) = (a, b) {
                         if i.ours == t.ours {
-                            if let Some(inventory) = inventories.get(t.entity) {
+                            if let (Some(inventory), Slot::Inventory(slot)) =
+                                (inventories.get(t.entity), i.slot)
+                            {
                                 events.push(Event::TradeAction(TradeAction::AddItem {
-                                    item: i.slot,
+                                    item: slot,
                                     quantity: i.amount(inventory).unwrap_or(1) / 2,
                                     ours: i.ours,
                                 }));
@@ -4238,24 +4332,26 @@ impl Hud {
                         match slot {
                             Inventory(i) => {
                                 if let Some(inventory) = inventories.get(i.entity) {
-                                    let mut quantity = 1;
-                                    if auto_quantity {
-                                        do_auto_quantity(
-                                            inventory,
-                                            i.slot,
-                                            i.ours,
-                                            false,
-                                            &mut quantity,
-                                        );
-                                        let inv_quantity = i.amount(inventory).unwrap_or(1);
-                                        quantity = quantity.min(inv_quantity);
-                                    }
+                                    if let Slot::Inventory(slot) = i.slot {
+                                        let mut quantity = 1;
+                                        if auto_quantity {
+                                            do_auto_quantity(
+                                                inventory,
+                                                slot,
+                                                i.ours,
+                                                false,
+                                                &mut quantity,
+                                            );
+                                            let inv_quantity = i.amount(inventory).unwrap_or(1);
+                                            quantity = quantity.min(inv_quantity);
+                                        }
 
-                                    events.push(Event::TradeAction(TradeAction::AddItem {
-                                        item: i.slot,
-                                        quantity,
-                                        ours: i.ours,
-                                    }));
+                                        events.push(Event::TradeAction(TradeAction::AddItem {
+                                            item: slot,
+                                            quantity,
+                                            ours: i.ours,
+                                        }));
+                                    }
                                 }
                             },
                             Trade(t) => {
@@ -4515,7 +4611,7 @@ impl Hud {
         ) {
             use slots::InventorySlot;
             if let Some(slots::SlotKind::Inventory(InventorySlot {
-                slot: i,
+                slot: Slot::Inventory(i),
                 ours: true,
                 ..
             })) = slot_manager.selected()
@@ -4565,18 +4661,10 @@ impl Hud {
             if show.map {
                 let new_zoom_lvl = (global_state.settings.interface.map_zoom * factor)
                     .clamped(1.25, max_zoom / 64.0);
-
                 global_state.settings.interface.map_zoom = new_zoom_lvl;
-                global_state
-                    .settings
-                    .save_to_file_warn(&global_state.config_dir);
             } else if global_state.settings.interface.minimap_show {
                 let new_zoom_lvl = global_state.settings.interface.minimap_zoom * factor;
-
                 global_state.settings.interface.minimap_zoom = new_zoom_lvl;
-                global_state
-                    .settings
-                    .save_to_file_warn(&global_state.config_dir);
             }
 
             show.map && global_state.settings.interface.minimap_show
@@ -4645,6 +4733,7 @@ impl Hud {
                 self.ui.focus_widget(if self.typing() {
                     None
                 } else {
+                    self.force_chat = true;
                     Some(self.ids.chat)
                 });
                 true
@@ -4652,6 +4741,7 @@ impl Hud {
             WinEvent::InputUpdate(GameInput::Escape, true) => {
                 if self.typing() {
                     self.ui.focus_widget(None);
+                    self.force_chat = false;
                 } else if self.show.trade {
                     self.events.push(Event::TradeAction(TradeAction::Decline));
                 } else {
@@ -4673,10 +4763,11 @@ impl Hud {
                     true
                 };
 
-                let matching_key = match key {
+                match key {
                     GameInput::Command if state => {
                         self.force_chat_input = Some("/".to_owned());
                         self.force_chat_cursor = Some(Index { line: 0, char: 1 });
+                        self.force_chat = true;
                         self.ui.focus_widget(Some(self.ids.chat));
                         true
                     },
@@ -4769,13 +4860,7 @@ impl Hud {
                             false
                         }
                     },
-                };
-
-                // When a player closes all menus, resets the cursor
-                // to the center of the screen
-                self.show
-                    .toggle_cursor_on_menu_close(global_state, &mut self.ui);
-                matching_key
+                }
             },
             // Else the player is typing in chat
             WinEvent::InputUpdate(_key, _) => self.typing(),
@@ -5047,22 +5132,22 @@ impl Hud {
                                     break;
                                 }
                                 if floater.info.instance == info.instance
-                                    // Group up crits and regular attacks for incoming damage
+                                    // Group up precision hits and regular attacks for incoming damage
                                     && (hit_me
-                                        || floater.info.crit
-                                            == info.crit)
+                                        || floater.info.precise
+                                            == info.precise)
                                 {
                                     floater.info.amount += info.amount;
-                                    if info.crit {
-                                        floater.info.crit = info.crit
+                                    if info.precise {
+                                        floater.info.precise = info.precise
                                     }
                                     return;
                                 }
                             }
 
-                            // To separate healing and damage floaters alongside the crit and
-                            // non-crit ones
-                            let last_floater = if !info.crit || hit_me {
+                            // To separate healing and damage floaters alongside the precise and
+                            // non-precise ones
+                            let last_floater = if !info.precise || hit_me {
                                 floater_list.floaters.iter_mut().rev().find(|f| {
                                     (if info.amount < 0.0 {
                                         f.info.amount < 0.0
@@ -5074,8 +5159,8 @@ impl Hud {
                                         } else {
                                             interface.sct_dmg_accum_duration
                                         }
-                                    // Ignore crit floaters, unless the damage is incoming
-                                    && (hit_me || !f.info.crit)
+                                    // Ignore precise floaters, unless the damage is incoming
+                                    && (hit_me || !f.info.precise)
                                 })
                             } else {
                                 None
@@ -5085,7 +5170,7 @@ impl Hud {
                                 Some(f) => {
                                     f.jump_timer = 0.0;
                                     f.info.amount += info.amount;
-                                    f.info.crit = info.crit;
+                                    f.info.precise = info.precise;
                                 },
                                 _ => {
                                     floater_list.floaters.push(HpFloater {
@@ -5163,6 +5248,8 @@ pub fn get_buff_image(buff: BuffKind, imgs: &Imgs) -> conrod_core::image::Id {
         BuffKind::Regeneration => imgs.buff_plus_0,
         BuffKind::Saturation => imgs.buff_saturation_0,
         BuffKind::Potion => imgs.buff_potion_0,
+        // TODO: Need unique image for Agility (uses same as Hastened atm)
+        BuffKind::Agility => imgs.buff_haste_0,
         BuffKind::CampfireHeal => imgs.buff_campfire_heal_0,
         BuffKind::EnergyRegen => imgs.buff_energyplus_0,
         BuffKind::IncreaseMaxEnergy => imgs.buff_energyplus_0,
@@ -5173,9 +5260,10 @@ pub fn get_buff_image(buff: BuffKind, imgs: &Imgs) -> conrod_core::image::Id {
         BuffKind::Hastened => imgs.buff_haste_0,
         BuffKind::Fortitude => imgs.buff_fortitude_0,
         BuffKind::Reckless => imgs.buff_reckless,
-        BuffKind::Flame => imgs.debuff_burning_0,
-        BuffKind::Frigid => imgs.debuff_frozen_0,
-        BuffKind::Lifesteal => imgs.buff_plus_0,
+        BuffKind::Flame => imgs.buff_flame,
+        BuffKind::Frigid => imgs.buff_frigid,
+        BuffKind::Lifesteal => imgs.buff_lifesteal,
+        BuffKind::Resilience => imgs.buff_resilience,
         // TODO: Get image
         // BuffKind::SalamanderAspect => imgs.debuff_burning_0,
         BuffKind::ImminentCritical => imgs.buff_imminentcritical,
@@ -5184,6 +5272,8 @@ pub fn get_buff_image(buff: BuffKind, imgs: &Imgs) -> conrod_core::image::Id {
         BuffKind::Defiance => imgs.buff_defiance,
         BuffKind::Bloodfeast => imgs.buff_plus_0,
         BuffKind::Berserk => imgs.buff_reckless,
+        BuffKind::ScornfulTaunt => imgs.buff_scornfultaunt,
+        BuffKind::Tenacity => imgs.buff_tenacity,
         //  Debuffs
         BuffKind::Bleeding => imgs.debuff_bleed_0,
         BuffKind::Cursed => imgs.debuff_skull_0,
@@ -5195,100 +5285,18 @@ pub fn get_buff_image(buff: BuffKind, imgs: &Imgs) -> conrod_core::image::Id {
         BuffKind::Poisoned => imgs.debuff_poisoned_0,
         BuffKind::Parried => imgs.debuff_parried_0,
         BuffKind::PotionSickness => imgs.debuff_potionsickness_0,
-        BuffKind::Polymorphed(_) => imgs.debuff_polymorphed,
-    }
-}
-
-pub fn get_buff_title(buff: BuffKind, localized_strings: &Localization) -> Cow<str> {
-    match buff {
-        // Buffs
-        BuffKind::Regeneration => localized_strings.get_msg("buff-title-heal"),
-        BuffKind::Saturation => localized_strings.get_msg("buff-title-saturation"),
-        BuffKind::Potion => localized_strings.get_msg("buff-title-potion"),
-        BuffKind::CampfireHeal => localized_strings.get_msg("buff-title-campfire_heal"),
-        BuffKind::EnergyRegen => localized_strings.get_msg("buff-title-energy_regen"),
-        BuffKind::IncreaseMaxHealth => localized_strings.get_msg("buff-title-increase_max_health"),
-        BuffKind::IncreaseMaxEnergy => localized_strings.get_msg("buff-title-increase_max_energy"),
-        BuffKind::Invulnerability => localized_strings.get_msg("buff-title-invulnerability"),
-        BuffKind::ProtectingWard => localized_strings.get_msg("buff-title-protectingward"),
-        BuffKind::Frenzied => localized_strings.get_msg("buff-title-frenzied"),
-        BuffKind::Hastened => localized_strings.get_msg("buff-title-hastened"),
-        BuffKind::Fortitude => localized_strings.get_msg("buff-title-fortitude"),
-        BuffKind::Reckless => localized_strings.get_msg("buff-title-reckless"),
-        // BuffKind::SalamanderAspect => localized_strings.get_msg("buff-title-salamanderaspect"),
-        BuffKind::Flame => localized_strings.get_msg("buff-title-burn"),
-        BuffKind::Frigid => localized_strings.get_msg("buff-title-frigid"),
-        BuffKind::Lifesteal => localized_strings.get_msg("buff-title-lifesteal"),
-        BuffKind::ImminentCritical => localized_strings.get_msg("buff-title-imminentcritical"),
-        BuffKind::Fury => localized_strings.get_msg("buff-title-fury"),
-        BuffKind::Sunderer => localized_strings.get_msg("buff-title-sunderer"),
-        BuffKind::Defiance => localized_strings.get_msg("buff-title-defiance"),
-        BuffKind::Bloodfeast => localized_strings.get_msg("buff-title-bloodfeast"),
-        BuffKind::Berserk => localized_strings.get_msg("buff-title-berserk"),
-        // Debuffs
-        BuffKind::Bleeding => localized_strings.get_msg("buff-title-bleed"),
-        BuffKind::Cursed => localized_strings.get_msg("buff-title-cursed"),
-        BuffKind::Burning => localized_strings.get_msg("buff-title-burn"),
-        BuffKind::Crippled => localized_strings.get_msg("buff-title-crippled"),
-        BuffKind::Frozen => localized_strings.get_msg("buff-title-frozen"),
-        BuffKind::Wet => localized_strings.get_msg("buff-title-wet"),
-        BuffKind::Ensnared => localized_strings.get_msg("buff-title-ensnared"),
-        BuffKind::Poisoned => localized_strings.get_msg("buff-title-poisoned"),
-        BuffKind::Parried => localized_strings.get_msg("buff-title-parried"),
-        BuffKind::PotionSickness => localized_strings.get_msg("buff-title-potionsickness"),
-        BuffKind::Polymorphed(_) => localized_strings.get_msg("buff-title-polymorphed"),
-    }
-}
-
-pub fn get_buff_desc(buff: BuffKind, data: BuffData, localized_strings: &Localization) -> Cow<str> {
-    match buff {
-        // Buffs
-        BuffKind::Regeneration => localized_strings.get_msg("buff-desc-heal"),
-        BuffKind::Saturation => localized_strings.get_msg("buff-desc-saturation"),
-        BuffKind::Potion => localized_strings.get_msg("buff-desc-potion"),
-        BuffKind::CampfireHeal => {
-            localized_strings.get_msg_ctx("buff-desc-campfire_heal", &i18n::fluent_args! {
-                "rate" => data.strength * 100.0
-            })
-        },
-        BuffKind::EnergyRegen => localized_strings.get_msg("buff-desc-energy_regen"),
-        BuffKind::IncreaseMaxHealth => localized_strings.get_msg("buff-desc-increase_max_health"),
-        BuffKind::IncreaseMaxEnergy => localized_strings.get_msg("buff-desc-increase_max_energy"),
-        BuffKind::Invulnerability => localized_strings.get_msg("buff-desc-invulnerability"),
-        BuffKind::ProtectingWard => localized_strings.get_msg("buff-desc-protectingward"),
-        BuffKind::Frenzied => localized_strings.get_msg("buff-desc-frenzied"),
-        BuffKind::Hastened => localized_strings.get_msg("buff-desc-hastened"),
-        BuffKind::Fortitude => localized_strings.get_msg("buff-desc-fortitude"),
-        BuffKind::Reckless => localized_strings.get_msg("buff-desc-reckless"),
-        // BuffKind::SalamanderAspect => localized_strings.get_msg("buff-desc-salamanderaspect"),
-        BuffKind::Flame => localized_strings.get_msg("buff-desc-flame"),
-        BuffKind::Frigid => localized_strings.get_msg("buff-desc-frigid"),
-        BuffKind::Lifesteal => localized_strings.get_msg("buff-desc-lifesteal"),
-        BuffKind::ImminentCritical => localized_strings.get_msg("buff-desc-imminentcritical"),
-        BuffKind::Fury => localized_strings.get_msg("buff-desc-fury"),
-        BuffKind::Sunderer => localized_strings.get_msg("buff-desc-sunderer"),
-        BuffKind::Defiance => localized_strings.get_msg("buff-desc-defiance"),
-        BuffKind::Bloodfeast => localized_strings.get_msg("buff-desc-bloodfeast"),
-        BuffKind::Berserk => localized_strings.get_msg("buff-desc-berserk"),
-        // Debuffs
-        BuffKind::Bleeding => localized_strings.get_msg("buff-desc-bleed"),
-        BuffKind::Cursed => localized_strings.get_msg("buff-desc-cursed"),
-        BuffKind::Burning => localized_strings.get_msg("buff-desc-burn"),
-        BuffKind::Crippled => localized_strings.get_msg("buff-desc-crippled"),
-        BuffKind::Frozen => localized_strings.get_msg("buff-desc-frozen"),
-        BuffKind::Wet => localized_strings.get_msg("buff-desc-wet"),
-        BuffKind::Ensnared => localized_strings.get_msg("buff-desc-ensnared"),
-        BuffKind::Poisoned => localized_strings.get_msg("buff-desc-poisoned"),
-        BuffKind::Parried => localized_strings.get_msg("buff-desc-parried"),
-        BuffKind::PotionSickness => localized_strings.get_msg("buff-desc-potionsickness"),
-        BuffKind::Polymorphed(_) => localized_strings.get_msg("buff-desc-polymorphed"),
+        BuffKind::Polymorphed => imgs.debuff_polymorphed,
+        BuffKind::Heatstroke => imgs.debuff_heatstroke_0,
+        BuffKind::Rooted => imgs.debuff_rooted,
+        BuffKind::Winded => imgs.debuff_winded,
+        BuffKind::Concussion => imgs.debuff_concussion,
+        BuffKind::Staggered => imgs.debuff_staggered,
     }
 }
 
 pub fn get_sprite_desc(sprite: SpriteKind, localized_strings: &Localization) -> Option<Cow<str>> {
     let i18n_key = match sprite {
-        SpriteKind::Empty => return None,
-        SpriteKind::GlassBarrier => return None,
+        SpriteKind::Empty | SpriteKind::GlassBarrier => return None,
         SpriteKind::Anvil => "hud-crafting-anvil",
         SpriteKind::Cauldron => "hud-crafting-cauldron",
         SpriteKind::CookingPot => "hud-crafting-cooking_pot",
@@ -5307,11 +5315,18 @@ pub fn get_sprite_desc(sprite: SpriteKind, localized_strings: &Localization) -> 
         | SpriteKind::DungeonChest2
         | SpriteKind::DungeonChest3
         | SpriteKind::DungeonChest4
-        | SpriteKind::DungeonChest5 => "common-sprite-chest",
+        | SpriteKind::DungeonChest5
+        | SpriteKind::SahaginChest
+        | SpriteKind::TerracottaChest => "common-sprite-chest",
         SpriteKind::Mud => "common-sprite-mud",
         SpriteKind::Grave => "common-sprite-grave",
         SpriteKind::ChairSingle | SpriteKind::ChairDouble => "common-sprite-chair",
         SpriteKind::Crate => "common-sprite-crate",
+        SpriteKind::HangingSign => "common-sprite-signboard",
+        SpriteKind::StreetLamp => "common-sprite-street_lamp",
+        SpriteKind::Lantern => "common-sprite-lantern",
+        SpriteKind::SeashellLantern => "common-sprite-seashell_lantern",
+        SpriteKind::FireBowlGround => "common-sprite-firebowl_ground",
         sprite => return Some(Cow::Owned(format!("{:?}", sprite))),
     };
     Some(localized_strings.get_msg(i18n_key))
@@ -5347,9 +5362,27 @@ pub fn angle_of_attack_text(
     if v_sq.abs() > 0.0001 {
         let rel_flow_dir = Dir::new(rel_flow / v_sq.sqrt());
         let aoe = fluid_dynamics::angle_of_attack(&glider_ori, &rel_flow_dir);
-        format!("Angle of Attack: {:.1}", aoe.to_degrees())
+        let (rel_x, rel_y, rel_z) = (rel_flow.x, rel_flow.y, rel_flow.z);
+        format!(
+            "Angle of Attack: {:.1} ({:.1},{:.1},{:.1})",
+            aoe.to_degrees(),
+            rel_x,
+            rel_y,
+            rel_z
+        )
     } else {
         "Angle of Attack: Not moving".to_owned()
+    }
+}
+
+fn air_velocity(fluid: Option<comp::Fluid>) -> String {
+    if let Some(comp::Fluid::Air { vel: air_vel, .. }) = fluid {
+        format!(
+            "Air Velocity: ({:.1}, {:.1}, {:.1})",
+            air_vel.0.x, air_vel.0.y, air_vel.0.z
+        )
+    } else {
+        "Air Velocity: Not in Air".to_owned()
     }
 }
 

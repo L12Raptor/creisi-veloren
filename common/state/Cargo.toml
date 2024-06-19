@@ -6,7 +6,7 @@ version = "0.10.0"
 
 [features]
 simd = ["vek/platform_intrinsics"]
-plugins = ["toml", "tar", "wasmer", "wasmer-wasix-types", "bincode", "plugin-api", "serde"]
+plugins = ["common-assets/plugins", "toml", "wasmtime", "wasmtime-wasi", "tar", "bincode", "serde", "dep:sha2", "dep:hex"]
 
 default = ["simd"]
 
@@ -15,6 +15,7 @@ common = { package = "veloren-common", path = ".." }
 common-net = { package = "veloren-common-net", path = "../net" }
 common-ecs = { package = "veloren-common-ecs", path = "../ecs" }
 common-base = { package = "veloren-common-base", path = "../base" }
+common-assets = { package = "veloren-common-assets", path = "../assets", optional = true}
 
 rayon = { workspace = true }
 num_cpus = "1.0"
@@ -30,13 +31,17 @@ specs = { workspace = true, features = ["serde", "storage-event-control", "deriv
 # Plugins
 scopeguard = "1.1.0"
 serde = { workspace = true, optional = true }
-toml = { version = "0.7", optional = true }
+toml = { version = "0.8", optional = true }
 tar = { version = "0.4.37", optional = true }
-wasmer = { version = "4.0.0", optional = true, default-features = false, features = ["sys", "wat", "cranelift"] }
 bincode = { workspace = true, optional = true }
-plugin-api = { package = "veloren-plugin-api", path = "../../plugin/api", optional = true }
 timer-queue = "0.1.0"
-wasmer-wasix-types = { version = "0.9.0", optional = true, default-features = false }
+wasmtime = { version = "20.0.2", optional = true , features = ["component-model", "async"] }
+wasmtime-wasi = { version = "20.0.2", optional = true }
+async-trait = { workspace = true }
+bytes = "^1"
+futures = "0.3.30"
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 
 # Tweak running code
 #inline_tweak = { version = "1.0.8", features = ["release_tweak"] }

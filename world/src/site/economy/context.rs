@@ -131,11 +131,18 @@ impl Environment {
                     SiteKind::GiantTree(_) => (),
                     SiteKind::Gnarling(_) => {},
                     SiteKind::Adlet(_) => {},
+                    SiteKind::Cultist(_) => {},
+                    SiteKind::Sahagin(_) => {},
+                    SiteKind::Haniwa(_) => {},
                     SiteKind::JungleRuin(_) => {},
                     SiteKind::ChapelSite(_) => {},
                     SiteKind::DwarvenMine(_) => {},
+                    SiteKind::Terracotta(_) => {},
                     SiteKind::Bridge(_) => {},
                     SiteKind::PirateHideout(_) => {},
+                    SiteKind::RockCircle(_) => {},
+                    SiteKind::TrollCave(_) => {},
+                    SiteKind::Camp(_) => {},
                 }
             }
             if towns.valid() {
@@ -331,7 +338,7 @@ mod tests {
         execute_with_tracing(Level::INFO, || {
             let threadpool = rayon::ThreadPoolBuilder::new().build().unwrap();
             info!("init");
-            let seed = 59686;
+            let seed = sim::DEFAULT_WORLD_SEED;
             let opts = sim::WorldOpts {
                 seed_elements: true,
                 world_file: sim::FileOpts::LoadAsset(sim::DEFAULT_WORLD_MAP.into()),
@@ -340,9 +347,9 @@ mod tests {
             };
             let mut index = crate::index::Index::new(seed);
             info!("Index created");
-            let mut sim = sim::WorldSim::generate(seed, opts, &threadpool);
+            let mut sim = sim::WorldSim::generate(seed, opts, &threadpool, &|_| {});
             info!("World loaded");
-            let _civs = crate::civ::Civs::generate(seed, &mut sim, &mut index);
+            let _civs = crate::civ::Civs::generate(seed, &mut sim, &mut index, None, &|_| {});
             info!("Civs created");
             crate::sim2::simulate(&mut index, &mut sim);
             show_economy(&index.sites, &None);
@@ -357,7 +364,7 @@ mod tests {
         execute_with_tracing(Level::INFO, || {
             let threadpool = rayon::ThreadPoolBuilder::new().build().unwrap();
             info!("init");
-            let seed = 59686;
+            let seed = sim::DEFAULT_WORLD_SEED;
             let opts = sim::WorldOpts {
                 seed_elements: true,
                 world_file: sim::FileOpts::LoadAsset(sim::DEFAULT_WORLD_MAP.into()),
@@ -366,12 +373,12 @@ mod tests {
             };
             let mut index = crate::index::Index::new(seed);
             info!("Index created");
-            let mut sim = sim::WorldSim::generate(seed, opts, &threadpool);
+            let mut sim = sim::WorldSim::generate(seed, opts, &threadpool, &|_| {});
             info!("World loaded");
             let mut names = None;
             let regenerate_input = false;
             if regenerate_input {
-                let _civs = crate::civ::Civs::generate(seed, &mut sim, &mut index);
+                let _civs = crate::civ::Civs::generate(seed, &mut sim, &mut index, None, &|_| {});
                 info!("Civs created");
                 let mut outarr: Vec<EconomySetup> = Vec::new();
                 for i in index.sites.values() {
@@ -497,7 +504,7 @@ mod tests {
         execute_with_tracing(Level::ERROR, || {
             let threadpool = rayon::ThreadPoolBuilder::new().build().unwrap();
             info!("init");
-            let seed = 59686;
+            let seed = sim::DEFAULT_WORLD_SEED;
             let opts = sim::WorldOpts {
                 seed_elements: true,
                 world_file: sim::FileOpts::LoadAsset(sim::DEFAULT_WORLD_MAP.into()),
@@ -505,7 +512,7 @@ mod tests {
             };
             let index = crate::index::Index::new(seed);
             info!("Index created");
-            let mut sim = sim::WorldSim::generate(seed, opts, &threadpool);
+            let mut sim = sim::WorldSim::generate(seed, opts, &threadpool, &|_| {});
             info!("World loaded");
             let rng = ChaChaRng::from_seed(seed_expan::rng_state(seed));
             let mut env = Simenv {

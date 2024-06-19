@@ -2,7 +2,7 @@ use common::clock::Clock;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use server::{
     persistence::{DatabaseSettings, SqlLogMode},
-    Error as ServerError, Event, Input, Server,
+    Error as ServerError, Event, Input, Server, ServerInitStage,
 };
 use std::{
     sync::{
@@ -26,6 +26,7 @@ pub struct Singleplayer {
     _server_thread: JoinHandle<()>,
     stop_server_s: Sender<()>,
     pub receiver: Receiver<Result<(), ServerError>>,
+    pub init_stage_receiver: Receiver<ServerInitStage>,
     // Wether the server is stopped or not
     paused: Arc<AtomicBool>,
 }
@@ -72,11 +73,10 @@ impl SingleplayerState {
             let mut settings = server::Settings::singleplayer(&server_data_dir);
             let editable_settings = server::EditableSettings::singleplayer(&server_data_dir);
 
-            let file_opts = if let Some(gen_opts) = &world.gen_opts && !world.is_generated {
-                server::FileOpts::Save(
-                    world.map_path.clone(),
-                    gen_opts.clone(),
-                )
+            let file_opts = if let Some(gen_opts) = &world.gen_opts
+                && !world.is_generated
+            {
+                server::FileOpts::Save(world.map_path.clone(), gen_opts.clone())
             } else {
                 if !world.is_generated && world.gen_opts.is_none() {
                     world.copy_default_world();
@@ -86,8 +86,11 @@ impl SingleplayerState {
 
             settings.map_file = Some(file_opts);
             settings.world_seed = world.seed;
+            settings.day_length = world.day_length;
 
             let (stop_server_s, stop_server_r) = unbounded();
+
+            let (server_stage_tx, server_stage_rx) = unbounded();
 
             // Create server
 
@@ -110,6 +113,7 @@ impl SingleplayerState {
 
             let builder = thread::Builder::new().name("singleplayer-server-thread".into());
             let runtime = Arc::clone(runtime);
+            #[allow(clippy::blocks_in_conditions)]
             let thread = builder
                 .spawn(move || {
                     trace!("starting singleplayer server thread");
@@ -119,6 +123,9 @@ impl SingleplayerState {
                         editable_settings,
                         database_settings,
                         &server_data_dir,
+                        &|init_stage| {
+                            let _ = server_stage_tx.send(init_stage);
+                        },
                         runtime,
                     ) {
                         Ok(server) => (Some(server), Ok(())),
@@ -143,6 +150,7 @@ impl SingleplayerState {
             *self = SingleplayerState::Running(Singleplayer {
                 _server_thread: thread,
                 stop_server_s,
+                init_stage_receiver: server_stage_rx,
                 receiver: result_receiver,
                 paused,
             });

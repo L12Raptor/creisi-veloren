@@ -5,6 +5,7 @@ use super::{
 use common::{
     comp::item::{Hands, ToolKind},
     states::utils::StageSection,
+    util::Dir,
 };
 use std::f32::consts::PI;
 
@@ -19,6 +20,7 @@ type RollAnimationDependency = (
     Vec3<f32>,
     f32,
     Option<StageSection>,
+    Option<Dir>,
 );
 
 impl Animation for RollAnimation {
@@ -34,13 +36,14 @@ impl Animation for RollAnimation {
         skeleton: &Self::Skeleton,
         (
             active_tool_kind,
-            _second_tool_kind,
+            second_tool_kind,
             hands,
             wield_status,
             orientation,
             last_ori,
             _global_time,
             stage_section,
+            prev_aimed_dir,
         ): Self::Dependency<'_>,
         anim_time: f32,
         rate: &mut f32,
@@ -164,6 +167,18 @@ impl Animation for RollAnimation {
 
                         next.control.position = Vec3::new(-11.0, 1.8, 4.0);
                     },
+                    Some(ToolKind::Shield) => {
+                        next.hand_l.position = Vec3::new(0.0, -1.5, 0.0);
+                        next.hand_l.orientation = Quaternion::rotation_x(PI / 2.0);
+
+                        next.hand_r.position = Vec3::new(0.0, 0.0, 0.0);
+                        next.hand_r.orientation =
+                            Quaternion::rotation_x(PI / 2.0) * Quaternion::rotation_y(2.0);
+
+                        next.control.position = Vec3::new(0.0, 7.0, 4.0);
+                        next.control.orientation =
+                            Quaternion::rotation_y(-0.5) * Quaternion::rotation_z(-1.25);
+                    },
                     _ => {},
                 },
                 (_, _) => {},
@@ -203,30 +218,20 @@ impl Animation for RollAnimation {
                 (_, _) => {},
             }
         } else {
-            next.hand_l.position = Vec3::new(
-                -s_a.hand.0,
-                s_a.hand.1 + 1.0 * movement1,
-                s_a.hand.2 + 2.0 * movement1,
-            );
-
-            next.hand_l.orientation = Quaternion::rotation_x(0.6 * movement1);
-
-            next.hand_r.position = Vec3::new(
-                -1.0 * movement1 + s_a.hand.0,
-                s_a.hand.1 + 1.0 * movement1,
-                s_a.hand.2 + 2.0 * movement1,
-            );
-            next.hand_r.orientation = Quaternion::rotation_x(0.6 * movement1);
-        };
+            next.do_tools_on_back(hands, active_tool_kind, second_tool_kind);
+        }
         next.head.position = Vec3::new(
             0.0,
             s_a.head.0 + 1.5 * movement1,
             s_a.head.1 - 1.0 * movement1,
         );
-        next.head.orientation = Quaternion::rotation_x(-0.3 * movement1);
+        next.head.orientation = if prev_aimed_dir.is_some() {
+            Quaternion::identity()
+        } else {
+            Quaternion::rotation_x(-0.3 * movement1) * Quaternion::rotation_y(-0.4)
+        };
 
         next.chest.position = Vec3::new(0.0, s_a.chest.0, -9.5 * movement1 + s_a.chest.1);
-        next.chest.orientation = Quaternion::rotation_x(-0.2 * movement1);
 
         next.belt.position = Vec3::new(
             0.0,
@@ -235,31 +240,99 @@ impl Animation for RollAnimation {
         );
         next.belt.orientation = Quaternion::rotation_x(0.55 * movement1);
 
-        next.shorts.position = Vec3::new(
-            0.0,
-            s_a.shorts.0 + 4.5 * movement1,
-            s_a.shorts.1 + 2.5 * movement1,
-        );
-        next.shorts.orientation = Quaternion::rotation_x(0.8 * movement1);
+        if let Some(prev_aimed_dir) = prev_aimed_dir {
+            let forward = prev_aimed_dir.dot(orientation.into()).abs();
+            let sideways = 1.0 - forward;
 
-        next.foot_l.position = Vec3::new(
-            1.0 * movement1 - s_a.foot.0,
-            s_a.foot.1 + 5.5 * movement1,
-            s_a.foot.2 - 5.0 * movement1,
-        );
-        next.foot_l.orientation = Quaternion::rotation_x(0.9 * movement1);
+            if matches!(hands.0, None | Some(Hands::One)) {
+                next.hand_l.position += Vec3::new(-2.0, -8.0, 6.0);
+                next.hand_l.orientation =
+                    next.hand_l.orientation * Quaternion::rotation_z(PI * -0.25);
 
-        next.foot_r.position = Vec3::new(
-            1.0 * movement1 + s_a.foot.0,
-            s_a.foot.1 + 5.5 * movement1,
-            s_a.foot.2 - 5.0 * movement1,
-        );
-        next.foot_r.orientation = Quaternion::rotation_x(0.9 * movement1);
+                next.main.position += Vec3::new(-2.0, -6.0, 8.0);
+                next.main.orientation = next.main.orientation * Quaternion::rotation_x(PI * 0.6);
+            }
 
-        next.torso.position = Vec3::new(0.0, 0.0, 7.0 * movement1);
-        next.torso.orientation =
-            Quaternion::rotation_x(-0.3 + movement1 * -0.4 + movement2 * -2.0 * PI)
-                * Quaternion::rotation_z(tilt * -10.0);
+            if matches!(hands.1, None | Some(Hands::One)) {
+                next.hand_r.position += Vec3::new(2.0, -6.0, 6.0);
+                next.hand_r.orientation =
+                    next.hand_r.orientation * Quaternion::rotation_z(PI * 0.25);
+
+                next.second.position += Vec3::new(2.0, -8.0, 8.0);
+                next.second.orientation =
+                    next.second.orientation * Quaternion::rotation_x(PI * 0.6);
+            }
+
+            next.shorts.position =
+                Vec3::new(0.0, s_a.shorts.0 + 0.5 * movement1, s_a.shorts.1 - 1.0);
+
+            next.shorts.orientation = Quaternion::rotation_x(0.0 * movement1);
+
+            next.foot_l.position = Vec3::new(
+                1.0 * movement1 - s_a.foot.0 - 4.0 * sideways,
+                s_a.foot.1 + 5.5 * movement1 * forward,
+                s_a.foot.2 - 5.0 * movement1 - 5.0,
+            );
+            next.foot_l.orientation =
+                Quaternion::rotation_x(0.5 * forward) * Quaternion::rotation_y(0.8 * sideways);
+
+            next.foot_r.position = Vec3::new(
+                1.0 * movement1 + s_a.foot.0 + 4.0 * sideways,
+                s_a.foot.1 - (5.5 * movement1 + 4.0) * forward,
+                s_a.foot.2 - 5.0 * movement1 - 3.0,
+            );
+            next.foot_r.orientation =
+                Quaternion::rotation_x(1.5 * forward) * Quaternion::rotation_y(-0.8 * sideways);
+        } else {
+            next.chest.orientation = Quaternion::rotation_x(-0.2 * movement1);
+
+            next.shorts.position = Vec3::new(
+                0.0,
+                s_a.shorts.0 + 4.5 * movement1,
+                s_a.shorts.1 + 2.5 * movement1,
+            );
+            next.shorts.orientation = Quaternion::rotation_x(0.8 * movement1);
+
+            next.foot_l.position = Vec3::new(
+                1.0 * movement1 - s_a.foot.0 + 5.0,
+                s_a.foot.1 + 5.5 * movement1,
+                s_a.foot.2 - 5.0 * movement1,
+            );
+            next.foot_l.orientation = Quaternion::rotation_x(0.9 * movement1);
+
+            next.foot_r.position = Vec3::new(
+                1.0 * movement1 + s_a.foot.0 + 3.0,
+                s_a.foot.1 + 5.5 * movement1,
+                s_a.foot.2 - 5.0 * movement1,
+            );
+            next.foot_r.orientation = Quaternion::rotation_x(0.9 * movement1);
+        }
+
+        next.torso.position = if prev_aimed_dir.is_some() {
+            Vec3::new(0.0, 0.0, 4.0 + 7.0 * movement1)
+        } else {
+            Vec3::new(4.0, 0.0, 7.0 * movement1)
+        };
+        let roll_spin = Quaternion::rotation_x(-0.3 + movement1 * -0.4 + movement2 * -2.0 * PI);
+        next.torso.orientation = if let Some(prev_aimed_dir) = prev_aimed_dir {
+            // This is *slightly* hacky. Because rolling is not strafed movement, we
+            // actually correct for the entity orientation to make sure that our
+            // rolling motion is correct with respect to our original orientation
+            roll_spin
+                * Dir::from_unnormalized(orientation.into_array().into())
+                    .zip(prev_aimed_dir.to_horizontal())
+                    .map(|(ori, prev_aimed_dir)| {
+                        Quaternion::<f32>::from_vec4(
+                            ori.rotation_between(prev_aimed_dir)
+                                .into_vec4()
+                                .into_array()
+                                .into(),
+                        )
+                    })
+                    .unwrap_or_default()
+        } else {
+            roll_spin * Quaternion::rotation_z(tilt * -10.0) * Quaternion::rotation_y(-0.6)
+        };
 
         next
     }

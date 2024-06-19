@@ -32,7 +32,7 @@ pub fn is_dead(entity: EcsEntity, read_data: &ReadData) -> bool {
 pub fn is_invulnerable(entity: EcsEntity, read_data: &ReadData) -> bool {
     let buffs = read_data.buffs.get(entity);
 
-    buffs.map_or(false, |b| b.kinds.contains_key(&BuffKind::Invulnerability))
+    buffs.map_or(false, |b| b.kinds[BuffKind::Invulnerability].is_some())
 }
 
 /// Gets alignment of owner if alignment given is `Owned`.
@@ -80,11 +80,12 @@ pub fn stop_pursuing(
     dur_since_last_attacked: f64,
     psyche: &Psyche,
 ) -> bool {
-    should_let_target_escape(
-        dist_to_home_sqrd,
-        dur_since_last_attacked,
-        own_health_fraction,
-    ) > should_continue_to_pursue(dist_to_target_sqrd, psyche, target_health_fraction)
+    psyche.should_stop_pursuing
+        && should_let_target_escape(
+            dist_to_home_sqrd,
+            dur_since_last_attacked,
+            own_health_fraction,
+        ) > should_continue_to_pursue(dist_to_target_sqrd, psyche, target_health_fraction)
 }
 
 /// Scores the benefit of continuing the pursue in value from 0 to infinity.
@@ -204,7 +205,7 @@ impl<'a> AgentData<'a> {
         read_data
             .buffs
             .get(*self.entity)
-            .map_or(false, |b| b.kinds.contains_key(&buff))
+            .map_or(false, |b| b.kinds[buff].is_some())
     }
 
     pub fn extract_ability(&self, input: AbilityInput) -> Option<AbilityData> {
@@ -219,6 +220,7 @@ impl<'a> AgentData<'a> {
                     self.body,
                     Some(self.char_state),
                     &context,
+                    self.stats,
                 )
                 .map_or(Default::default(), |a| a.0),
         )
@@ -248,15 +250,15 @@ pub fn handle_attack_aggression(
     position_flee_index: usize,
 ) -> bool {
     if let Some(health) = agent_data.health {
-        agent.action_state.int_counters[icounter_action_mode_index] = if health.fraction() < 0.1 {
-            agent.action_state.positions[position_guarded_cover_index] = None;
+        agent.combat_state.int_counters[icounter_action_mode_index] = if health.fraction() < 0.1 {
+            agent.combat_state.positions[position_guarded_cover_index] = None;
             ActionMode::Fleeing as u8
         } else if health.fraction() < 0.9 {
-            agent.action_state.positions[position_flee_index] = None;
+            agent.combat_state.positions[position_flee_index] = None;
             ActionMode::Guarded as u8
         } else {
-            agent.action_state.positions[position_guarded_cover_index] = None;
-            agent.action_state.positions[position_flee_index] = None;
+            agent.combat_state.positions[position_guarded_cover_index] = None;
+            agent.combat_state.positions[position_flee_index] = None;
             ActionMode::Reckless as u8
         };
     }
@@ -264,48 +266,48 @@ pub fn handle_attack_aggression(
     // If agent has not moved, assume agent was unable to move and reset attempted
     // path positions if occurs for too long
     if agent_data.vel.0.magnitude_squared() < 1_f32.powi(2) {
-        agent.action_state.timers[timer_pos_timeout_index] += read_data.dt.0;
+        agent.combat_state.timers[timer_pos_timeout_index] += read_data.dt.0;
     } else {
-        agent.action_state.timers[timer_pos_timeout_index] = 0.0;
+        agent.combat_state.timers[timer_pos_timeout_index] = 0.0;
     }
 
-    if agent.action_state.timers[timer_pos_timeout_index] > 2.0 {
-        agent.action_state.positions[position_guarded_cover_index] = None;
-        agent.action_state.positions[position_flee_index] = None;
-        agent.action_state.timers[timer_pos_timeout_index] = 0.0;
+    if agent.combat_state.timers[timer_pos_timeout_index] > 2.0 {
+        agent.combat_state.positions[position_guarded_cover_index] = None;
+        agent.combat_state.positions[position_flee_index] = None;
+        agent.combat_state.timers[timer_pos_timeout_index] = 0.0;
     }
 
-    match ActionMode::from_u8(agent.action_state.int_counters[icounter_action_mode_index]) {
+    match ActionMode::from_u8(agent.combat_state.int_counters[icounter_action_mode_index]) {
         ActionMode::Reckless => true,
         ActionMode::Guarded => {
-            agent.action_state.timers[timer_guarded_cycle_index] += read_data.dt.0;
-            if agent.action_state.timers[timer_guarded_cycle_index]
-                > agent.action_state.counters[fcounter_guarded_timer_index]
+            agent.combat_state.timers[timer_guarded_cycle_index] += read_data.dt.0;
+            if agent.combat_state.timers[timer_guarded_cycle_index]
+                > agent.combat_state.counters[fcounter_guarded_timer_index]
             {
-                agent.action_state.timers[timer_guarded_cycle_index] = 0.0;
-                agent.action_state.conditions[condition_guarded_defend_index] ^= true;
-                agent.action_state.counters[fcounter_guarded_timer_index] =
-                    if agent.action_state.conditions[condition_guarded_defend_index] {
+                agent.combat_state.timers[timer_guarded_cycle_index] = 0.0;
+                agent.combat_state.conditions[condition_guarded_defend_index] ^= true;
+                agent.combat_state.counters[fcounter_guarded_timer_index] =
+                    if agent.combat_state.conditions[condition_guarded_defend_index] {
                         rng.gen_range(3.0..6.0)
                     } else {
                         rng.gen_range(6.0..10.0)
                     };
             }
-            if let Some(pos) = agent.action_state.positions[position_guarded_cover_index] {
+            if let Some(pos) = agent.combat_state.positions[position_guarded_cover_index] {
                 if pos.distance_squared(agent_data.pos.0) < 3_f32.powi(2) {
-                    agent.action_state.positions[position_guarded_cover_index] = None;
+                    agent.combat_state.positions[position_guarded_cover_index] = None;
                 }
             }
-            if !agent.action_state.conditions[condition_guarded_defend_index] {
-                agent.action_state.positions[position_guarded_cover_index] = None;
+            if !agent.combat_state.conditions[condition_guarded_defend_index] {
+                agent.combat_state.positions[position_guarded_cover_index] = None;
                 true
             } else {
                 if attack_data.dist_sqrd > 10_f32.powi(2) {
                     // Choose random point to either side when looking at target and move
                     // towards it
-                    if let Some(pos) = agent.action_state.positions[position_guarded_cover_index] {
+                    if let Some(pos) = agent.combat_state.positions[position_guarded_cover_index] {
                         if pos.distance_squared(agent_data.pos.0) < 5_f32.powi(2) {
-                            agent.action_state.positions[position_guarded_cover_index] = None;
+                            agent.combat_state.positions[position_guarded_cover_index] = None;
                         }
                         agent_data.path_toward_target(
                             agent,
@@ -316,7 +318,7 @@ pub fn handle_attack_aggression(
                             None,
                         );
                     } else {
-                        agent.action_state.positions[position_guarded_cover_index] = {
+                        agent.combat_state.positions[position_guarded_cover_index] = {
                             let rand_dir = {
                                 let dir = (tgt_data.pos.0 - agent_data.pos.0)
                                     .try_normalized()
@@ -344,7 +346,7 @@ pub fn handle_attack_aggression(
                             Some(agent_data.pos.0 + rand_dir * actual_dist)
                         };
                     }
-                } else if let Some(pos) = agent.action_state.positions[position_guarded_cover_index]
+                } else if let Some(pos) = agent.combat_state.positions[position_guarded_cover_index]
                 {
                     agent_data.path_toward_target(
                         agent,
@@ -354,15 +356,15 @@ pub fn handle_attack_aggression(
                         Path::Separate,
                         None,
                     );
-                    if agent.action_state.conditions[condition_rolling_breakthrough_index] {
+                    if agent.combat_state.conditions[condition_rolling_breakthrough_index] {
                         controller.push_basic_input(InputKind::Roll);
-                        agent.action_state.conditions[condition_rolling_breakthrough_index] = false;
+                        agent.combat_state.conditions[condition_rolling_breakthrough_index] = false;
                     }
                     if tgt_data.char_state.map_or(false, |cs| cs.is_melee_attack()) {
                         controller.push_basic_input(InputKind::Block);
                     }
                 } else {
-                    agent.action_state.positions[position_guarded_cover_index] = {
+                    agent.combat_state.positions[position_guarded_cover_index] = {
                         let backwards = (agent_data.pos.0 - tgt_data.pos.0)
                             .try_normalized()
                             .unwrap_or(Vec3::unit_x())
@@ -380,7 +382,7 @@ pub fn handle_attack_aggression(
                         {
                             agent_data.pos.0 + backwards * 5.0
                         } else {
-                            agent.action_state.conditions[condition_rolling_breakthrough_index] =
+                            agent.combat_state.conditions[condition_rolling_breakthrough_index] =
                                 true;
                             agent_data.pos.0
                                 - backwards
@@ -403,16 +405,16 @@ pub fn handle_attack_aggression(
             }
         },
         ActionMode::Fleeing => {
-            if agent.action_state.conditions[condition_rolling_breakthrough_index] {
+            if agent.combat_state.conditions[condition_rolling_breakthrough_index] {
                 controller.push_basic_input(InputKind::Roll);
-                agent.action_state.conditions[condition_rolling_breakthrough_index] = false;
+                agent.combat_state.conditions[condition_rolling_breakthrough_index] = false;
             }
-            if let Some(pos) = agent.action_state.positions[position_flee_index] {
+            if let Some(pos) = agent.combat_state.positions[position_flee_index] {
                 if let Some(dir) = Dir::from_unnormalized(pos - agent_data.pos.0) {
                     controller.inputs.look_dir = dir;
                 }
                 if pos.distance_squared(agent_data.pos.0) < 5_f32.powi(2) {
-                    agent.action_state.positions[position_flee_index] = None;
+                    agent.combat_state.positions[position_flee_index] = None;
                 }
                 agent_data.path_toward_target(
                     agent,
@@ -423,7 +425,7 @@ pub fn handle_attack_aggression(
                     None,
                 );
             } else {
-                agent.action_state.positions[position_flee_index] = {
+                agent.combat_state.positions[position_flee_index] = {
                     let rand_dir = {
                         let dir = (agent_data.pos.0 - tgt_data.pos.0)
                             .try_normalized()
@@ -453,7 +455,7 @@ pub fn handle_attack_aggression(
                             .cast()
                             .0
                             - 1.0;
-                        agent.action_state.conditions[condition_rolling_breakthrough_index] = true;
+                        agent.combat_state.conditions[condition_rolling_breakthrough_index] = true;
                         Some(agent_data.pos.0 - rand_dir * dist)
                     } else {
                         Some(agent_data.pos.0 + rand_dir * actual_dist)

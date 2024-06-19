@@ -1,38 +1,28 @@
-pub mod alpha;
-pub mod beam;
-pub mod beta;
-pub mod block;
-pub mod chargeswing;
+pub mod basic;
+pub mod boost;
 pub mod climb;
 pub mod collect;
-pub mod combomelee;
 pub mod consume;
 pub mod dance;
-pub mod dash;
-pub mod divemelee;
 pub mod equip;
-pub mod finishermelee;
 pub mod glidewield;
 pub mod gliding;
 pub mod idle;
 pub mod jump;
-pub mod leapmelee;
 pub mod mount;
+pub mod multi;
 pub mod music;
-pub mod rapidmelee;
-pub mod repeater;
-pub mod ripostemelee;
+pub mod pet;
 pub mod roll;
 pub mod run;
-pub mod selfbuff;
-pub mod shockwave;
-pub mod shoot;
 pub mod sit;
+pub mod sleep;
 pub mod sneak;
 pub mod sneakequip;
 pub mod sneakwield;
 pub mod staggered;
 pub mod stand;
+pub mod steer;
 pub mod stunned;
 pub mod swim;
 pub mod swimwield;
@@ -42,23 +32,43 @@ pub mod wield;
 
 // Reexports
 pub use self::{
-    alpha::AlphaAnimation, beam::BeamAnimation, beta::BetaAnimation, block::BlockAnimation,
-    chargeswing::ChargeswingAnimation, climb::ClimbAnimation, collect::CollectAnimation,
-    combomelee::ComboAnimation, consume::ConsumeAnimation, dance::DanceAnimation,
-    dash::DashAnimation, divemelee::DiveMeleeAnimation, equip::EquipAnimation,
-    finishermelee::FinisherMeleeAnimation, glidewield::GlideWieldAnimation,
-    gliding::GlidingAnimation, idle::IdleAnimation, jump::JumpAnimation, leapmelee::LeapAnimation,
-    mount::MountAnimation, music::MusicAnimation, rapidmelee::RapidMeleeAnimation,
-    repeater::RepeaterAnimation, ripostemelee::RiposteMeleeAnimation, roll::RollAnimation,
-    run::RunAnimation, selfbuff::SelfBuffAnimation, shockwave::ShockwaveAnimation,
-    shoot::ShootAnimation, sit::SitAnimation, sneak::SneakAnimation,
-    sneakequip::SneakEquipAnimation, sneakwield::SneakWieldAnimation,
-    staggered::StaggeredAnimation, stand::StandAnimation, stunned::StunnedAnimation,
-    swim::SwimAnimation, swimwield::SwimWieldAnimation, talk::TalkAnimation,
-    wallrun::WallrunAnimation, wield::WieldAnimation,
+    basic::{BasicAction, BasicActionDependency},
+    boost::BoostAnimation,
+    climb::ClimbAnimation,
+    collect::CollectAnimation,
+    consume::ConsumeAnimation,
+    dance::DanceAnimation,
+    equip::EquipAnimation,
+    glidewield::GlideWieldAnimation,
+    gliding::GlidingAnimation,
+    idle::IdleAnimation,
+    jump::JumpAnimation,
+    mount::MountAnimation,
+    multi::{MultiAction, MultiActionDependency},
+    music::MusicAnimation,
+    pet::PetAnimation,
+    roll::RollAnimation,
+    run::RunAnimation,
+    sit::SitAnimation,
+    sleep::SleepAnimation,
+    sneak::SneakAnimation,
+    sneakequip::SneakEquipAnimation,
+    sneakwield::SneakWieldAnimation,
+    staggered::StaggeredAnimation,
+    stand::StandAnimation,
+    steer::SteerAnimation,
+    stunned::StunnedAnimation,
+    swim::SwimAnimation,
+    swimwield::SwimWieldAnimation,
+    talk::TalkAnimation,
+    wallrun::WallrunAnimation,
+    wield::WieldAnimation,
 };
 use super::{make_bone, vek::*, FigureBoneData, Offsets, Skeleton, TrailSource};
-use common::comp;
+use common::comp::{
+    self,
+    tool::{Hands, ToolKind},
+};
 use core::{convert::TryFrom, f32::consts::PI};
 
 pub type Body = comp::humanoid::Body;
@@ -86,6 +96,8 @@ skeleton_impls!(struct CharacterSkeleton {
     control_r,
     :: // Begin non-bone fields
     holding_lantern: bool,
+    // The offset from the back that carried weapons should be given to avoid clipping due to, say, a backpack
+    back_carry_offset: f32,
     main_weapon_trail: bool,
     off_weapon_trail: bool,
     // Cannot exist at same time as weapon trails. Since gliding and attacking are mutually exclusive, should never be a concern.
@@ -93,9 +105,10 @@ skeleton_impls!(struct CharacterSkeleton {
 });
 
 impl CharacterSkeleton {
-    pub fn new(holding_lantern: bool) -> Self {
+    pub fn new(holding_lantern: bool, back_carry_offset: f32) -> Self {
         Self {
             holding_lantern,
+            back_carry_offset,
             ..Self::default()
         }
     }
@@ -329,4 +342,189 @@ impl<'a> From<&'a Body> for SkeletonAttr {
             bc: (-5.0, 9.0, 1.0, 0.0, 1.2, -0.6),
         }
     }
+}
+
+impl CharacterSkeleton {
+    /// Animate tools (main and secondary) on the character's back, taking in
+    /// account backpack offsets.
+    pub fn do_tools_on_back(
+        &mut self,
+        hands: (Option<Hands>, Option<Hands>),
+        active_tool_kind: Option<ToolKind>,
+        second_tool_kind: Option<ToolKind>,
+    ) {
+        match (hands, active_tool_kind, second_tool_kind) {
+            ((Some(Hands::Two), _), tool, _) | ((None, Some(Hands::Two)), _, tool) => match tool {
+                Some(ToolKind::Bow) => {
+                    self.main.position = Vec3::new(0.0, -5.0 - self.back_carry_offset, 6.0);
+                    self.main.orientation =
+                        Quaternion::rotation_y(2.5) * Quaternion::rotation_z(PI / 2.0);
+                },
+                Some(ToolKind::Staff) | Some(ToolKind::Sceptre) => {
+                    self.main.position = Vec3::new(2.0, -5.0 - self.back_carry_offset, -1.0);
+                    self.main.orientation =
+                        Quaternion::rotation_y(-0.5) * Quaternion::rotation_z(PI / 2.0);
+                },
+                Some(ToolKind::Shield) => {
+                    self.main.position = Vec3::new(-2.0, -3.0 - self.back_carry_offset, 1.0);
+                    self.main.orientation =
+                        Quaternion::rotation_y(-0.75) * Quaternion::rotation_z(PI / 2.0);
+                },
+                _ => {
+                    self.main.position = Vec3::new(-7.0, -5.0 - self.back_carry_offset, 15.0);
+                    self.main.orientation =
+                        Quaternion::rotation_y(2.5) * Quaternion::rotation_z(PI / 2.0);
+                },
+            },
+            ((_, _), _, _) => {},
+        }
+
+        match hands {
+            (Some(Hands::One), _) => match active_tool_kind {
+                Some(ToolKind::Dagger) => {
+                    self.main.position = Vec3::new(5.0, 1.0 - self.back_carry_offset, 2.0);
+                    self.main.orientation =
+                        Quaternion::rotation_x(-1.35 * PI) * Quaternion::rotation_z(2.0 * PI);
+                },
+                Some(ToolKind::Axe) | Some(ToolKind::Hammer) | Some(ToolKind::Sword) => {
+                    self.main.position = Vec3::new(-4.0, -4.5 - self.back_carry_offset, 10.0);
+                    self.main.orientation =
+                        Quaternion::rotation_y(2.5) * Quaternion::rotation_z(PI / 2.0);
+                },
+                Some(ToolKind::Shield) => {
+                    self.main.position = Vec3::new(-2.0, -4.0 - self.back_carry_offset, 3.0);
+                    self.main.orientation =
+                        Quaternion::rotation_y(0.25 * PI) * Quaternion::rotation_z(-1.5 * PI);
+                },
+                _ => {},
+            },
+            (_, _) => {},
+        }
+        match hands {
+            (None | Some(Hands::One), Some(Hands::One)) => match second_tool_kind {
+                Some(ToolKind::Dagger) => {
+                    self.second.position = Vec3::new(-5.0, 1.0 - self.back_carry_offset, 2.0);
+                    self.second.orientation =
+                        Quaternion::rotation_x(-1.35 * PI) * Quaternion::rotation_z(-2.0 * PI);
+                },
+                Some(ToolKind::Axe) | Some(ToolKind::Hammer) | Some(ToolKind::Sword) => {
+                    self.second.position = Vec3::new(4.0, -5.0 - self.back_carry_offset, 10.0);
+                    self.second.orientation =
+                        Quaternion::rotation_y(-2.5) * Quaternion::rotation_z(-PI / 2.0);
+                },
+                Some(ToolKind::Shield) => {
+                    self.second.position = Vec3::new(1.5, -4.0 - self.back_carry_offset, 3.0);
+                    self.second.orientation =
+                        Quaternion::rotation_y(-0.25 * PI) * Quaternion::rotation_z(1.5 * PI);
+                },
+                _ => {},
+            },
+            (_, _) => {},
+        }
+    }
+
+    /// If we're holding a lantern, animate hold the lantern in a reasonable
+    /// position.
+    pub fn do_hold_lantern(
+        &mut self,
+        s_a: &SkeletonAttr,
+        anim_time: f32,
+        acc_vel: f32,
+        speednorm: f32,
+        impact: f32,
+        tilt: f32,
+    ) {
+        let lab = 2.0 / s_a.scaler;
+
+        let short = ((5.0 / (1.5 + 3.5 * ((acc_vel * lab * 1.6 + PI * 0.5).sin()).powi(2))).sqrt())
+            * ((acc_vel * lab * 1.6 + PI * 0.5).sin());
+
+        let shorte = ((1.0 / (0.8 + 0.2 * ((acc_vel * lab * 1.6).sin()).powi(2))).sqrt())
+            * ((acc_vel * lab * 1.6).sin());
+
+        self.lantern.position = Vec3::new(s_a.lantern.0, s_a.lantern.1, s_a.lantern.2);
+        self.lantern.orientation = Quaternion::rotation_x(shorte * 0.7 * speednorm.powi(2) + 0.4)
+            * Quaternion::rotation_y(shorte * 0.4 * speednorm.powi(2));
+        self.lantern.scale = Vec3::one() * 0.65;
+        self.hold.scale = Vec3::one() * 0.0;
+
+        if self.holding_lantern {
+            self.hand_r.position = Vec3::new(
+                s_a.hand.0 + 1.0,
+                s_a.hand.1 + 2.0 - impact * 0.2,
+                s_a.hand.2 + 12.0 + impact * -0.1,
+            );
+            self.hand_r.orientation = Quaternion::rotation_x(2.25) * Quaternion::rotation_z(0.9);
+            self.shoulder_r.orientation = Quaternion::rotation_x(short * -0.15 + 2.0);
+
+            let fast = (anim_time * 8.0).sin();
+            let fast2 = (anim_time * 6.0 + 8.0).sin();
+
+            self.lantern.position = Vec3::new(-0.5, -0.5, -2.5);
+            self.lantern.orientation = self.hand_r.orientation.inverse()
+                * Quaternion::rotation_x(
+                    (fast + 0.5) * 1.0 * speednorm + (tilt.abs() * 2.0).min(PI * 0.5),
+                )
+                * Quaternion::rotation_y(tilt * 1.0 * fast + tilt * 1.0 + fast2 * speednorm * 0.25);
+        }
+    }
+}
+
+pub fn hammer_start(next: &mut CharacterSkeleton, s_a: &SkeletonAttr) {
+    next.main.position = Vec3::new(0.0, 0.0, 0.0);
+    next.main.orientation = Quaternion::rotation_z(0.0);
+    next.hand_l.position = Vec3::new(s_a.hhl.0, s_a.hhl.1 + 3.0, s_a.hhl.2 - 1.0);
+    next.hand_l.orientation = Quaternion::rotation_x(s_a.hhl.3)
+        * Quaternion::rotation_y(s_a.hhl.4)
+        * Quaternion::rotation_z(s_a.hhl.5);
+    next.hand_r.position = Vec3::new(s_a.hhr.0, s_a.hhr.1 + 3.0, s_a.hhr.2 + 1.0);
+    next.hand_r.orientation = Quaternion::rotation_x(s_a.hhr.3)
+        * Quaternion::rotation_y(s_a.hhr.4)
+        * Quaternion::rotation_z(s_a.hhr.5);
+
+    next.control.position = Vec3::new(s_a.hc.0 - 1.0, s_a.hc.1, s_a.hc.2 - 3.0);
+    next.control.orientation = Quaternion::rotation_x(s_a.hc.3)
+        * Quaternion::rotation_y(s_a.hc.4)
+        * Quaternion::rotation_z(s_a.hc.5);
+}
+
+pub fn twist_back(next: &mut CharacterSkeleton, move1: f32, c: f32, h: f32, b: f32, s: f32) {
+    next.chest.orientation.rotate_z(move1 * c);
+    next.head.orientation.rotate_z(move1 * -h);
+    next.belt.orientation.rotate_z(move1 * -b);
+    next.shorts.orientation.rotate_z(move1 * -s);
+}
+
+pub fn twist_forward(next: &mut CharacterSkeleton, move2: f32, c: f32, h: f32, b: f32, s: f32) {
+    next.chest.orientation.rotate_z(move2 * -c);
+    next.head.orientation.rotate_z(move2 * h);
+    next.belt.orientation.rotate_z(move2 * b);
+    next.shorts.orientation.rotate_z(move2 * s);
+}
+
+pub fn dual_wield_start(next: &mut CharacterSkeleton) {
+    next.main.position = Vec3::new(0.0, 0.0, 0.0);
+    next.main.orientation = Quaternion::rotation_z(0.0);
+    next.second.position = Vec3::new(0.0, 0.0, 0.0);
+    next.second.orientation = Quaternion::rotation_z(0.0);
+
+    next.control_l.position =
+        next.hand_l.position * Vec3::new(0.5, 0.5, 0.3) + Vec3::new(-4.0, 0.0, 0.0);
+    next.control_l.orientation = Quaternion::lerp(
+        next.hand_l.orientation,
+        Quaternion::rotation_x(PI * -0.5),
+        0.65,
+    );
+    next.hand_l.position = Vec3::new(0.0, -2.0, 0.0);
+    next.hand_l.orientation = Quaternion::rotation_x(PI * 0.5);
+
+    next.control_r.position =
+        next.hand_r.position * Vec3::new(0.5, 0.5, 0.3) + Vec3::new(4.0, 0.0, 0.0);
+    next.control_r.orientation = Quaternion::lerp(
+        next.hand_r.orientation,
+        Quaternion::rotation_x(PI * -0.5),
+        0.65,
+    );
+    next.hand_r.position = Vec3::new(0.0, -2.0, 0.0);
+    next.hand_r.orientation = Quaternion::rotation_x(PI * 0.5);
 }

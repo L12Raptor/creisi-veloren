@@ -1,6 +1,5 @@
 hud-bag-inventory = Inventaire de { $playername }
 hud-bag-stats_title = Attributs de { $playername }
-hud-bag-exp = Exp
 hud-bag-armor = Armure
 hud-bag-stats = Attributs
 hud-bag-head = Tête
@@ -31,8 +30,8 @@ hud-bag-stun_res = Résistance aux étourdissements
 hud-bag-stealth = Discrétion
 hud-bag-combat_rating_desc =
     Calculé depuis votre
-    équipement et votre santé
-hud-bag-protection_desc = Réduction des dégâts de votre armure
+    équipement et votre santé.
+hud-bag-protection_desc = Réduction des dégâts de votre armure.
 hud-bag-stun_res_desc =
     Résistance contre les effets d'étourdissements après plusieurs coups reçus.
     Se régénère tout comme l'Endurance.
@@ -41,3 +40,4 @@ hud-bag-sort_by_quality = Trier par Qualité
 hud-bag-sort_by_category = Trier par Catégorie
 hud-bag-sort_by_tag = Trier par Tag
 hud-bag-sort_by_quantity = Trier par Quantité
+hud-bag-backpack = Sac à dos

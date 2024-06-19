@@ -31,6 +31,9 @@ widget_ids! {
         camera_clamp_slider,
         camera_clamp_label,
         camera_clamp_value,
+        walking_speed_slider,
+        walking_speed_label,
+        walking_speed_value,
         mouse_y_invert_button,
         mouse_y_invert_label,
         controller_y_invert_button,
@@ -42,6 +45,8 @@ widget_ids! {
         free_look_behavior_list,
         auto_walk_behavior_text,
         auto_walk_behavior_list,
+        walking_speed_behavior_text,
+        walking_speed_behavior_list,
         camera_clamp_behavior_text,
         camera_clamp_behavior_list,
         zoom_lock_behavior_text,
@@ -54,6 +59,12 @@ widget_ids! {
         bow_zoom_label,
         zoom_lock_button,
         zoom_lock_label,
+        aim_offset_x_slider,
+        aim_offset_x_label,
+        aim_offset_x_value,
+        aim_offset_y_slider,
+        aim_offset_y_label,
+        aim_offset_y_value,
     }
 }
 
@@ -124,6 +135,7 @@ impl<'a> Widget for Gameplay<'a> {
         let display_pan = self.global_state.settings.gameplay.pan_sensitivity;
         let display_zoom = self.global_state.settings.gameplay.zoom_sensitivity;
         let display_clamp = self.global_state.settings.gameplay.camera_clamp_angle;
+        let display_walking_speed = self.global_state.settings.gameplay.walking_speed;
 
         // Mouse Pan Sensitivity
         Text::new(
@@ -233,6 +245,38 @@ impl<'a> Widget for Gameplay<'a> {
             .color(TEXT_COLOR)
             .set(state.ids.camera_clamp_value, ui);
 
+        // Walking speed
+        Text::new(&self.localized_strings.get_msg("hud-settings-walking_speed"))
+            .down_from(state.ids.camera_clamp_slider, 10.0)
+            .font_size(self.fonts.cyri.scale(14))
+            .font_id(self.fonts.cyri.conrod_id)
+            .color(TEXT_COLOR)
+            .set(state.ids.walking_speed_label, ui);
+
+        if let Some(new_val) = ImageSlider::continuous(
+            display_walking_speed,
+            0.0,
+            1.0,
+            self.imgs.slider_indicator,
+            self.imgs.slider,
+        )
+        .w_h(550.0, 22.0)
+        .down_from(state.ids.walking_speed_label, 10.0)
+        .track_breadth(30.0)
+        .slider_length(10.0)
+        .pad_track((5.0, 5.0))
+        .set(state.ids.walking_speed_slider, ui)
+        {
+            events.push(AdjustWalkingSpeed(new_val));
+        }
+
+        Text::new(&format!("{:.2}", display_walking_speed))
+            .right_from(state.ids.walking_speed_slider, 8.0)
+            .font_size(self.fonts.cyri.scale(14))
+            .font_id(self.fonts.cyri.conrod_id)
+            .color(TEXT_COLOR)
+            .set(state.ids.walking_speed_value, ui);
+
         // Zoom Inversion
         let zoom_inverted = ToggleButton::new(
             self.global_state.settings.gameplay.zoom_inversion,
@@ -240,7 +284,7 @@ impl<'a> Widget for Gameplay<'a> {
             self.imgs.checkbox_checked,
         )
         .w_h(18.0, 18.0)
-        .down_from(state.ids.camera_clamp_slider, 20.0)
+        .down_from(state.ids.walking_speed_slider, 20.0)
         .hover_images(self.imgs.checkbox_mo, self.imgs.checkbox_checked_mo)
         .press_images(self.imgs.checkbox_press, self.imgs.checkbox_checked)
         .set(state.ids.mouse_zoom_invert_button, ui);
@@ -420,13 +464,43 @@ impl<'a> Widget for Gameplay<'a> {
             }
         }
 
+        // Walking speed behavior
+        Text::new(
+            &self
+                .localized_strings
+                .get_msg("hud-settings-walking_speed_behavior"),
+        )
+        .down_from(state.ids.free_look_behavior_list, 10.0)
+        .font_size(self.fonts.cyri.scale(14))
+        .font_id(self.fonts.cyri.conrod_id)
+        .color(TEXT_COLOR)
+        .set(state.ids.walking_speed_behavior_text, ui);
+
+        let walking_speed_selected =
+            self.global_state.settings.gameplay.walking_speed_behavior as usize;
+
+        if let Some(clicked) = DropDownList::new(&mode_label_list, Some(walking_speed_selected))
+            .w_h(200.0, 30.0)
+            .color(MENU_BG)
+            .label_color(TEXT_COLOR)
+            .label_font_id(self.fonts.cyri.conrod_id)
+            .down_from(state.ids.walking_speed_behavior_text, 8.0)
+            .set(state.ids.walking_speed_behavior_list, ui)
+        {
+            match clicked {
+                0 => events.push(ChangeWalkingSpeedBehavior(PressBehavior::Toggle)),
+                1 => events.push(ChangeWalkingSpeedBehavior(PressBehavior::Hold)),
+                _ => unreachable!(),
+            }
+        }
+
         // Camera clamp behavior
         Text::new(
             &self
                 .localized_strings
                 .get_msg("hud-settings-camera_clamp_behavior"),
         )
-        .down_from(state.ids.free_look_behavior_list, 10.0)
+        .down_from(state.ids.auto_walk_behavior_list, 10.0)
         .font_size(self.fonts.cyri.scale(14))
         .font_id(self.fonts.cyri.conrod_id)
         .color(TEXT_COLOR)
@@ -545,7 +619,7 @@ impl<'a> Widget for Gameplay<'a> {
                 .localized_strings
                 .get_msg("hud-settings-zoom_lock_behavior"),
         )
-        .down_from(state.ids.auto_walk_behavior_list, 10.0)
+        .down_from(state.ids.walking_speed_behavior_list, 10.0)
         .font_size(self.fonts.cyri.scale(14))
         .font_id(self.fonts.cyri.conrod_id)
         .color(TEXT_COLOR)
@@ -594,12 +668,78 @@ impl<'a> Widget for Gameplay<'a> {
             .color(TEXT_COLOR)
             .set(state.ids.zoom_lock_label, ui);
 
+        // Aim offset x
+        let display_aim_offset_x = self.global_state.settings.gameplay.aim_offset_x;
+        Text::new(&self.localized_strings.get_msg("hud-settings-aim_offset_x"))
+            .down_from(state.ids.zoom_lock_behavior_list, 10.0)
+            .font_size(self.fonts.cyri.scale(14))
+            .font_id(self.fonts.cyri.conrod_id)
+            .color(TEXT_COLOR)
+            .set(state.ids.aim_offset_x_label, ui);
+
+        if let Some(new_val) = ImageSlider::continuous(
+            display_aim_offset_x,
+            -3.0,
+            3.0,
+            self.imgs.slider_indicator,
+            self.imgs.slider,
+        )
+        .w_h(550.0, 22.0)
+        .down_from(state.ids.aim_offset_x_label, 10.0)
+        .track_breadth(30.0)
+        .slider_length(10.0)
+        .pad_track((5.0, 5.0))
+        .set(state.ids.aim_offset_x_slider, ui)
+        {
+            events.push(AdjustAimOffsetX(new_val));
+        }
+
+        Text::new(&format!("{:.2}", display_aim_offset_x))
+            .right_from(state.ids.aim_offset_x_slider, 8.0)
+            .font_size(self.fonts.cyri.scale(14))
+            .font_id(self.fonts.cyri.conrod_id)
+            .color(TEXT_COLOR)
+            .set(state.ids.aim_offset_x_value, ui);
+
+        // Aim offset y
+        let display_aim_offset_y = self.global_state.settings.gameplay.aim_offset_y;
+        Text::new(&self.localized_strings.get_msg("hud-settings-aim_offset_y"))
+            .down_from(state.ids.aim_offset_x_slider, 10.0)
+            .font_size(self.fonts.cyri.scale(14))
+            .font_id(self.fonts.cyri.conrod_id)
+            .color(TEXT_COLOR)
+            .set(state.ids.aim_offset_y_label, ui);
+
+        if let Some(new_val) = ImageSlider::continuous(
+            display_aim_offset_y,
+            -3.0,
+            3.0,
+            self.imgs.slider_indicator,
+            self.imgs.slider,
+        )
+        .w_h(550.0, 22.0)
+        .down_from(state.ids.aim_offset_y_label, 10.0)
+        .track_breadth(30.0)
+        .slider_length(10.0)
+        .pad_track((5.0, 5.0))
+        .set(state.ids.aim_offset_y_slider, ui)
+        {
+            events.push(AdjustAimOffsetY(new_val));
+        }
+
+        Text::new(&format!("{:.2}", display_aim_offset_y))
+            .right_from(state.ids.aim_offset_y_slider, 8.0)
+            .font_size(self.fonts.cyri.scale(14))
+            .font_id(self.fonts.cyri.conrod_id)
+            .color(TEXT_COLOR)
+            .set(state.ids.aim_offset_y_value, ui);
+
         // Reset the gameplay settings to the default settings
         if Button::image(self.imgs.button)
             .w_h(RESET_BUTTONS_WIDTH, RESET_BUTTONS_HEIGHT)
             .hover_image(self.imgs.button_hover)
             .press_image(self.imgs.button_press)
-            .down_from(state.ids.camera_clamp_behavior_list, 12.0)
+            .down_from(state.ids.aim_offset_y_slider, 12.0)
             .label(
                 &self
                     .localized_strings

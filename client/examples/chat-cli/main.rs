@@ -63,7 +63,11 @@ fn main() {
             &mut None,
             &username,
             &password,
+            None,
             |provider| provider == "https://auth.veloren.net",
+            &|_| {},
+            |_| {},
+            Default::default(),
         ))
         .expect("Failed to create client instance");
 
@@ -84,7 +88,7 @@ fn main() {
             client.send_chat(msg)
         }
 
-        let events = match client.tick(comp::ControllerInputs::default(), clock.dt(), |_| {}) {
+        let events = match client.tick(comp::ControllerInputs::default(), clock.dt()) {
             Ok(events) => events,
             Err(err) => {
                 error!("Error: {:?}", err);

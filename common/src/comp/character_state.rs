@@ -4,7 +4,8 @@ use crate::{
         ability::Capability, inventory::item::armor::Friction, item::ConsumableKind, ControlAction,
         Density, Energy, InputAttr, InputKind, Ori, Pos, Vel,
     },
-    event::{LocalEvent, ServerEvent},
+    event::{self, EmitExt, LocalEvent},
+    event_emitters,
     resources::Time,
     states::{
         self,
@@ -34,19 +35,48 @@ pub struct StateUpdate {
     pub character_activity: CharacterActivity,
 }
 
-pub struct OutputEvents<'a> {
-    local: &'a mut Vec<LocalEvent>,
-    server: &'a mut Vec<ServerEvent>,
+event_emitters! {
+    pub struct CharacterStateEvents[CharacterStateEventEmitters] {
+        combo: event::ComboChangeEvent,
+        event: event::AuraEvent,
+        shoot: event::ShootEvent,
+        teleport_to: event::TeleportToEvent,
+        shockwave: event::ShockwaveEvent,
+        explosion: event::ExplosionEvent,
+        buff: event::BuffEvent,
+        inventory_manip: event::InventoryManipEvent,
+        sprite_summon: event::CreateSpriteEvent,
+        change_stance: event::ChangeStanceEvent,
+        create_npc: event::CreateNpcEvent,
+        energy_change: event::EnergyChangeEvent,
+        knockback: event::KnockbackEvent,
+        sprite_light: event::ToggleSpriteLightEvent,
+        transform: event::TransformEvent,
+        create_aura_entity: event::CreateAuraEntityEvent,
+    }
 }
 
-impl<'a> OutputEvents<'a> {
-    pub fn new(local: &'a mut Vec<LocalEvent>, server: &'a mut Vec<ServerEvent>) -> Self {
+pub struct OutputEvents<'a, 'b> {
+    local: &'a mut Vec<LocalEvent>,
+    server: &'a mut CharacterStateEventEmitters<'b>,
+}
+
+impl<'a, 'b: 'a> OutputEvents<'a, 'b> {
+    pub fn new(
+        local: &'a mut Vec<LocalEvent>,
+        server: &'a mut CharacterStateEventEmitters<'b>,
+    ) -> Self {
         Self { local, server }
     }
 
     pub fn emit_local(&mut self, event: LocalEvent) { self.local.push(event); }
 
-    pub fn emit_server(&mut self, event: ServerEvent) { self.server.push(event); }
+    pub fn emit_server<E>(&mut self, event: E)
+    where
+        CharacterStateEventEmitters<'b>: EmitExt<E>,
+    {
+        self.server.emit(event);
+    }
 }
 
 impl From<&JoinData<'_>> for StateUpdate {
@@ -73,6 +103,7 @@ pub enum CharacterState {
     Sit,
     Dance,
     Talk,
+    Pet(pet::Data),
     Glide(glide::Data),
     GlideWield(glide_wield::Data),
     /// A stunned state
@@ -93,17 +124,12 @@ pub enum CharacterState {
     Boost(boost::Data),
     /// Dash forward and then attack
     DashMelee(dash_melee::Data),
-    /// A three-stage attack where each attack pushes player forward
-    /// and successive attacks increase in damage, while player holds button.
-    ComboMelee(combo_melee::Data),
     /// A state where you progress through multiple melee attacks
     ComboMelee2(combo_melee2::Data),
     /// A leap followed by a small aoe ground attack
     LeapMelee(leap_melee::Data),
     /// A leap followed by a shockwave
     LeapShockwave(leap_shockwave::Data),
-    /// Spin around, dealing damage to enemies surrounding you
-    SpinMelee(spin_melee::Data),
     /// A charged ranged attack (e.g. bow)
     ChargedRanged(charged_ranged::Data),
     /// A charged melee attack
@@ -117,6 +143,9 @@ pub enum CharacterState {
     BasicBeam(basic_beam::Data),
     /// Creates an aura that persists as long as you are actively casting
     BasicAura(basic_aura::Data),
+    /// Creates an aura that is attached to a pseudo entity, so it doesn't move
+    /// with you Optionally allows for sprites to be created as well
+    StaticAura(static_aura::Data),
     /// A short teleport that targets either a position or entity
     Blink(blink::Data),
     /// Summons creatures that fight for the caster
@@ -146,6 +175,8 @@ pub enum CharacterState {
     /// A series of consecutive, identical attacks that only go through buildup
     /// and recover once for the entire state
     RapidMelee(rapid_melee::Data),
+    /// Transforms an entity into another
+    Transform(transform::Data),
 }
 
 impl CharacterState {
@@ -156,12 +187,10 @@ impl CharacterState {
                 | CharacterState::BasicMelee(_)
                 | CharacterState::BasicRanged(_)
                 | CharacterState::DashMelee(_)
-                | CharacterState::ComboMelee(_)
                 | CharacterState::ComboMelee2(_)
                 | CharacterState::BasicBlock(_)
                 | CharacterState::LeapMelee(_)
                 | CharacterState::LeapShockwave(_)
-                | CharacterState::SpinMelee(_)
                 | CharacterState::ChargedMelee(_)
                 | CharacterState::ChargedRanged(_)
                 | CharacterState::RepeaterRanged(_)
@@ -177,6 +206,7 @@ impl CharacterState {
                     was_wielded: true,
                     ..
                 })
+                | CharacterState::Wallrun(wallrun::Data { was_wielded: true })
                 | CharacterState::Stunned(stunned::Data {
                     was_wielded: true,
                     ..
@@ -185,6 +215,7 @@ impl CharacterState {
                 | CharacterState::DiveMelee(_)
                 | CharacterState::RiposteMelee(_)
                 | CharacterState::RapidMelee(_)
+                | CharacterState::StaticAura(_)
         )
     }
 
@@ -194,8 +225,16 @@ impl CharacterState {
             CharacterState::Stunned(data) => data.was_wielded,
             CharacterState::SpriteInteract(data) => data.static_data.was_wielded,
             CharacterState::UseItem(data) => data.static_data.was_wielded,
+            CharacterState::Wallrun(data) => data.was_wielded,
             _ => false,
         }
+    }
+
+    pub fn is_glide_wielded(&self) -> bool {
+        matches!(
+            self,
+            CharacterState::Glide { .. } | CharacterState::GlideWield { .. }
+        )
     }
 
     pub fn is_stealthy(&self) -> bool {
@@ -215,17 +254,19 @@ impl CharacterState {
         )
     }
 
+    pub fn should_follow_look(&self) -> bool {
+        matches!(self, CharacterState::Boost(_)) || self.is_attack()
+    }
+
     pub fn is_attack(&self) -> bool {
         matches!(
             self,
             CharacterState::BasicMelee(_)
                 | CharacterState::BasicRanged(_)
                 | CharacterState::DashMelee(_)
-                | CharacterState::ComboMelee(_)
                 | CharacterState::ComboMelee2(_)
                 | CharacterState::LeapMelee(_)
                 | CharacterState::LeapShockwave(_)
-                | CharacterState::SpinMelee(_)
                 | CharacterState::ChargedMelee(_)
                 | CharacterState::ChargedRanged(_)
                 | CharacterState::RepeaterRanged(_)
@@ -240,6 +281,7 @@ impl CharacterState {
                 | CharacterState::DiveMelee(_)
                 | CharacterState::RiposteMelee(_)
                 | CharacterState::RapidMelee(_)
+                | CharacterState::StaticAura(_)
         )
     }
 
@@ -249,7 +291,6 @@ impl CharacterState {
             CharacterState::BasicMelee(_)
                 | CharacterState::BasicRanged(_)
                 | CharacterState::DashMelee(_)
-                | CharacterState::ComboMelee(_)
                 | CharacterState::ComboMelee2(_)
                 | CharacterState::BasicBlock(_)
                 | CharacterState::LeapMelee(_)
@@ -275,6 +316,7 @@ impl CharacterState {
             CharacterState::Climb(_)
                 | CharacterState::Equipping(_)
                 | CharacterState::Dance
+                | CharacterState::Pet(_)
                 | CharacterState::Glide(_)
                 | CharacterState::GlideWield(_)
                 | CharacterState::Talk
@@ -282,53 +324,36 @@ impl CharacterState {
         )
     }
 
-    pub fn block_strength(&self, attack_source: AttackSource) -> Option<f32> {
-        let from_capability = if let AttackSource::Melee = attack_source {
-            if let Some(capabilities) = self
-                .ability_info()
-                .map(|a| a.ability_meta)
-                .map(|m| m.capabilities)
-            {
-                (capabilities.contains(Capability::BLOCKS)
-                    && matches!(
-                        self.stage_section(),
-                        Some(StageSection::Buildup | StageSection::Action)
-                    ))
-                .then_some(0.5)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let from_state = match self {
-            CharacterState::BasicBlock(c) => c
-                .static_data
-                .blocked_attacks
-                .applies(attack_source)
-                .then_some(c.static_data.block_strength),
-            _ => None,
-        };
-        match (from_capability, from_state) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (Some(a), None) | (None, Some(a)) => Some(a),
-            (None, None) => None,
-        }
-    }
-
     pub fn is_parry(&self, attack_source: AttackSource) -> bool {
         let melee = matches!(attack_source, AttackSource::Melee);
-        let from_capability = melee
+        let from_capability_melee = melee
             && self
                 .ability_info()
                 .map(|a| a.ability_meta.capabilities)
                 .map_or(false, |c| {
-                    c.contains(Capability::PARRIES)
+                    c.contains(Capability::PARRIES_MELEE)
                         && matches!(
                             self.stage_section(),
                             Some(StageSection::Buildup | StageSection::Action)
                         )
                 });
+        let from_capability = matches!(
+            attack_source,
+            AttackSource::Melee
+                | AttackSource::Projectile
+                | AttackSource::Beam
+                | AttackSource::AirShockwave
+                | AttackSource::Explosion
+        ) && self
+            .ability_info()
+            .map(|a| a.ability_meta.capabilities)
+            .map_or(false, |c| {
+                c.contains(Capability::PARRIES)
+                    && matches!(
+                        self.stage_section(),
+                        Some(StageSection::Buildup | StageSection::Action)
+                    )
+            });
         let from_state = match self {
             CharacterState::BasicBlock(c) => c.is_parry(attack_source),
             CharacterState::RiposteMelee(c) => {
@@ -340,7 +365,30 @@ impl CharacterState {
             },
             _ => false,
         };
-        from_capability || from_state
+        from_capability_melee || from_capability || from_state
+    }
+
+    pub fn is_block(&self, attack_source: AttackSource) -> bool {
+        match self {
+            CharacterState::BasicBlock(data) => {
+                data.static_data.blocked_attacks.applies(attack_source)
+                    && matches!(
+                        self.stage_section(),
+                        Some(StageSection::Buildup | StageSection::Action)
+                    )
+            },
+            _ => self
+                .ability_info()
+                .map(|ability| ability.ability_meta.capabilities)
+                .map_or(false, |capabilities| {
+                    capabilities.contains(Capability::BLOCKS)
+                        && matches!(
+                            self.stage_section(),
+                            Some(StageSection::Buildup | StageSection::Action)
+                        )
+                        && matches!(attack_source, AttackSource::Melee)
+                }),
+        }
     }
 
     /// In radians
@@ -359,7 +407,13 @@ impl CharacterState {
         }
     }
 
-    pub fn is_dodge(&self) -> bool { matches!(self, CharacterState::Roll(_)) }
+    pub fn is_dodge(&self) -> bool {
+        if let CharacterState::Roll(c) = self {
+            c.stage_section == StageSection::Movement
+        } else {
+            false
+        }
+    }
 
     pub fn is_glide(&self) -> bool { matches!(self, CharacterState::Glide(_)) }
 
@@ -369,7 +423,7 @@ impl CharacterState {
 
     pub fn attack_immunities(&self) -> Option<AttackFilters> {
         if let CharacterState::Roll(c) = self {
-            Some(c.static_data.attack_immunities)
+            (c.stage_section == StageSection::Movement).then_some(c.static_data.attack_immunities)
         } else {
             None
         }
@@ -378,18 +432,17 @@ impl CharacterState {
     pub fn is_stunned(&self) -> bool { matches!(self, CharacterState::Stunned(_)) }
 
     pub fn is_forced_movement(&self) -> bool {
-        matches!(self,
-            CharacterState::ComboMelee(s) if s.stage_section == StageSection::Action)
-            || matches!(self, CharacterState::ComboMelee2(s) if s.stage_section == StageSection::Action)
+        matches!(self, CharacterState::ComboMelee2(s) if s.stage_section == StageSection::Action)
             || matches!(self, CharacterState::DashMelee(s) if s.stage_section == StageSection::Charge)
             || matches!(self, CharacterState::LeapMelee(s) if s.stage_section == StageSection::Movement)
-            || matches!(self, CharacterState::SpinMelee(s) if s.stage_section == StageSection::Action)
             || matches!(self, CharacterState::Roll(s) if s.stage_section == StageSection::Movement)
     }
 
     pub fn is_melee_attack(&self) -> bool {
         matches!(self.attack_kind(), Some(AttackSource::Melee))
     }
+
+    pub fn is_beam_attack(&self) -> bool { matches!(self.attack_kind(), Some(AttackSource::Beam)) }
 
     pub fn can_perform_mounted(&self) -> bool {
         matches!(
@@ -404,7 +457,6 @@ impl CharacterState {
                 | CharacterState::Wielding(_)
                 | CharacterState::BasicMelee(_)
                 | CharacterState::BasicRanged(_)
-                | CharacterState::ComboMelee(_)
                 | CharacterState::ComboMelee2(_)
                 | CharacterState::ChargedRanged(_)
                 | CharacterState::RepeaterRanged(_)
@@ -455,11 +507,11 @@ impl CharacterState {
             CharacterState::Stunned(data) => data.behavior(j, output_events),
             CharacterState::Sit => sit::Data::behavior(&sit::Data, j, output_events),
             CharacterState::Dance => dance::Data::behavior(&dance::Data, j, output_events),
+            CharacterState::Pet(data) => data.behavior(j, output_events),
             CharacterState::BasicBlock(data) => data.behavior(j, output_events),
             CharacterState::Roll(data) => data.behavior(j, output_events),
             CharacterState::Wielding(data) => data.behavior(j, output_events),
             CharacterState::Equipping(data) => data.behavior(j, output_events),
-            CharacterState::ComboMelee(data) => data.behavior(j, output_events),
             CharacterState::ComboMelee2(data) => data.behavior(j, output_events),
             CharacterState::BasicMelee(data) => data.behavior(j, output_events),
             CharacterState::BasicRanged(data) => data.behavior(j, output_events),
@@ -467,7 +519,6 @@ impl CharacterState {
             CharacterState::DashMelee(data) => data.behavior(j, output_events),
             CharacterState::LeapMelee(data) => data.behavior(j, output_events),
             CharacterState::LeapShockwave(data) => data.behavior(j, output_events),
-            CharacterState::SpinMelee(data) => data.behavior(j, output_events),
             CharacterState::ChargedMelee(data) => data.behavior(j, output_events),
             CharacterState::ChargedRanged(data) => data.behavior(j, output_events),
             CharacterState::RepeaterRanged(data) => data.behavior(j, output_events),
@@ -486,6 +537,8 @@ impl CharacterState {
             CharacterState::DiveMelee(data) => data.behavior(j, output_events),
             CharacterState::RiposteMelee(data) => data.behavior(j, output_events),
             CharacterState::RapidMelee(data) => data.behavior(j, output_events),
+            CharacterState::Transform(data) => data.behavior(j, output_events),
+            CharacterState::StaticAura(data) => data.behavior(j, output_events),
         }
     }
 
@@ -509,11 +562,11 @@ impl CharacterState {
             CharacterState::Dance => {
                 states::dance::Data::handle_event(&dance::Data, j, output_events, action)
             },
+            CharacterState::Pet(data) => data.handle_event(j, output_events, action),
             CharacterState::BasicBlock(data) => data.handle_event(j, output_events, action),
             CharacterState::Roll(data) => data.handle_event(j, output_events, action),
             CharacterState::Wielding(data) => data.handle_event(j, output_events, action),
             CharacterState::Equipping(data) => data.handle_event(j, output_events, action),
-            CharacterState::ComboMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::ComboMelee2(data) => data.handle_event(j, output_events, action),
             CharacterState::BasicMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::BasicRanged(data) => data.handle_event(j, output_events, action),
@@ -521,7 +574,6 @@ impl CharacterState {
             CharacterState::DashMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::LeapMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::LeapShockwave(data) => data.handle_event(j, output_events, action),
-            CharacterState::SpinMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::ChargedMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::ChargedRanged(data) => data.handle_event(j, output_events, action),
             CharacterState::RepeaterRanged(data) => data.handle_event(j, output_events, action),
@@ -540,6 +592,8 @@ impl CharacterState {
             CharacterState::DiveMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::RiposteMelee(data) => data.handle_event(j, output_events, action),
             CharacterState::RapidMelee(data) => data.handle_event(j, output_events, action),
+            CharacterState::Transform(data) => data.handle_event(j, output_events, action),
+            CharacterState::StaticAura(data) => data.handle_event(j, output_events, action),
         }
     }
 
@@ -563,11 +617,11 @@ impl CharacterState {
             CharacterState::Stunned(_) => None,
             CharacterState::Sit => None,
             CharacterState::Dance => None,
+            CharacterState::Pet(_) => None,
             CharacterState::BasicBlock(data) => Some(data.static_data.ability_info),
             CharacterState::Roll(data) => Some(data.static_data.ability_info),
             CharacterState::Wielding(_) => None,
             CharacterState::Equipping(_) => None,
-            CharacterState::ComboMelee(data) => Some(data.static_data.ability_info),
             CharacterState::ComboMelee2(data) => Some(data.static_data.ability_info),
             CharacterState::BasicMelee(data) => Some(data.static_data.ability_info),
             CharacterState::BasicRanged(data) => Some(data.static_data.ability_info),
@@ -575,7 +629,6 @@ impl CharacterState {
             CharacterState::DashMelee(data) => Some(data.static_data.ability_info),
             CharacterState::LeapMelee(data) => Some(data.static_data.ability_info),
             CharacterState::LeapShockwave(data) => Some(data.static_data.ability_info),
-            CharacterState::SpinMelee(data) => Some(data.static_data.ability_info),
             CharacterState::ChargedMelee(data) => Some(data.static_data.ability_info),
             CharacterState::ChargedRanged(data) => Some(data.static_data.ability_info),
             CharacterState::RepeaterRanged(data) => Some(data.static_data.ability_info),
@@ -593,6 +646,8 @@ impl CharacterState {
             CharacterState::DiveMelee(data) => Some(data.static_data.ability_info),
             CharacterState::RiposteMelee(data) => Some(data.static_data.ability_info),
             CharacterState::RapidMelee(data) => Some(data.static_data.ability_info),
+            CharacterState::Transform(data) => Some(data.static_data.ability_info),
+            CharacterState::StaticAura(data) => Some(data.static_data.ability_info),
         }
     }
 
@@ -608,11 +663,11 @@ impl CharacterState {
             CharacterState::Stunned(data) => Some(data.stage_section),
             CharacterState::Sit => None,
             CharacterState::Dance => None,
+            CharacterState::Pet(_) => None,
             CharacterState::BasicBlock(data) => Some(data.stage_section),
             CharacterState::Roll(data) => Some(data.stage_section),
             CharacterState::Equipping(_) => Some(StageSection::Buildup),
             CharacterState::Wielding(_) => None,
-            CharacterState::ComboMelee(data) => Some(data.stage_section),
             CharacterState::ComboMelee2(data) => Some(data.stage_section),
             CharacterState::BasicMelee(data) => Some(data.stage_section),
             CharacterState::BasicRanged(data) => Some(data.stage_section),
@@ -620,7 +675,6 @@ impl CharacterState {
             CharacterState::DashMelee(data) => Some(data.stage_section),
             CharacterState::LeapMelee(data) => Some(data.stage_section),
             CharacterState::LeapShockwave(data) => Some(data.stage_section),
-            CharacterState::SpinMelee(data) => Some(data.stage_section),
             CharacterState::ChargedMelee(data) => Some(data.stage_section),
             CharacterState::ChargedRanged(data) => Some(data.stage_section),
             CharacterState::RepeaterRanged(data) => Some(data.stage_section),
@@ -638,6 +692,8 @@ impl CharacterState {
             CharacterState::DiveMelee(data) => Some(data.stage_section),
             CharacterState::RiposteMelee(data) => Some(data.stage_section),
             CharacterState::RapidMelee(data) => Some(data.stage_section),
+            CharacterState::Transform(data) => Some(data.stage_section),
+            CharacterState::StaticAura(data) => Some(data.stage_section),
         }
     }
 
@@ -657,6 +713,7 @@ impl CharacterState {
             }),
             CharacterState::Sit => None,
             CharacterState::Dance => None,
+            CharacterState::Pet(_) => None,
             CharacterState::BasicBlock(data) => Some(DurationsInfo {
                 buildup: Some(data.static_data.buildup_duration),
                 recover: Some(data.static_data.recover_duration),
@@ -673,16 +730,6 @@ impl CharacterState {
                 buildup: Some(data.static_data.buildup_duration),
                 ..Default::default()
             }),
-            CharacterState::ComboMelee(data) => {
-                let stage_index = data.stage_index();
-                let stage = data.static_data.stage_data[stage_index];
-                Some(DurationsInfo {
-                    buildup: Some(stage.base_buildup_duration),
-                    action: Some(stage.base_swing_duration),
-                    recover: Some(stage.base_recover_duration),
-                    ..Default::default()
-                })
-            },
             CharacterState::ComboMelee2(data) => {
                 let strike = data.strike_data();
                 Some(DurationsInfo {
@@ -728,13 +775,8 @@ impl CharacterState {
                 movement: Some(data.static_data.movement_duration),
                 ..Default::default()
             }),
-            CharacterState::SpinMelee(data) => Some(DurationsInfo {
-                buildup: Some(data.static_data.buildup_duration),
-                action: Some(data.static_data.swing_duration),
-                recover: Some(data.static_data.recover_duration),
-                ..Default::default()
-            }),
             CharacterState::ChargedMelee(data) => Some(DurationsInfo {
+                buildup: data.static_data.buildup_strike.map(|x| x.0),
                 action: Some(data.static_data.swing_duration),
                 recover: Some(data.static_data.recover_duration),
                 charge: Some(data.static_data.charge_duration),
@@ -832,6 +874,17 @@ impl CharacterState {
                 recover: Some(data.static_data.recover_duration),
                 ..Default::default()
             }),
+            CharacterState::Transform(data) => Some(DurationsInfo {
+                buildup: Some(data.static_data.buildup_duration),
+                recover: Some(data.static_data.recover_duration),
+                ..Default::default()
+            }),
+            CharacterState::StaticAura(data) => Some(DurationsInfo {
+                buildup: Some(data.static_data.buildup_duration),
+                action: Some(data.static_data.cast_duration),
+                recover: Some(data.static_data.recover_duration),
+                ..Default::default()
+            }),
         }
     }
 
@@ -847,11 +900,11 @@ impl CharacterState {
             CharacterState::Stunned(data) => Some(data.timer),
             CharacterState::Sit => None,
             CharacterState::Dance => None,
+            CharacterState::Pet(_) => None,
             CharacterState::BasicBlock(data) => Some(data.timer),
             CharacterState::Roll(data) => Some(data.timer),
             CharacterState::Wielding(_) => None,
             CharacterState::Equipping(data) => Some(data.timer),
-            CharacterState::ComboMelee(data) => Some(data.timer),
             CharacterState::ComboMelee2(data) => Some(data.timer),
             CharacterState::BasicMelee(data) => Some(data.timer),
             CharacterState::BasicRanged(data) => Some(data.timer),
@@ -859,7 +912,6 @@ impl CharacterState {
             CharacterState::DashMelee(data) => Some(data.timer),
             CharacterState::LeapMelee(data) => Some(data.timer),
             CharacterState::LeapShockwave(data) => Some(data.timer),
-            CharacterState::SpinMelee(data) => Some(data.timer),
             CharacterState::ChargedMelee(data) => Some(data.timer),
             CharacterState::ChargedRanged(data) => Some(data.timer),
             CharacterState::RepeaterRanged(data) => Some(data.timer),
@@ -877,6 +929,8 @@ impl CharacterState {
             CharacterState::DiveMelee(data) => Some(data.timer),
             CharacterState::RiposteMelee(data) => Some(data.timer),
             CharacterState::RapidMelee(data) => Some(data.timer),
+            CharacterState::Transform(data) => Some(data.timer),
+            CharacterState::StaticAura(data) => Some(data.timer),
         }
     }
 
@@ -892,11 +946,11 @@ impl CharacterState {
             CharacterState::Stunned(_) => None,
             CharacterState::Sit => None,
             CharacterState::Dance => None,
+            CharacterState::Pet(_) => None,
             CharacterState::BasicBlock(_) => None,
             CharacterState::Roll(_) => None,
             CharacterState::Wielding(_) => None,
             CharacterState::Equipping(_) => None,
-            CharacterState::ComboMelee(_) => Some(AttackSource::Melee),
             CharacterState::ComboMelee2(_) => Some(AttackSource::Melee),
             CharacterState::BasicMelee(_) => Some(AttackSource::Melee),
             CharacterState::BasicRanged(data) => {
@@ -909,7 +963,6 @@ impl CharacterState {
             CharacterState::Boost(_) => None,
             CharacterState::DashMelee(_) => Some(AttackSource::Melee),
             CharacterState::LeapMelee(_) => Some(AttackSource::Melee),
-            CharacterState::SpinMelee(_) => Some(AttackSource::Melee),
             CharacterState::ChargedMelee(_) => Some(AttackSource::Melee),
             // TODO: When charged ranged not only arrow make this check projectile type
             CharacterState::ChargedRanged(_) => Some(AttackSource::Projectile),
@@ -920,16 +973,10 @@ impl CharacterState {
                     AttackSource::Projectile
                 })
             },
-            CharacterState::Shockwave(data) => Some(if data.static_data.requires_ground {
-                AttackSource::GroundShockwave
-            } else {
-                AttackSource::AirShockwave
-            }),
-            CharacterState::LeapShockwave(data) => Some(if data.static_data.requires_ground {
-                AttackSource::GroundShockwave
-            } else {
-                AttackSource::AirShockwave
-            }),
+            CharacterState::Shockwave(data) => Some(data.static_data.dodgeable.to_attack_source()),
+            CharacterState::LeapShockwave(data) => {
+                Some(data.static_data.dodgeable.to_attack_source())
+            },
             CharacterState::BasicBeam(_) => Some(AttackSource::Beam),
             CharacterState::BasicAura(_) => None,
             CharacterState::Blink(_) => None,
@@ -943,6 +990,8 @@ impl CharacterState {
             CharacterState::DiveMelee(_) => Some(AttackSource::Melee),
             CharacterState::RiposteMelee(_) => Some(AttackSource::Melee),
             CharacterState::RapidMelee(_) => Some(AttackSource::Melee),
+            CharacterState::Transform(_) => None,
+            CharacterState::StaticAura(_) => None,
         }
     }
 }
@@ -974,6 +1023,7 @@ impl AttackFilters {
             AttackSource::Beam => self.beams,
             AttackSource::GroundShockwave => self.ground_shockwaves,
             AttackSource::AirShockwave => self.air_shockwaves,
+            AttackSource::UndodgeableShockwave => false,
             AttackSource::Explosion => self.explosions,
         }
     }
@@ -1004,6 +1054,10 @@ pub struct CharacterActivity {
     /// `None` means that the look direction should be derived from the
     /// orientation
     pub look_dir: Option<Dir>,
+    /// If the character is using a Helm, this is the y direction the
+    /// character steering. If the character is not steering this is
+    /// a stale value.
+    pub steer_dir: f32,
     /// If true, the owner has set this pet to stay at a fixed location and
     /// to not engage in combat
     pub is_pet_staying: bool,

@@ -31,6 +31,9 @@ pub enum InventoryEvent {
         craft_event: CraftEvent,
         craft_sprite: Option<VolumePos>,
     },
+    OverflowMove(usize, InvSlotId),
+    OverflowDrop(usize),
+    OverflowSplitDrop(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +43,9 @@ pub enum InventoryAction {
     Use(Slot),
     Sort,
     Collect(Vec3<i32>),
+    // TODO: Not actually inventory-related: refactor to allow sprite interaction without
+    // inventory manipulation!
+    ToggleSpriteLight(VolumePos, bool),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +89,11 @@ impl From<InventoryEvent> for InventoryManip {
                 craft_event,
                 craft_sprite,
             },
+            InventoryEvent::OverflowMove(o, inv) => {
+                Self::Swap(Slot::Overflow(o), Slot::Inventory(inv))
+            },
+            InventoryEvent::OverflowDrop(o) => Self::Drop(Slot::Overflow(o)),
+            InventoryEvent::OverflowSplitDrop(o) => Self::SplitDrop(Slot::Overflow(o)),
         }
     }
 }
@@ -170,6 +181,9 @@ pub enum ControlAction {
     Unwield,
     Sit,
     Dance,
+    Pet {
+        target_uid: Uid,
+    },
     Sneak,
     Stand,
     Talk,

@@ -9,7 +9,7 @@ use common::{
     generation::{ChunkSupplement, EntityInfo},
     terrain::{Structure as PrefabStructure, StructuresGroup},
 };
-use kiddo::{distance::squared_euclidean, KdTree};
+use kiddo::{float::kdtree::KdTree, SquaredEuclidean};
 use lazy_static::lazy_static;
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -237,7 +237,7 @@ impl GnarlingFortification {
                     ))
                 }
             }) {
-                let dir_to_center = Dir::from_vector(hut_loc.xy()).opposite();
+                let dir_to_center = Dir::from_vec2(hut_loc.xy()).opposite();
                 let door_rng: u32 = rng.gen_range(0..9);
                 let door_dir = match door_rng {
                     0..=3 => dir_to_center,
@@ -262,7 +262,7 @@ impl GnarlingFortification {
         let chieftain_hut_loc = ((inner_tower_locs[0] + inner_tower_locs[1])
             + 2 * outer_wall_corners[chieftain_indices[1]])
             / 4;
-        let chieftain_hut_ori = Dir::from_vector(chieftain_hut_loc).opposite();
+        let chieftain_hut_ori = Dir::from_vec2(chieftain_hut_loc).opposite();
         structure_locations.push((
             GnarlingStructure::ChieftainHut,
             chieftain_hut_loc.with_z(rpos_height(chieftain_hut_loc)),
@@ -294,12 +294,7 @@ impl GnarlingFortification {
             .collect::<Vec<_>>();
         let wall_segments = outer_wall_segments
             .into_iter()
-            .chain(
-                wall_connections
-                    .iter()
-                    .copied()
-                    .zip(inner_tower_locs.into_iter()),
-            )
+            .chain(wall_connections.iter().copied().zip(inner_tower_locs))
             .collect::<Vec<_>>();
 
         Self {
@@ -454,7 +449,6 @@ impl Structure for GnarlingFortification {
                 })
                 .for_each(|(point, next_point)| {
                     // 2d world positions of each point in wall segment
-                    let point = point;
                     let start_wpos = point + self.origin;
                     let end_wpos = next_point + self.origin;
 
@@ -1829,7 +1823,7 @@ impl Structure for GnarlingFortification {
         }
         tunnels
             .into_iter()
-            .chain(rooms.into_iter())
+            .chain(rooms)
             .chain(core::iter::once(boss_room))
             .chain(core::iter::once(stump))
             .for_each(|prim| prim.fill(wood.clone()));
@@ -1839,7 +1833,7 @@ impl Structure for GnarlingFortification {
         let mut sprite_clear = Vec::new();
         tunnels_clear
             .into_iter()
-            .chain(rooms_clear.into_iter())
+            .chain(rooms_clear)
             .chain(core::iter::once(boss_room_clear))
             .for_each(|prim| {
                 sprite_clear.push(prim.translate(Vec3::new(0, 0, 1)).intersect(prim));
@@ -1880,18 +1874,27 @@ impl Structure for GnarlingFortification {
 }
 
 fn gnarling_mugger<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.mugger", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.dungeon.gnarling.mugger",
+        rng,
+        None,
+    )
 }
 
 fn gnarling_stalker<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.stalker", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.dungeon.gnarling.stalker",
+        rng,
+        None,
+    )
 }
 
 fn gnarling_logger<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.logger", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.dungeon.gnarling.logger",
+        rng,
+        None,
+    )
 }
 
 fn random_gnarling<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
@@ -1904,28 +1907,40 @@ fn random_gnarling<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
 
 fn gnarling_chieftain<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
     EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.chieftain", rng)
+        .with_asset_expect("common.entity.dungeon.gnarling.chieftain", rng, None)
         .with_no_flee()
 }
 
 fn deadwood<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.wild.aggressive.deadwood", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.wild.aggressive.deadwood",
+        rng,
+        None,
+    )
 }
 
 fn mandragora<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.mandragora", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.dungeon.gnarling.mandragora",
+        rng,
+        None,
+    )
 }
 
 fn wood_golem<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.woodgolem", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.dungeon.gnarling.woodgolem",
+        rng,
+        None,
+    )
 }
 
 fn harvester_boss<R: Rng>(pos: Vec3<i32>, rng: &mut R) -> EntityInfo {
-    EntityInfo::at(pos.map(|x| x as f32))
-        .with_asset_expect("common.entity.dungeon.gnarling.harvester", rng)
+    EntityInfo::at(pos.map(|x| x as f32)).with_asset_expect(
+        "common.entity.dungeon.gnarling.harvester",
+        rng,
+        None,
+    )
 }
 
 #[derive(Default)]
@@ -1959,13 +1974,14 @@ impl Tunnels {
     where
         F: Fn(Vec3<i32>, Vec3<i32>) -> bool,
     {
+        const MAX_POINTS: usize = 7000;
         let mut nodes = Vec::new();
         let mut node_index: usize = 0;
 
         // HashMap<ChildNode, ParentNode>
         let mut parents = HashMap::new();
 
-        let mut kdtree = KdTree::new();
+        let mut kdtree: KdTree<f32, usize, 3, 32, u32> = KdTree::with_capacity(MAX_POINTS);
         let startf = start.map(|a| (a + 1) as f32);
         let endf = end.map(|a| (a + 1) as f32);
 
@@ -1980,14 +1996,12 @@ impl Tunnels {
             startf.z.max(endf.z),
         );
 
-        kdtree
-            .add(&[startf.x, startf.y, startf.z], node_index)
-            .ok()?;
+        kdtree.add(&[startf.x, startf.y, startf.z], node_index);
         nodes.push(startf);
         node_index += 1;
         let mut connect = false;
 
-        for _i in 0..7000 {
+        for _i in 0..MAX_POINTS {
             let radius: f32 = rng.gen_range(radius_range.0..radius_range.1);
             let radius_sqrd = radius.powi(2);
             if connect {
@@ -1998,13 +2012,13 @@ impl Tunnels {
                 rng.gen_range(min.y - 20.0..max.y + 20.0),
                 rng.gen_range(min.z - 20.0..max.z - 7.0),
             );
-            let nearest_index = *kdtree
-                .nearest_one(
-                    &[sampled_point.x, sampled_point.y, sampled_point.z],
-                    &squared_euclidean,
-                )
-                .ok()?
-                .1;
+            let nearest_index = kdtree
+                .nearest_one::<SquaredEuclidean>(&[
+                    sampled_point.x,
+                    sampled_point.y,
+                    sampled_point.z,
+                ])
+                .item;
             let nearest = nodes[nearest_index];
             let dist_sqrd = sampled_point.distance_squared(nearest);
             let new_point = if dist_sqrd > radius_sqrd {
@@ -2016,24 +2030,21 @@ impl Tunnels {
                 nearest.map(|e| e.floor() as i32),
                 new_point.map(|e| e.floor() as i32),
             ) {
-                kdtree
-                    .add(&[new_point.x, new_point.y, new_point.z], node_index)
-                    .ok()?;
+                kdtree.add(&[new_point.x, new_point.y, new_point.z], node_index);
                 nodes.push(new_point);
                 parents.insert(node_index, nearest_index);
                 node_index += 1;
             }
-            if new_point.distance_squared(endf) < radius.powi(2) {
+            if new_point.distance_squared(endf) < radius_sqrd {
                 connect = true;
             }
         }
 
         let mut path = Vec::new();
-        let nearest_index = *kdtree
-            .nearest_one(&[endf.x, endf.y, endf.z], &squared_euclidean)
-            .ok()?
-            .1;
-        kdtree.add(&[endf.x, endf.y, endf.z], node_index).ok()?;
+        let nearest_index = kdtree
+            .nearest_one::<SquaredEuclidean>(&[endf.x, endf.y, endf.z])
+            .item;
+        kdtree.add(&[endf.x, endf.y, endf.z], node_index);
         nodes.push(endf);
         parents.insert(node_index, nearest_index);
         path.push(endf);

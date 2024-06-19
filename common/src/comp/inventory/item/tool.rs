@@ -37,13 +37,12 @@ pub enum ToolKind {
     Farming,
     Pick,
     Shovel,
+    /// Music Instruments
+    Instrument,
     // npcs
     /// Intended for invisible weapons (e.g. a creature using its claws or
     /// biting)
     Natural,
-    /// This is an placeholder item, it is used by non-humanoid npcs to attack
-    /// Music Instruments
-    Instrument,
     /// This is an placeholder item, it is used by non-humanoid npcs to attack
     Empty,
 }
@@ -97,6 +96,28 @@ impl ToolKind {
                 | ToolKind::Dagger
         )
     }
+
+    pub fn block_priority(&self) -> i32 {
+        match self {
+            ToolKind::Debug => 0,
+            ToolKind::Blowgun => 1,
+            ToolKind::Bow => 2,
+            ToolKind::Staff => 3,
+            ToolKind::Sceptre => 4,
+            ToolKind::Empty => 5,
+            ToolKind::Natural => 6,
+            ToolKind::Instrument => 7,
+            ToolKind::Farming => 8,
+            ToolKind::Shovel => 9,
+            ToolKind::Pick => 10,
+            ToolKind::Dagger => 11,
+            ToolKind::Spear => 12,
+            ToolKind::Hammer => 13,
+            ToolKind::Axe => 14,
+            ToolKind::Sword => 15,
+            ToolKind::Shield => 16,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,7 +132,6 @@ pub struct Stats {
     pub power: f32,
     pub effect_power: f32,
     pub speed: f32,
-    pub crit_chance: f32,
     pub range: f32,
     pub energy_efficiency: f32,
     pub buff_strength: f32,
@@ -124,7 +144,6 @@ impl Stats {
             power: 0.0,
             effect_power: 0.0,
             speed: 0.0,
-            crit_chance: 0.0,
             range: 0.0,
             energy_efficiency: 0.0,
             buff_strength: 0.0,
@@ -137,7 +156,6 @@ impl Stats {
             power: 1.0,
             effect_power: 1.0,
             speed: 1.0,
-            crit_chance: 1.0,
             range: 1.0,
             energy_efficiency: 1.0,
             buff_strength: 1.0,
@@ -163,7 +181,6 @@ impl Stats {
             power: self.power * dur_mult.0,
             effect_power: self.effect_power * dur_mult.0,
             speed: self.speed * less_scaled,
-            crit_chance: self.crit_chance * dur_mult.0,
             range: self.range * less_scaled,
             energy_efficiency: self.energy_efficiency * less_scaled,
             buff_strength: self.buff_strength * dur_mult.0,
@@ -186,7 +203,6 @@ impl Add<Stats> for Stats {
             power: self.power + other.power,
             effect_power: self.effect_power + other.effect_power,
             speed: self.speed + other.speed,
-            crit_chance: self.crit_chance + other.crit_chance,
             range: self.range + other.range,
             energy_efficiency: self.energy_efficiency + other.energy_efficiency,
             buff_strength: self.buff_strength + other.buff_strength,
@@ -207,7 +223,6 @@ impl Sub<Stats> for Stats {
             power: self.power - other.power,
             effect_power: self.effect_power - other.effect_power,
             speed: self.speed - other.speed,
-            crit_chance: self.crit_chance - other.crit_chance,
             range: self.range - other.range,
             energy_efficiency: self.energy_efficiency - other.energy_efficiency,
             buff_strength: self.buff_strength - other.buff_strength,
@@ -224,7 +239,6 @@ impl Mul<Stats> for Stats {
             power: self.power * other.power,
             effect_power: self.effect_power * other.effect_power,
             speed: self.speed * other.speed,
-            crit_chance: self.crit_chance * other.crit_chance,
             range: self.range * other.range,
             energy_efficiency: self.energy_efficiency * other.energy_efficiency,
             buff_strength: self.buff_strength * other.buff_strength,
@@ -245,7 +259,6 @@ impl Div<f32> for Stats {
             power: self.power / scalar,
             effect_power: self.effect_power / scalar,
             speed: self.speed / scalar,
-            crit_chance: self.crit_chance / scalar,
             range: self.range / scalar,
             energy_efficiency: self.energy_efficiency / scalar,
             buff_strength: self.buff_strength / scalar,
@@ -281,7 +294,6 @@ impl Tool {
                 power: 1.00,
                 effect_power: 1.00,
                 speed: 1.00,
-                crit_chance: 0.1,
                 range: 1.0,
                 energy_efficiency: 1.0,
                 buff_strength: 1.0,

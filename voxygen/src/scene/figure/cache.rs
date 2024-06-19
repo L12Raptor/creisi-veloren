@@ -13,8 +13,7 @@ use crate::{
     },
     scene::{
         camera::CameraMode,
-        terrain::{get_sprite_instances, BlocksOfInterest, SPRITE_LOD_LEVELS},
-        Terrain,
+        terrain::{get_sprite_instances, BlocksOfInterest, SpriteRenderState, SPRITE_LOD_LEVELS},
     },
 };
 use anim::Skeleton;
@@ -217,11 +216,10 @@ impl CharacterCacheKey {
                 .map(|id| match id {
                     // TODO: Properly handle items with components here. Probably wait until modular
                     // armor?
-                    ItemDefinitionId::Simple(id) => id,
-                    ItemDefinitionId::Compound { simple_base, .. } => simple_base,
-                    ItemDefinitionId::Modular { pseudo_base, .. } => pseudo_base,
+                    ItemDefinitionId::Simple(id) => String::from(id),
+                    ItemDefinitionId::Compound { simple_base, .. } => String::from(simple_base),
+                    ItemDefinitionId::Modular { pseudo_base, .. } => String::from(pseudo_base),
                 })
-                .map(String::from)
         };
 
         // Third person tools are only modeled when the camera is either not first
@@ -632,7 +630,7 @@ where
         extra: <Skel::Body as BodySpec>::Extra,
         tick: u64,
         slow_jobs: &SlowJobPool,
-        terrain: &Terrain,
+        sprite_render_state: &SpriteRenderState,
     ) -> (TerrainModelEntryLod<'c>, &'c Skel::Attr)
     where
         for<'a> &'a Skel::Body: Into<Skel::Attr>,
@@ -695,8 +693,8 @@ where
                 let key = v.key().clone();
                 let slot = Arc::new(atomic::AtomicCell::new(None));
                 let manifests = self.manifests.clone();
-                let sprite_data = Arc::clone(&terrain.sprite_data);
-                let sprite_config = Arc::clone(&terrain.sprite_config);
+                let sprite_data = Arc::clone(&sprite_render_state.sprite_data);
+                let sprite_config = Arc::clone(&sprite_render_state.sprite_config);
                 let slot_ = Arc::clone(&slot);
 
                 slow_jobs.spawn("FIGURE_MESHING", move || {

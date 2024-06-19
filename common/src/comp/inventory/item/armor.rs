@@ -23,6 +23,7 @@ pub enum ArmorKind {
     Head,
     Tabard,
     Bag,
+    Backpack,
 }
 
 impl ArmorKind {
@@ -35,6 +36,7 @@ impl ArmorKind {
             ArmorKind::Pants => true,
             ArmorKind::Foot => true,
             ArmorKind::Back => true,
+            ArmorKind::Backpack => true,
             ArmorKind::Ring => false,
             ArmorKind::Neck => false,
             ArmorKind::Head => true,
@@ -97,6 +99,7 @@ impl Friction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Stats {
     /// Protection is non-linearly transformed (following summation) to a damage
     /// reduction using (prot / (60 + prot))
@@ -110,9 +113,9 @@ pub struct Stats {
     /// energy, it is then multiplied by this value before the energy is
     /// rewarded.
     pub energy_reward: Option<f32>,
-    /// Crit power is summed, and then added to the default crit multiplier of
-    /// 1.25. Damage is multiplied by this value when an attack crits.
-    pub crit_power: Option<f32>,
+    /// Precision power is summed, and then added to the default precision
+    /// multiplier of 1.1.
+    pub precision_power: Option<f32>,
     /// Stealth is summed along with the base stealth bonus (2.0), and then
     /// the agent's perception distance is divided by this value
     pub stealth: Option<f32>,
@@ -128,7 +131,7 @@ impl Stats {
             poise_resilience: None,
             energy_max: None,
             energy_reward: None,
-            crit_power: None,
+            precision_power: None,
             stealth: None,
             ground_contact: Friction::Normal,
         }
@@ -150,7 +153,7 @@ impl Mul<f32> for Stats {
             poise_resilience: self.poise_resilience.map(|a| a * val),
             energy_max: self.energy_max.map(|a| a * val),
             energy_reward: self.energy_reward.map(|a| a * val),
-            crit_power: self.crit_power.map(|a| a * val),
+            precision_power: self.precision_power.map(|a| a * val),
             stealth: self.stealth.map(|a| a * val),
             // There is nothing to multiply, it is just an enum
             ground_contact: self.ground_contact,
@@ -173,7 +176,10 @@ impl Sub<Stats> for Stats {
                 .energy_reward
                 .zip(other.energy_reward)
                 .map(|(a, b)| a - b),
-            crit_power: self.crit_power.zip(other.crit_power).map(|(a, b)| a - b),
+            precision_power: self
+                .precision_power
+                .zip(other.precision_power)
+                .map(|(a, b)| a - b),
             stealth: self.stealth.zip(other.stealth).map(|(a, b)| a - b),
             ground_contact: Friction::Normal,
         }
@@ -227,6 +233,7 @@ impl PartialOrd for Protection {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Armor {
     pub kind: ArmorKind,
     pub stats: StatsSource,
@@ -252,6 +259,7 @@ impl Armor {
                     ArmorKind::Pants => 2.0,
                     ArmorKind::Foot => 1.0,
                     ArmorKind::Back => 0.5,
+                    ArmorKind::Backpack => 0.0,
                     ArmorKind::Ring => 0.0,
                     ArmorKind::Neck => 0.0,
                     ArmorKind::Head => 0.0,
@@ -281,7 +289,7 @@ impl Armor {
                 poise_resilience: Some(poise_resilience),
                 energy_max: None,
                 energy_reward: None,
-                crit_power: None,
+                precision_power: None,
                 stealth: None,
                 ground_contact: Friction::Normal,
             }),

@@ -49,7 +49,6 @@ pub enum Chat {
 pub enum Control {
     ChangeBinding(GameInput),
     RemoveBinding(GameInput),
-    ToggleKeybindingMode,
     ResetKeyBindings,
 }
 #[derive(Clone)]
@@ -59,6 +58,7 @@ pub enum Gameplay {
     AdjustMousePan(u32),
     AdjustMouseZoom(u32),
     AdjustCameraClamp(u32),
+    AdjustWalkingSpeed(f32),
 
     ToggleControllerYInvert(bool),
     ToggleMouseYInvert(bool),
@@ -68,12 +68,16 @@ pub enum Gameplay {
 
     ChangeFreeLookBehavior(PressBehavior),
     ChangeAutoWalkBehavior(PressBehavior),
+    ChangeWalkingSpeedBehavior(PressBehavior),
     ChangeCameraClampBehavior(PressBehavior),
     ChangeZoomLockBehavior(AutoPressBehavior),
     ChangeStopAutoWalkOnInput(bool),
     ChangeAutoCamera(bool),
     ChangeBowZoom(bool),
     ChangeZoomLock(bool),
+
+    AdjustAimOffsetX(f32),
+    AdjustAimOffsetY(f32),
 
     ResetGameplaySettings,
 }
@@ -159,6 +163,7 @@ pub enum Interface {
 #[derive(Clone)]
 pub enum Language {
     ChangeLanguage(Box<LanguageMetadata>),
+    ToggleSendToServer(bool),
     ToggleEnglishFallback(bool),
 }
 #[derive(Clone)]
@@ -216,7 +221,7 @@ settings_change_from!(Accessibility);
 
 impl SettingsChange {
     pub fn process(self, global_state: &mut GlobalState, session_state: &mut SessionState) {
-        let mut settings = &mut global_state.settings;
+        let settings = &mut global_state.settings;
 
         match self {
             SettingsChange::Audio(audio_change) => {
@@ -357,16 +362,13 @@ impl SettingsChange {
                 Control::RemoveBinding(game_input) => {
                     settings.controls.remove_binding(game_input);
                 },
-                Control::ToggleKeybindingMode => {
-                    global_state.window.toggle_keybinding_mode();
-                },
                 Control::ResetKeyBindings => {
                     settings.controls = ControlSettings::default();
                 },
             },
             SettingsChange::Gamepad(gamepad_change) => match gamepad_change {},
             SettingsChange::Gameplay(gameplay_change) => {
-                let mut window = &mut global_state.window;
+                let window = &mut global_state.window;
                 match gameplay_change {
                     Gameplay::AdjustMousePan(sensitivity) => {
                         window.pan_sensitivity = sensitivity;
@@ -378,6 +380,9 @@ impl SettingsChange {
                     },
                     Gameplay::AdjustCameraClamp(angle) => {
                         settings.gameplay.camera_clamp_angle = angle;
+                    },
+                    Gameplay::AdjustWalkingSpeed(speed) => {
+                        settings.gameplay.walking_speed = speed;
                     },
                     Gameplay::ToggleControllerYInvert(controller_y_inverted) => {
                         window.controller_settings.pan_invert_y = controller_y_inverted;
@@ -400,6 +405,9 @@ impl SettingsChange {
                     Gameplay::ChangeAutoWalkBehavior(behavior) => {
                         settings.gameplay.auto_walk_behavior = behavior;
                     },
+                    Gameplay::ChangeWalkingSpeedBehavior(behavior) => {
+                        settings.gameplay.walking_speed_behavior = behavior;
+                    },
                     Gameplay::ChangeCameraClampBehavior(behavior) => {
                         settings.gameplay.camera_clamp_behavior = behavior;
                     },
@@ -417,6 +425,12 @@ impl SettingsChange {
                     },
                     Gameplay::ChangeZoomLock(state) => {
                         settings.gameplay.zoom_lock = state;
+                    },
+                    Gameplay::AdjustAimOffsetX(offset) => {
+                        settings.gameplay.aim_offset_x = offset;
+                    },
+                    Gameplay::AdjustAimOffsetY(offset) => {
+                        settings.gameplay.aim_offset_y = offset;
                     },
                     Gameplay::ResetGameplaySettings => {
                         // Reset Gameplay Settings
@@ -708,6 +722,9 @@ impl SettingsChange {
                     global_state
                         .i18n
                         .set_english_fallback(settings.language.use_english_fallback);
+                },
+                Language::ToggleSendToServer(share) => {
+                    settings.language.send_to_server = share;
                 },
             },
             SettingsChange::Networking(networking_change) => match networking_change {

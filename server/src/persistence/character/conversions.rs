@@ -1,25 +1,26 @@
 use crate::persistence::{
     character::EntityId,
-    models::{AbilitySets, Character, Item, SkillGroup},
-};
-
-use crate::persistence::{
     error::PersistenceError,
     json_models::{
         self, CharacterPosition, DatabaseAbilitySet, DatabaseItemProperties, GenericBody,
         HumanoidBody,
     },
+    models::{AbilitySets, Character, Item, SkillGroup},
 };
 use common::{
     character::CharacterId,
     comp::{
+        body,
         inventory::{
             item::{tool::AbilityMap, Item as VelorenItem, MaterialStatManifest},
             loadout::{Loadout, LoadoutError},
             loadout_builder::LoadoutBuilder,
+            recipe_book::RecipeBook,
             slot::InvSlotId,
         },
-        skillset, Body as CompBody, Waypoint, *,
+        item,
+        skillset::{self, skills::Skill, SkillGroupKind, SkillSet},
+        ActiveAbilities, Body as CompBody, Inventory, MapMarker, Stats, Waypoint,
     },
     resources::Time,
 };
@@ -56,16 +57,36 @@ pub fn convert_items_to_database_items(
     loadout_container_id: EntityId,
     inventory: &Inventory,
     inventory_container_id: EntityId,
+    overflow_items_container_id: EntityId,
+    recipe_book_container_id: EntityId,
     next_id: &mut i64,
 ) -> Vec<ItemModelPair> {
     let loadout = inventory
         .loadout_items_with_persistence_key()
         .map(|(slot, item)| (slot.to_string(), item, loadout_container_id));
 
+    let overflow_items = inventory.overflow_items().enumerate().map(|(i, item)| {
+        (
+            serde_json::to_string(&i).expect("failed to serialize index of overflow item"),
+            Some(item),
+            overflow_items_container_id,
+        )
+    });
+
+    let recipe_book = inventory
+        .persistence_recipes_iter_with_index()
+        .map(|(i, item)| {
+            (
+                serde_json::to_string(&i)
+                    .expect("failed to serialize index of recipe from recipe book"),
+                Some(item),
+                recipe_book_container_id,
+            )
+        });
     // Inventory slots.
     let inventory = inventory.slots_with_id().map(|(pos, item)| {
         (
-            serde_json::to_string(&pos).expect("failed to serialize InventorySlotPos"),
+            serde_json::to_string(&pos).expect("failed to serialize InvSlotId"),
             item.as_ref(),
             inventory_container_id,
         )
@@ -73,11 +94,17 @@ pub fn convert_items_to_database_items(
 
     // Use Breadth-first search to recurse into containers/modular weapons to store
     // their parts
-    let mut bfs_queue: VecDeque<_> = inventory.chain(loadout).collect();
+    let mut bfs_queue: VecDeque<_> = inventory
+        .chain(loadout)
+        .chain(overflow_items)
+        .chain(recipe_book)
+        .collect();
     let mut upserts = Vec::new();
     let mut depth = HashMap::new();
     depth.insert(inventory_container_id, 0);
     depth.insert(loadout_container_id, 0);
+    depth.insert(overflow_items_container_id, 0);
+    depth.insert(recipe_book_container_id, 0);
     while let Some((position, item, parent_container_item_id)) = bfs_queue.pop_front() {
         // Construct new items.
         if let Some(item) = item {
@@ -172,12 +199,12 @@ pub fn convert_items_to_database_items(
 
             let upsert = ItemModelPair {
                 model: Item {
-                    item_definition_id: String::from(item.persistence_item_id()),
+                    item_definition_id: item.persistence_item_id(),
                     position,
                     parent_container_item_id,
                     item_id,
                     stack_size: if item.is_stackable() {
-                        item.amount() as i32
+                        item.amount().into()
                     } else {
                         1
                     },
@@ -200,24 +227,28 @@ pub fn convert_body_to_database_json(
     comp_body: &CompBody,
 ) -> Result<(&str, String), PersistenceError> {
     Ok(match comp_body {
-        Body::Humanoid(body) => (
+        CompBody::Humanoid(body) => (
             "humanoid",
             serde_json::to_string(&HumanoidBody::from(body))?,
         ),
-        Body::QuadrupedLow(body) => (
+        CompBody::QuadrupedLow(body) => (
             "quadruped_low",
             serde_json::to_string(&GenericBody::from(body))?,
         ),
-        Body::QuadrupedMedium(body) => (
+        CompBody::QuadrupedMedium(body) => (
             "quadruped_medium",
             serde_json::to_string(&GenericBody::from(body))?,
         ),
-        Body::QuadrupedSmall(body) => (
+        CompBody::QuadrupedSmall(body) => (
             "quadruped_small",
             serde_json::to_string(&GenericBody::from(body))?,
         ),
-        Body::BirdMedium(body) => (
+        CompBody::BirdMedium(body) => (
             "bird_medium",
+            serde_json::to_string(&GenericBody::from(body))?,
+        ),
+        CompBody::Crustacean(body) => (
+            "crustacean",
             serde_json::to_string(&GenericBody::from(body))?,
         ),
         _ => {
@@ -348,6 +379,9 @@ pub fn convert_inventory_from_database_items(
     inventory_items: &[Item],
     loadout_container_id: i64,
     loadout_items: &[Item],
+    overflow_items_container_id: i64,
+    overflow_items: &[Item],
+    recipe_book_items: &[Item],
 ) -> Result<Inventory, PersistenceError> {
     // Loadout items must be loaded before inventory items since loadout items
     // provide inventory slots. Since items stored inside loadout items actually
@@ -356,8 +390,13 @@ pub fn convert_inventory_from_database_items(
     // inventory at the correct position.
     //
     let loadout = convert_loadout_from_database_items(loadout_container_id, loadout_items)?;
-    let mut inventory = Inventory::with_loadout_humanoid(loadout);
+    let overflow_items =
+        convert_overflow_items_from_database_items(overflow_items_container_id, overflow_items)?;
+    let recipe_book = convert_recipe_book_from_database_items(recipe_book_items)?;
+    let mut inventory = Inventory::with_loadout_humanoid(loadout).with_recipe_book(recipe_book);
     let mut item_indices = HashMap::new();
+
+    let mut failed_inserts = HashMap::new();
 
     // In order to items with components to properly load, it is important that this
     // item iteration occurs in order so that any modular items are loaded before
@@ -408,36 +447,50 @@ pub fn convert_inventory_from_database_items(
         };
 
         if db_item.parent_container_item_id == inventory_container_id {
-            let slot = slot(&db_item.position)?;
-            let insert_res = inventory.insert_at(slot, item).map_err(|_| {
-                // If this happens there were too many items in the database for the current
-                // inventory size
-                //
-                // FIXME: On failure, collect the set of items that don't fit and return them
-                // (to be dropped next to the player) as this could be the
-                // result of a change in the slot capacity for an equipped bag
-                // (or a change in the inventory size).
-                PersistenceError::ConversionError(format!(
-                    "Error inserting item into inventory, position: {:?}",
-                    slot
-                ))
-            })?;
+            match slot(&db_item.position) {
+                Ok(slot) => {
+                    let insert_res = inventory.insert_at(slot, item);
 
-            if insert_res.is_some() {
-                // If inventory.insert returns an item, it means it was swapped for an item that
-                // already occupied the slot. Multiple items being stored in the database for
-                // the same slot is an error.
-                return Err(PersistenceError::ConversionError(
-                    "Inserted an item into the same slot twice".to_string(),
-                ));
+                    match insert_res {
+                        Ok(None) => {
+                            // Insert successful
+                        },
+                        Ok(Some(_item)) => {
+                            // If inventory.insert returns an item, it means it was swapped for
+                            // an item that already occupied the
+                            // slot. Multiple items being stored
+                            // in the database for the same slot is
+                            // an error.
+                            return Err(PersistenceError::ConversionError(
+                                "Inserted an item into the same slot twice".to_string(),
+                            ));
+                        },
+                        Err(item) => {
+                            // If this happens there were too many items in the database for the
+                            // current inventory size
+                            failed_inserts.insert(db_item.position.clone(), item);
+                        },
+                    }
+                },
+                Err(err) => {
+                    return Err(err);
+                },
             }
         } else if let Some(&j) = item_indices.get(&db_item.parent_container_item_id) {
             get_mutable_item(
                 j,
                 inventory_items,
                 &item_indices,
-                &mut inventory,
-                &|inv, s| inv.slot_mut(slot(s).ok()?).and_then(|a| a.as_mut()),
+                &mut (&mut inventory, &mut failed_inserts),
+                &|(inv, f_i): &mut (&mut Inventory, &mut HashMap<String, VelorenItem>), s| {
+                    // Attempts first to access inventory if that slot exists there. If it does not
+                    // it instead attempts to access failed inserts list.
+                    slot(s)
+                        .ok()
+                        .and_then(|slot| inv.slot_mut(slot))
+                        .and_then(|a| a.as_mut())
+                        .or_else(|| f_i.get_mut(s))
+                },
             )?
             .persistence_access_add_component(item);
         } else {
@@ -446,6 +499,16 @@ pub fn convert_inventory_from_database_items(
                 db_item.parent_container_item_id, db_item.item_id
             )));
         }
+    }
+
+    // For overflow items and failed inserts, attempt to push to inventory. If push
+    // fails, move to overflow slots.
+    if let Err(inv_error) = inventory.push_all(
+        overflow_items
+            .into_iter()
+            .chain(failed_inserts.into_values()),
+    ) {
+        inventory.persistence_push_overflow_items(inv_error.returned_items());
     }
 
     // Some items may have had components added, so update the item config of each
@@ -515,6 +578,86 @@ pub fn convert_loadout_from_database_items(
     Ok(loadout)
 }
 
+pub fn convert_overflow_items_from_database_items(
+    overflow_items_container_id: i64,
+    database_items: &[Item],
+) -> Result<Vec<VelorenItem>, PersistenceError> {
+    let mut overflow_items_with_database_position = HashMap::new();
+    let mut item_indices = HashMap::new();
+
+    // In order to items with components to properly load, it is important that this
+    // item iteration occurs in order so that any modular items are loaded before
+    // its components.
+    for (i, db_item) in database_items.iter().enumerate() {
+        item_indices.insert(db_item.item_id, i);
+
+        let mut item = get_item_from_asset(db_item.item_definition_id.as_str())?;
+        let item_properties =
+            serde_json::de::from_str::<DatabaseItemProperties>(&db_item.properties)?;
+        json_models::apply_db_item_properties(&mut item, &item_properties);
+
+        // NOTE: item id is currently *unique*, so we can store the ID safely.
+        let comp = item.get_item_id_for_database();
+
+        // Item ID
+        comp.store(Some(NonZeroU64::try_from(db_item.item_id as u64).map_err(
+            |_| PersistenceError::ConversionError("Item with zero item_id".to_owned()),
+        )?));
+
+        // Stack Size
+        if db_item.stack_size == 1 || item.is_stackable() {
+            // FIXME: On failure, collect the set of items that don't fit and return them
+            // (to be dropped next to the player) as this could be the result of
+            // a change in the max amount for that item.
+            item.set_amount(u32::try_from(db_item.stack_size).map_err(|_| {
+                PersistenceError::ConversionError(format!(
+                    "Invalid item stack size for stackable={}: {}",
+                    item.is_stackable(),
+                    &db_item.stack_size
+                ))
+            })?)
+            .map_err(|_| {
+                PersistenceError::ConversionError("Error setting amount for item".to_owned())
+            })?;
+        }
+
+        if db_item.parent_container_item_id == overflow_items_container_id {
+            match overflow_items_with_database_position.insert(db_item.position.clone(), item) {
+                None => {
+                    // Insert successful
+                },
+                Some(_item) => {
+                    // If insert returns a value, database had two items stored with the same
+                    // position which is an error.
+                    return Err(PersistenceError::ConversionError(
+                        "Inserted an item into the same overflow slot twice".to_string(),
+                    ));
+                },
+            }
+        } else if let Some(&j) = item_indices.get(&db_item.parent_container_item_id) {
+            get_mutable_item(
+                j,
+                database_items,
+                &item_indices,
+                &mut overflow_items_with_database_position,
+                &|o_i, s| o_i.get_mut(s),
+            )?
+            .persistence_access_add_component(item);
+        } else {
+            return Err(PersistenceError::ConversionError(format!(
+                "Couldn't find parent item {} before item {} in overflow items",
+                db_item.parent_container_item_id, db_item.item_id
+            )));
+        }
+    }
+
+    let overflow_items = overflow_items_with_database_position
+        .into_values()
+        .collect::<Vec<_>>();
+
+    Ok(overflow_items)
+}
+
 fn get_item_from_asset(item_definition_id: &str) -> Result<common::comp::Item, PersistenceError> {
     common::comp::Item::new_from_asset(item_definition_id).map_err(|err| {
         PersistenceError::AssetError(format!(
@@ -557,8 +700,8 @@ pub fn convert_body_from_database(
         // extra fields on its body struct
         "humanoid" => {
             let json_model = serde_json::de::from_str::<HumanoidBody>(body_data)?;
-            CompBody::Humanoid(humanoid::Body {
-                species: humanoid::ALL_SPECIES
+            CompBody::Humanoid(body::humanoid::Body {
+                species: body::humanoid::ALL_SPECIES
                     .get(json_model.species as usize)
                     .ok_or_else(|| {
                         PersistenceError::ConversionError(format!(
@@ -567,7 +710,7 @@ pub fn convert_body_from_database(
                         ))
                     })?
                     .to_owned(),
-                body_type: humanoid::ALL_BODY_TYPES
+                body_type: body::humanoid::ALL_BODY_TYPES
                     .get(json_model.body_type as usize)
                     .ok_or_else(|| {
                         PersistenceError::ConversionError(format!(
@@ -597,6 +740,9 @@ pub fn convert_body_from_database(
         "bird_medium" => {
             deserialize_body!(body_data, BirdMedium, bird_medium)
         },
+        "crustacean" => {
+            deserialize_body!(body_data, Crustacean, crustacean)
+        },
         _ => {
             return Err(PersistenceError::ConversionError(format!(
                 "{} is not a supported body type for deserialization",
@@ -613,7 +759,7 @@ pub fn convert_character_from_database(character: &Character) -> common::charact
     }
 }
 
-pub fn convert_stats_from_database(alias: String, body: Body) -> Stats {
+pub fn convert_stats_from_database(alias: String, body: CompBody) -> Stats {
     let mut new_stats = Stats::empty(body);
     new_stats.name = alias;
     new_stats
@@ -739,4 +885,26 @@ pub fn convert_active_abilities_from_database(ability_sets: &AbilitySets) -> Act
             Vec::new()
         });
     json_models::active_abilities_from_db_model(ability_sets)
+}
+
+pub fn convert_recipe_book_from_database_items(
+    database_items: &[Item],
+) -> Result<RecipeBook, PersistenceError> {
+    let mut recipes_groups = Vec::new();
+
+    for db_item in database_items.iter() {
+        let item = get_item_from_asset(db_item.item_definition_id.as_str())?;
+
+        // NOTE: item id is currently *unique*, so we can store the ID safely.
+        let comp = item.get_item_id_for_database();
+        comp.store(Some(NonZeroU64::try_from(db_item.item_id as u64).map_err(
+            |_| PersistenceError::ConversionError("Item with zero item_id".to_owned()),
+        )?));
+
+        recipes_groups.push(item);
+    }
+
+    let recipe_book = RecipeBook::recipe_book_from_persistence(recipes_groups);
+
+    Ok(recipe_book)
 }

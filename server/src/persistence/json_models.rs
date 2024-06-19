@@ -60,6 +60,7 @@ generic_body_from_impl!(comp::quadruped_low::Body);
 generic_body_from_impl!(comp::quadruped_medium::Body);
 generic_body_from_impl!(comp::quadruped_small::Body);
 generic_body_from_impl!(comp::bird_medium::Body);
+generic_body_from_impl!(comp::crustacean::Body);
 
 #[derive(Serialize, Deserialize)]
 pub struct CharacterPosition {
@@ -126,6 +127,7 @@ fn aux_ability_to_string(ability: comp::ability::AuxiliaryAbility) -> String {
     match ability {
         AuxiliaryAbility::MainWeapon(index) => format!("Main Weapon:index:{}", index),
         AuxiliaryAbility::OffWeapon(index) => format!("Off Weapon:index:{}", index),
+        AuxiliaryAbility::Glider(index) => format!("Glider:index:{}", index),
         AuxiliaryAbility::Empty => String::from("Empty"),
     }
 }
@@ -160,6 +162,27 @@ fn aux_ability_from_string(ability: &str) -> comp::ability::AuxiliaryAbility {
             .map(|index| index.parse::<usize>().map_err(|_| index))
         {
             Some(Ok(index)) => AuxiliaryAbility::OffWeapon(index),
+            Some(Err(error)) => {
+                dev_panic!(format!(
+                    "Conversion from database to ability set failed. Unable to parse index for \
+                     offhand abilities: {}",
+                    error
+                ));
+                AuxiliaryAbility::Empty
+            },
+            None => {
+                dev_panic!(String::from(
+                    "Conversion from database to ability set failed. Unable to find an index for \
+                     offhand abilities"
+                ));
+                AuxiliaryAbility::Empty
+            },
+        },
+        Some("Glider") => match parts
+            .next()
+            .map(|index| index.parse::<usize>().map_err(|_| index))
+        {
+            Some(Ok(index)) => AuxiliaryAbility::Glider(index),
             Some(Err(error)) => {
                 dev_panic!(format!(
                     "Conversion from database to ability set failed. Unable to parse index for \
@@ -271,7 +294,7 @@ pub fn active_abilities_from_db_model(
                  abilities,
              }| {
                 let mut auxiliary_abilities =
-                    [comp::ability::AuxiliaryAbility::Empty; comp::ability::MAX_ABILITIES];
+                    vec![comp::ability::AuxiliaryAbility::Empty; comp::ability::BASE_ABILITY_LIMIT];
                 for (empty, ability) in auxiliary_abilities.iter_mut().zip(abilities.into_iter()) {
                     *empty = aux_ability_from_string(&ability);
                 }
@@ -285,7 +308,10 @@ pub fn active_abilities_from_db_model(
             },
         )
         .collect::<HashMap<_, _>>();
-    comp::ability::ActiveAbilities::new(ability_sets)
+    comp::ability::ActiveAbilities::from_auxiliary(
+        ability_sets,
+        Some(comp::ability::BASE_ABILITY_LIMIT),
+    )
 }
 
 /// Struct containing item properties in the format that they get persisted to

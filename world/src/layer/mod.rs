@@ -23,7 +23,7 @@ use common::{
     generation::{ChunkSupplement, EntityInfo},
     lottery::Lottery,
     terrain::{Block, BlockKind, SpriteKind},
-    vol::{BaseVol, ReadVol, RectSizedVol, WriteVol},
+    vol::{ReadVol, RectSizedVol, WriteVol},
 };
 use hashbrown::HashMap;
 use noise::NoiseFn;
@@ -47,7 +47,7 @@ pub struct Colors {
     pub vein: (u8, u8, u8),
 }
 
-const EMPTY_AIR: Block = Block::air(SpriteKind::Empty);
+const EMPTY_AIR: Block = Block::empty();
 
 pub struct PathLocals {
     pub riverless_alt: f32,
@@ -576,7 +576,7 @@ pub fn apply_caves_supplement<'a>(
     dynamic_rng: &mut impl Rng,
     wpos2d: Vec2<i32>,
     mut get_column: impl FnMut(Vec2<i32>) -> Option<&'a ColumnSample<'a>>,
-    vol: &(impl BaseVol<Vox = Block> + RectSizedVol + ReadVol + WriteVol),
+    vol: &(impl RectSizedVol<Vox = Block> + ReadVol + WriteVol),
     index: IndexRef,
     supplement: &mut ChunkSupplement,
 ) {
@@ -635,22 +635,22 @@ pub fn apply_caves_supplement<'a>(
                                     }
                                 }
                             } else if cave_depth < 70.0 {
-                                match dynamic_rng.gen_range(0..4) {
-                                    0 => "common.entity.wild.peaceful.truffler",
-                                    1 => "common.entity.wild.aggressive.dodarock",
-                                    2 => "common.entity.wild.peaceful.holladon",
-                                    _ => "common.entity.wild.aggressive.batfox",
+                                match dynamic_rng.gen_range(0..9) {
+                                    0..=1 => "common.entity.wild.peaceful.truffler",
+                                    2 => "common.entity.wild.aggressive.dodarock",
+                                    3..=4 => "common.entity.wild.peaceful.holladon",
+                                    5..=6 => "common.entity.wild.aggressive.batfox",
+                                    _ => "common.entity.wild.peaceful.rat",
                                 }
                             } else if cave_depth < 120.0 {
-                                match dynamic_rng.gen_range(0..10) {
-                                    2 => "common.entity.wild.aggressive.rocksnapper",
-                                    5 => "common.entity.wild.aggressive.cave_salamander",
-                                    7 => "common.entity.wild.aggressive.cave_spider",
-                                    8 => "common.entity.wild.peaceful.crawler_molten",
+                                match dynamic_rng.gen_range(0..5) {
+                                    0..=1 => "common.entity.wild.aggressive.cave_salamander",
+                                    2 => "common.entity.wild.aggressive.cave_spider",
+                                    3..=4 => "common.entity.wild.peaceful.crawler_molten",
                                     _ => "common.entity.wild.aggressive.asp",
                                 }
                             } else if cave_depth < 190.0 {
-                                match dynamic_rng.gen_range(0..5) {
+                                match dynamic_rng.gen_range(0..4) {
                                     1 => "common.entity.wild.aggressive.rocksnapper",
                                     2 => "common.entity.wild.aggressive.lavadrake",
                                     3 => "common.entity.wild.aggressive.black_widow",
@@ -668,7 +668,7 @@ pub fn apply_caves_supplement<'a>(
                                     _ => "common.entity.wild.aggressive.cave_troll",
                                 }
                             };
-                            entity.with_asset_expect(asset, dynamic_rng)
+                            entity.with_asset_expect(asset, dynamic_rng, None)
                         };
 
                         supplement.add_entity(entity);
@@ -933,7 +933,7 @@ pub fn apply_caverns_to<R: Rng>(canvas: &mut Canvas, dynamic_rng: &mut R) {
                     let sprites = if dynamic_rng.gen_bool(0.1) {
                         &[Beehive, Lantern] as &[_]
                     } else {
-                        &[Orb, CavernMycelBlue, CavernMycelBlue] as &[_]
+                        &[Orb, MycelBlue, MycelBlue] as &[_]
                     };
                     return Some(Block::air(*sprites.choose(dynamic_rng).unwrap()));
                 }
@@ -1036,7 +1036,6 @@ pub fn apply_caverns_to<R: Rng>(canvas: &mut Canvas, dynamic_rng: &mut R) {
             }
         };
 
-        let cavern_top = cavern_top;
         let mut last_kind = BlockKind::Rock;
         for z in cavern_bottom - 1..cavern_top {
             use SpriteKind::*;
@@ -1092,11 +1091,7 @@ pub fn apply_caverns_to<R: Rng>(canvas: &mut Canvas, dynamic_rng: &mut R) {
                 Block::air(
                     *if dynamic_rng.gen_bool(0.9) {
                         // High density
-                        &[
-                            CavernGrassBlueShort,
-                            CavernGrassBlueMedium,
-                            CavernGrassBlueLong,
-                        ] as &[_]
+                        &[GrassBlueShort, GrassBlueMedium, GrassBlueLong] as &[_]
                     } else if dynamic_rng.gen_bool(0.5) {
                         // Medium density
                         &[CaveMushroom] as &[_]
@@ -1109,7 +1104,7 @@ pub fn apply_caverns_to<R: Rng>(canvas: &mut Canvas, dynamic_rng: &mut R) {
                 )
             } else if z == cavern_top - 1 && dynamic_rng.gen_bool(0.001) {
                 Block::air(
-                    *[CrystalHigh, CeilingMushroom, Orb, CavernMycelBlue]
+                    *[CrystalHigh, CeilingMushroom, Orb, MycelBlue]
                         .choose(dynamic_rng)
                         .unwrap(),
                 )

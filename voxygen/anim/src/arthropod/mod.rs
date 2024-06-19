@@ -1,4 +1,4 @@
-pub mod alpha;
+pub mod combomelee;
 pub mod dash;
 pub mod idle;
 pub mod jump;
@@ -11,7 +11,7 @@ pub mod summon;
 
 // Reexports
 pub use self::{
-    alpha::AlphaAnimation, dash::DashAnimation, idle::IdleAnimation, jump::JumpAnimation,
+    combomelee::ComboAnimation, dash::DashAnimation, idle::IdleAnimation, jump::JumpAnimation,
     leapmelee::LeapMeleeAnimation, leapshockwave::LeapShockAnimation, run::RunAnimation,
     shoot::ShootAnimation, stunned::StunnedAnimation, summon::SummonAnimation,
 };
@@ -310,9 +310,9 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Blackwidow, _) => 1.0,
                 (Antlion, _) => 1.0,
                 (Hornbeetle, _) => 1.0,
-                (Leafbeetle, _) => 1.0,
+                (Leafbeetle, _) => 0.8,
                 (Stagbeetle, _) => 1.0,
-                (Weevil, _) => 1.0,
+                (Weevil, _) => 0.75,
                 (Cavespider, _) => 1.0,
                 (Moltencrawler, _) => 1.0,
                 (Mosscrawler, _) => 1.0,

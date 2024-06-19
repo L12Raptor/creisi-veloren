@@ -1,19 +1,22 @@
 //! # Implementing new commands.
 //! To implement a new command provide a handler function
 //! in [do_command].
+#[cfg(feature = "worldgen")]
+use crate::weather::WeatherJob;
 use crate::{
     client::Client,
     location::Locations,
     login_provider::LoginProvider,
     settings::{
-        Ban, BanAction, BanInfo, EditableSetting, SettingError, WhitelistInfo, WhitelistRecord,
+        server_description::ServerDescription, Ban, BanAction, BanInfo, EditableSetting,
+        SettingError, WhitelistInfo, WhitelistRecord,
     },
-    sys::terrain::NpcData,
-    weather::WeatherSim,
+    sys::terrain::SpawnEntityData,
     wiring,
     wiring::OutputFormula,
     Server, Settings, StateExt,
 };
+
 use assets::AssetExt;
 use authc::Uuid;
 use chrono::{NaiveTime, Timelike, Utc};
@@ -21,35 +24,46 @@ use common::{
     assets,
     calendar::Calendar,
     cmd::{
-        AreaKind, KitSpec, ServerChatCommand, BUFF_PACK, BUFF_PARSER, ITEM_SPECS,
+        AreaKind, EntityTarget, KitSpec, ServerChatCommand, BUFF_PACK, BUFF_PARSER,
         KIT_MANIFEST_PATH, PRESET_MANIFEST_PATH,
     },
     comp::{
         self,
-        aura::{Aura, AuraKind, AuraTarget},
-        buff::{Buff, BuffCategory, BuffData, BuffKind, BuffSource},
+        aura::{AuraKindVariant, AuraTarget},
+        buff::{Buff, BuffData, BuffKind, BuffSource, DestInfo, MiscBuffData},
         inventory::{
-            item::{tool::AbilityMap, MaterialStatManifest, Quality},
+            item::{all_items_expect, tool::AbilityMap, MaterialStatManifest, Quality},
             slot::Slot,
         },
         invite::InviteKind,
         misc::PortalData,
-        AdminRole, ChatType, Inventory, Item, LightEmitter, WaypointArea,
+        AdminRole, Aura, AuraKind, BuffCategory, ChatType, Content, Inventory, Item, LightEmitter,
+        WaypointArea,
     },
     depot,
     effect::Effect,
-    event::{EventBus, ServerEvent},
-    generation::{EntityConfig, EntityInfo},
+    event::{
+        ClientDisconnectEvent, CreateNpcEvent, CreateSpecialEntityEvent, EventBus, ExplosionEvent,
+        GroupManipEvent, InitiateInviteEvent, TamePetEvent,
+    },
+    generation::{EntityConfig, EntityInfo, SpecialEntity},
+    link::Is,
+    mounting::{Rider, Volume, VolumeRider},
     npc::{self, get_npc_name},
     outcome::Outcome,
     parse_cmd_args,
-    resources::{BattleMode, PlayerPhysicsSettings, Secs, Time, TimeOfDay, TimeScale},
+    resources::{BattleMode, PlayerPhysicsSettings, ProgramTime, Secs, Time, TimeOfDay, TimeScale},
     rtsim::{Actor, Role},
-    terrain::{Block, BlockKind, CoordinateConversions, SpriteKind, TerrainChunkSize},
+    spiral::Spiral2d,
+    terrain::{Block, BlockKind, CoordinateConversions, SpriteKind},
+    tether::Tethered,
     uid::Uid,
     vol::ReadVol,
-    weather, Damage, DamageKind, DamageSource, Explosion, LoadoutBuilder, RadiusEffect,
+    CachedSpatialGrid, Damage, DamageKind, DamageSource, Explosion, GroupTarget, LoadoutBuilder,
+    RadiusEffect,
 };
+#[cfg(feature = "worldgen")]
+use common::{terrain::TerrainChunkSize, weather};
 use common_net::{
     msg::{DisconnectReason, Notification, PlayerListUpdate, ServerGeneral},
     sync::WorldSyncExt,
@@ -59,10 +73,11 @@ use core::{cmp::Ordering, convert::TryFrom};
 use hashbrown::{HashMap, HashSet};
 use humantime::Duration as HumanDuration;
 use rand::{thread_rng, Rng};
-use specs::{storage::StorageEntry, Builder, Entity as EcsEntity, Join, WorldExt};
-use std::{fmt::Write, ops::DerefMut, str::FromStr, sync::Arc};
+use specs::{storage::StorageEntry, Builder, Entity as EcsEntity, Join, LendJoin, WorldExt};
+use std::{fmt::Write, num::NonZeroU32, ops::DerefMut, str::FromStr, sync::Arc, time::Duration};
 use vek::*;
 use wiring::{Circuit, Wire, WireNode, WiringAction, WiringActionEffect, WiringElement};
+#[cfg(feature = "worldgen")]
 use world::util::{Sampler, LOCALITY};
 
 use common::comp::Alignment;
@@ -82,7 +97,7 @@ impl ChatCommandExt for ServerChatCommand {
     }
 }
 
-type CmdResult<T> = Result<T, String>;
+type CmdResult<T> = Result<T, Content>;
 
 /// Handler function called when the command is executed.
 /// # Arguments
@@ -114,26 +129,28 @@ fn do_command(
 ) -> CmdResult<()> {
     // Make sure your role is at least high enough to execute this command.
     if cmd.needs_role() > server.entity_admin_role(client) {
-        return Err(format!(
-            "You don't have permission to use '/{}'.",
-            cmd.keyword()
-        ));
+        return Err(Content::localized_with_args("command-no-permission", [(
+            "command_name",
+            cmd.keyword(),
+        )]));
     }
 
     let handler: CommandHandler = match cmd {
         ServerChatCommand::Adminify => handle_adminify,
         ServerChatCommand::Airship => handle_spawn_airship,
         ServerChatCommand::Alias => handle_alias,
+        ServerChatCommand::AreaAdd => handle_area_add,
+        ServerChatCommand::AreaList => handle_area_list,
+        ServerChatCommand::AreaRemove => handle_area_remove,
+        ServerChatCommand::Aura => handle_aura,
         ServerChatCommand::Ban => handle_ban,
         ServerChatCommand::BattleMode => handle_battlemode,
         ServerChatCommand::BattleModeForce => handle_battlemode_force,
         ServerChatCommand::Body => handle_body,
         ServerChatCommand::Buff => handle_buff,
         ServerChatCommand::Build => handle_build,
-        ServerChatCommand::AreaAdd => handle_area_add,
-        ServerChatCommand::AreaList => handle_area_list,
-        ServerChatCommand::AreaRemove => handle_area_remove,
         ServerChatCommand::Campfire => handle_spawn_campfire,
+        ServerChatCommand::ClearPersistedTerrain => handle_clear_persisted_terrain,
         ServerChatCommand::DebugColumn => handle_debug_column,
         ServerChatCommand::DebugWays => handle_debug_ways,
         ServerChatCommand::DisconnectAllPlayers => handle_disconnect_all_players,
@@ -150,7 +167,7 @@ fn do_command(
         ServerChatCommand::GroupPromote => handle_group_promote,
         ServerChatCommand::Health => handle_health,
         ServerChatCommand::Help => handle_help,
-        ServerChatCommand::Respawn => handle_respawn,
+        ServerChatCommand::IntoNpc => handle_into_npc,
         ServerChatCommand::JoinFaction => handle_join_faction,
         ServerChatCommand::Jump => handle_jump,
         ServerChatCommand::Kick => handle_kick,
@@ -167,9 +184,11 @@ fn do_command(
         ServerChatCommand::PermitBuild => handle_permit_build,
         ServerChatCommand::Players => handle_players,
         ServerChatCommand::Portal => handle_spawn_portal,
+        ServerChatCommand::ResetRecipes => handle_reset_recipes,
         ServerChatCommand::Region => handle_region,
         ServerChatCommand::ReloadChunks => handle_reload_chunks,
         ServerChatCommand::RemoveLights => handle_remove_lights,
+        ServerChatCommand::Respawn => handle_respawn,
         ServerChatCommand::RevokeBuild => handle_revoke_build,
         ServerChatCommand::RevokeBuildAll => handle_revoke_build_all,
         ServerChatCommand::Safezone => handle_safezone,
@@ -205,6 +224,10 @@ fn do_command(
         ServerChatCommand::Lightning => handle_lightning,
         ServerChatCommand::Scale => handle_scale,
         ServerChatCommand::RepairEquipment => handle_repair_equipment,
+        ServerChatCommand::Tether => handle_tether,
+        ServerChatCommand::DestroyTethers => handle_destroy_tethers,
+        ServerChatCommand::Mount => handle_mount,
+        ServerChatCommand::Dismount => handle_dismount,
     };
 
     handler(server, client, target, args, cmd)
@@ -219,7 +242,9 @@ fn position(server: &Server, entity: EcsEntity, descriptor: &str) -> CmdResult<c
         .read_storage::<comp::Pos>()
         .get(entity)
         .copied()
-        .ok_or_else(|| format!("Cannot get position for {:?}!", descriptor))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-position-unavailable", [("target", descriptor)])
+        })
 }
 
 fn insert_or_replace_component<C: specs::Component>(
@@ -234,7 +259,7 @@ fn insert_or_replace_component<C: specs::Component>(
         .write_storage()
         .insert(entity, component)
         .and(Ok(()))
-        .map_err(|_| format!("Entity {:?} is dead!", descriptor))
+        .map_err(|_| Content::localized_with_args("command-entity-dead", [("entity", descriptor)]))
 }
 
 fn uuid(server: &Server, entity: EcsEntity, descriptor: &str) -> CmdResult<Uuid> {
@@ -244,7 +269,11 @@ fn uuid(server: &Server, entity: EcsEntity, descriptor: &str) -> CmdResult<Uuid>
         .read_storage::<comp::Player>()
         .get(entity)
         .map(|player| player.uuid())
-        .ok_or_else(|| format!("Cannot get player information for {:?}", descriptor))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-player-info-unavailable", [(
+                "target", descriptor,
+            )])
+        })
 }
 
 fn real_role(server: &Server, uuid: Uuid, descriptor: &str) -> CmdResult<AdminRole> {
@@ -253,7 +282,11 @@ fn real_role(server: &Server, uuid: Uuid, descriptor: &str) -> CmdResult<AdminRo
         .admins
         .get(&uuid)
         .map(|record| record.role.into())
-        .ok_or_else(|| format!("Cannot get administrator roles for {:?} uuid", descriptor))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-player-role-unavailable", [(
+                "target", descriptor,
+            )])
+        })
 }
 
 // Fallibly get uid of entity with the given descriptor (used for error
@@ -265,7 +298,9 @@ fn uid(server: &Server, target: EcsEntity, descriptor: &str) -> CmdResult<Uid> {
         .read_storage::<Uid>()
         .get(target)
         .copied()
-        .ok_or_else(|| format!("Cannot get uid for {:?}", descriptor))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-uid-unavailable", [("target", descriptor)])
+        })
 }
 
 fn area(server: &mut Server, area_name: &str, kind: &str) -> CmdResult<depot::Id<Aabb<i32>>> {
@@ -273,7 +308,9 @@ fn area(server: &mut Server, area_name: &str, kind: &str) -> CmdResult<depot::Id
         .area_metas()
         .get(area_name)
         .copied()
-        .ok_or_else(|| format!("Area name not found: {}", area_name))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-area-not-found", [("area", area_name)])
+        })
 }
 
 // Prevent use through sudo.
@@ -282,7 +319,7 @@ fn no_sudo(client: EcsEntity, target: EcsEntity) -> CmdResult<()> {
         Ok(())
     } else {
         // This happens when [ab]using /sudo
-        Err("It's rude to impersonate people".into())
+        Err(Content::localized("command-no-sudo"))
     }
 }
 
@@ -333,7 +370,9 @@ fn find_alias(ecs: &specs::World, alias: &str) -> CmdResult<(EcsEntity, Uuid)> {
         .join()
         .find(|(_, player)| player.alias == alias)
         .map(|(entity, player)| (entity, player.uuid()))
-        .ok_or_else(|| format!("Player {:?} not found!", alias))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-player-not-found", [("player", alias)])
+        })
 }
 
 fn find_uuid(ecs: &specs::World, uuid: Uuid) -> CmdResult<EcsEntity> {
@@ -341,7 +380,12 @@ fn find_uuid(ecs: &specs::World, uuid: Uuid) -> CmdResult<EcsEntity> {
         .join()
         .find(|(_, player)| player.uuid() == uuid)
         .map(|(entity, _)| entity)
-        .ok_or_else(|| format!("Player with UUID {:?} not found!", uuid))
+        .ok_or_else(|| {
+            Content::localized_with_args("command-player-uuid-not-found", [(
+                "uuid",
+                uuid.to_string(),
+            )])
+        })
 }
 
 fn find_username(server: &mut Server, username: &str) -> CmdResult<Uuid> {
@@ -349,7 +393,11 @@ fn find_username(server: &mut Server, username: &str) -> CmdResult<Uuid> {
         .state
         .mut_resource::<LoginProvider>()
         .username_to_uuid(username)
-        .map_err(|_| format!("Unable to determine UUID for username {:?}", username))
+        .map_err(|_| {
+            Content::localized_with_args("command-username-uuid-unavailable", [(
+                "username", username,
+            )])
+        })
 }
 
 /// NOTE: Intended to be run only on logged-in clients.
@@ -358,7 +406,12 @@ fn uuid_to_username(
     fallback_entity: EcsEntity,
     uuid: Uuid,
 ) -> CmdResult<String> {
-    let make_err = || format!("Unable to determine username for UUID {:?}", uuid);
+    let make_err = || {
+        Content::localized_with_args("command-uuid-username-unavailable", [(
+            "uuid",
+            uuid.to_string(),
+        )])
+    };
     let player_storage = server.state.ecs().read_storage::<comp::Player>();
 
     let fallback_alias = &player_storage
@@ -410,9 +463,9 @@ fn edit_setting_feedback<S: EditableSetting>(
             );
             Ok(())
         },
-        Err(SettingError::Integrity(err)) => Err(format!(
-            "Encountered an error while validating the request: {:?}",
-            err
+        Err(SettingError::Integrity(err)) => Err(Content::localized_with_args(
+            "command-error-while-evaluating-request",
+            [("error", format!("{err:?}"))],
         )),
     }
 }
@@ -450,8 +503,9 @@ fn handle_drop_all(
                 pos.0.y + rng.gen_range(5.0..10.0),
                 pos.0.z + 5.0,
             )),
+            comp::Ori::default(),
             comp::Vel(vel),
-            item,
+            comp::PickupItem::new(item, ProgramTime(server.state.get_program_time())),
             None,
         );
     }
@@ -489,9 +543,9 @@ fn handle_give_item(
                     .map(|mut inv| {
                         // NOTE: Deliberately ignores items that couldn't be pushed.
                         if inv.push(item).is_err() {
-                            res = Err(format!(
-                                "Player inventory full. Gave 0 of {} items.",
-                                give_amount
+                            res = Err(Content::localized_with_args(
+                                "command-give-inventory-full",
+                                [("total", give_amount as u64), ("given", 0)],
                             ));
                         }
                     });
@@ -508,9 +562,9 @@ fn handle_give_item(
                         for i in 0..give_amount {
                             // NOTE: Deliberately ignores items that couldn't be pushed.
                             if inv.push(item.duplicate(&ability_map, &msm)).is_err() {
-                                res = Err(format!(
-                                    "Player inventory full. Gave {} of {} items.",
-                                    i, give_amount
+                                res = Err(Content::localized_with_args(
+                                    "command-give-inventory-full",
+                                    [("total", give_amount as u64), ("given", i as u64)],
                                 ));
                                 break;
                             }
@@ -534,10 +588,12 @@ fn handle_give_item(
             }
             res
         } else {
-            Err(format!("Invalid item: {}", item_name))
+            Err(Content::localized_with_args("command-invalid-item", [(
+                "item", item_name,
+            )]))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -565,11 +621,74 @@ fn handle_make_block(
             }
             Ok(())
         } else {
-            Err(format!("Invalid block kind: {}", block_name))
+            Err(Content::localized_with_args(
+                "command-invalid-block-kind",
+                [("kind", block_name)],
+            ))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
+}
+
+fn handle_into_npc(
+    server: &mut Server,
+    client: EcsEntity,
+    target: EcsEntity,
+    args: Vec<String>,
+    action: &ServerChatCommand,
+) -> CmdResult<()> {
+    use crate::events::shared::{transform_entity, TransformEntityError};
+
+    if client != target {
+        server.notify_client(
+            client,
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::Plain("I hope you aren't abusing this!".to_owned()),
+            ),
+        );
+    }
+
+    let Some(entity_config) = parse_cmd_args!(args, String) else {
+        return Err(Content::Plain(action.help_string()));
+    };
+
+    let config = match EntityConfig::load(&entity_config) {
+        Ok(asset) => asset.read(),
+        Err(_err) => {
+            return Err(Content::localized_with_args(
+                "command-entity-load-failed",
+                [("config", entity_config)],
+            ));
+        },
+    };
+
+    let mut loadout_rng = thread_rng();
+    let dummy = Vec3::zero();
+    let entity_info = EntityInfo::at(dummy).with_entity_config(
+        config.clone(),
+        Some(&entity_config),
+        &mut loadout_rng,
+        None,
+    );
+
+    transform_entity(server, target, entity_info, true).map_err(|error| match error {
+        TransformEntityError::EntityDead => {
+            Content::localized_with_args("command-entity-dead", [("entity", "target")])
+        },
+        TransformEntityError::UnexpectedSpecialEntity => {
+            Content::localized("command-unimplemented-spawn-special")
+        },
+        TransformEntityError::LoadingCharacter => {
+            Content::localized("command-transform-invalid-presence")
+        },
+        TransformEntityError::EntityIsPlayer => {
+            unreachable!(
+                "Transforming players must be valid as we explicitly allowed player transformation"
+            );
+        },
+    })
 }
 
 fn handle_make_npc(
@@ -583,11 +702,13 @@ fn handle_make_npc(
 
     let entity_config = entity_config.ok_or_else(|| action.help_string())?;
     let number = match number {
+        // Number of entities must be larger than 1
         Some(i8::MIN..=0) => {
-            return Err("Number of entities should be at least 1".to_owned());
+            return Err(Content::localized("command-nof-entities-at-least"));
         },
+        // But lower than 50
         Some(50..=i8::MAX) => {
-            return Err("Number of entities should be less than 50".to_owned());
+            return Err(Content::localized("command-nof-entities-less-than"));
         },
         Some(number) => number,
         None => 1,
@@ -595,7 +716,12 @@ fn handle_make_npc(
 
     let config = match EntityConfig::load(&entity_config) {
         Ok(asset) => asset.read(),
-        Err(_err) => return Err(format!("Failed to load entity config: {}", entity_config)),
+        Err(_err) => {
+            return Err(Content::localized_with_args(
+                "command-entity-load-failed",
+                [("config", entity_config)],
+            ));
+        },
     };
 
     let mut loadout_rng = thread_rng();
@@ -605,54 +731,26 @@ fn handle_make_npc(
             config.clone(),
             Some(&entity_config),
             &mut loadout_rng,
+            None,
         );
 
-        match NpcData::from_entity_info(entity_info) {
-            NpcData::Waypoint(_) => {
-                return Err("Waypoint spawning is not implemented".to_owned());
+        match SpawnEntityData::from_entity_info(entity_info) {
+            SpawnEntityData::Special(_, _) => {
+                return Err(Content::localized("command-unimplemented-spawn-special"));
             },
-            NpcData::Teleporter(_, _) => {
-                return Err("Teleporter spawning is not implemented".to_owned());
-            },
-            NpcData::Data {
-                inventory,
-                pos,
-                stats,
-                skill_set,
-                poise,
-                health,
-                body,
-                agent,
-                alignment,
-                scale,
-                loot,
-            } => {
-                let mut entity_builder = server
+            SpawnEntityData::Npc(data) => {
+                let (npc_builder, _pos) = data.to_npc_builder();
+
+                server
                     .state
-                    .create_npc(pos, stats, skill_set, health, poise, inventory, body)
-                    .with(alignment)
-                    .with(scale)
-                    .with(comp::Vel(Vec3::new(0.0, 0.0, 0.0)));
-
-                if let Some(agent) = agent {
-                    entity_builder = entity_builder.with(agent);
-                }
-
-                if let Some(drop_items) = loot.to_items() {
-                    entity_builder = entity_builder.with(comp::ItemDrops(drop_items));
-                }
-
-                // Some would say it's a hack, some would say it's incomplete
-                // simulation. But this is what we do to avoid PvP between npc.
-                let npc_group = match alignment {
-                    Alignment::Enemy => Some(comp::group::ENEMY),
-                    Alignment::Npc | Alignment::Tame => Some(comp::group::NPC),
-                    Alignment::Wild | Alignment::Passive | Alignment::Owned(_) => None,
-                };
-                if let Some(group) = npc_group {
-                    entity_builder = entity_builder.with(group);
-                }
-                entity_builder.build();
+                    .ecs()
+                    .read_resource::<EventBus<CreateNpcEvent>>()
+                    .emit_now(CreateNpcEvent {
+                        pos: comp::Pos(pos),
+                        ori: comp::Ori::default(),
+                        npc: npc_builder,
+                        rider: None,
+                    });
             },
         };
     }
@@ -661,7 +759,10 @@ fn handle_make_npc(
         client,
         ServerGeneral::server_msg(
             ChatType::CommandInfo,
-            format!("Spawned {} entities from config: {}", number, entity_config),
+            Content::localized_with_args("command-spawned-entities-config", [
+                ("n", number.to_string()),
+                ("config", entity_config),
+            ]),
         ),
     );
 
@@ -697,10 +798,13 @@ fn handle_make_sprite(
             }
             Ok(())
         } else {
-            Err(format!("Invalid sprite kind: {}", sprite_name))
+            Err(Content::localized_with_args("command-invalid-sprite", [(
+                "kind",
+                sprite_name,
+            )]))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -711,11 +815,23 @@ fn handle_motd(
     _args: Vec<String>,
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
+    let locale = server
+        .state
+        .ecs()
+        .read_storage::<Client>()
+        .get(client)
+        .and_then(|client| client.locale.clone());
+
     server.notify_client(
         client,
         ServerGeneral::server_msg(
             ChatType::CommandInfo,
-            (*server.editable_settings().server_description).clone(),
+            server
+                .editable_settings()
+                .server_description
+                .get(locale.as_deref())
+                .map_or("", |d| &d.motd)
+                .to_string(),
         ),
     );
     Ok(())
@@ -726,22 +842,31 @@ fn handle_set_motd(
     client: EcsEntity,
     _target: EcsEntity,
     args: Vec<String>,
-    _action: &ServerChatCommand,
+    action: &ServerChatCommand,
 ) -> CmdResult<()> {
     let data_dir = server.data_dir();
     let client_uuid = uuid(server, client, "client")?;
     // Ensure the person setting this has a real role in the settings file, since
     // it's persistent.
     let _client_real_role = real_role(server, client_uuid, "client")?;
-    match parse_cmd_args!(args, String) {
-        Some(msg) => {
+    match parse_cmd_args!(args, String, String) {
+        (Some(locale), Some(msg)) => {
             let edit =
                 server
                     .editable_settings_mut()
                     .server_description
                     .edit(data_dir.as_ref(), |d| {
-                        let info = format!("Server description set to {:?}", msg);
-                        **d = msg;
+                        let info = format!("Server message of the day set to {:?}", msg);
+
+                        if let Some(description) = d.descriptions.get_mut(&locale) {
+                            description.motd = msg;
+                        } else {
+                            d.descriptions.insert(locale, ServerDescription {
+                                motd: msg,
+                                rules: None,
+                            });
+                        }
+
                         Some(info)
                     });
             drop(data_dir);
@@ -749,20 +874,25 @@ fn handle_set_motd(
                 unreachable!("edit always returns Some")
             })
         },
-        None => {
+        (Some(locale), None) => {
             let edit =
                 server
                     .editable_settings_mut()
                     .server_description
                     .edit(data_dir.as_ref(), |d| {
-                        d.clear();
-                        Some("Removed server description".to_string())
+                        if let Some(description) = d.descriptions.get_mut(&locale) {
+                            description.motd.clear();
+                            Some("Removed server message of the day".to_string())
+                        } else {
+                            Some("This locale had no motd set".to_string())
+                        }
                     });
             drop(data_dir);
             edit_setting_feedback(server, client, edit, || {
                 unreachable!("edit always returns Some")
             })
         },
+        _ => Err(Content::Plain(action.help_string())),
     }
 }
 
@@ -780,9 +910,8 @@ fn handle_jump(
             .position_mut(target, dismount_volume.unwrap_or(true), |current_pos| {
                 current_pos.0 += Vec3::new(x, y, z)
             })
-            .map_err(ToString::to_string)
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -800,14 +929,25 @@ fn handle_goto(
             .position_mut(target, dismount_volume.unwrap_or(true), |current_pos| {
                 current_pos.0 = Vec3::new(x, y, z)
             })
-            .map_err(ToString::to_string)
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
+}
+
+#[cfg(not(feature = "worldgen"))]
+fn handle_site(
+    _server: &mut Server,
+    _client: EcsEntity,
+    _target: EcsEntity,
+    _args: Vec<String>,
+    _action: &ServerChatCommand,
+) -> CmdResult<()> {
+    Err("Unsupported without worldgen enabled".into())
 }
 
 /// TODO: Add autocompletion if possible (might require modifying enum to handle
 /// dynamic values).
+#[cfg(feature = "worldgen")]
 fn handle_site(
     server: &mut Server,
     _client: EcsEntity,
@@ -815,7 +955,6 @@ fn handle_site(
     args: Vec<String>,
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    #[cfg(feature = "worldgen")]
     if let (Some(dest_name), dismount_volume) = parse_cmd_args!(args, String, bool) {
         let site = server
             .world
@@ -838,13 +977,9 @@ fn handle_site(
             .position_mut(target, dismount_volume.unwrap_or(true), |current_pos| {
                 current_pos.0 = site_pos
             })
-            .map_err(ToString::to_string)
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
-
-    #[cfg(not(feature = "worldgen"))]
-    Ok(())
 }
 
 fn handle_respawn(
@@ -861,12 +996,9 @@ fn handle_respawn(
         .ok_or("No waypoint set")?
         .get_pos();
 
-    server
-        .state
-        .position_mut(target, true, |current_pos| {
-            current_pos.0 = waypoint;
-        })
-        .map_err(ToString::to_string)
+    server.state.position_mut(target, true, |current_pos| {
+        current_pos.0 = waypoint;
+    })
 }
 
 fn handle_kill(
@@ -951,10 +1083,16 @@ fn handle_time(
             Ok(n) => {
                 // Incase the number of digits in the number is greater than 16
                 if n >= 1e17 {
-                    return Err(format!("{} is invalid, cannot be larger than 16 digits", n));
+                    return Err(Content::localized_with_args(
+                        "command-time-parse-too-large",
+                        [("n", n.to_string())],
+                    ));
                 }
                 if n < 0.0 {
-                    return Err(format!("{} is invalid, cannot be negative.", n));
+                    return Err(Content::localized_with_args(
+                        "command-time-parse-negative",
+                        [("n", n.to_string())],
+                    ));
                 }
                 // Seconds from next midnight
                 next_cycle(0.0) + n
@@ -971,15 +1109,16 @@ fn handle_time(
                     // Absolute time (i.e. from world epoch)
                     Some(n) => {
                         if (n as f64) < time_in_seconds {
-                            return Err(format!(
-                                "{} is before the current time, time cannot go backwards.",
-                                n
-                            ));
+                            return Err(Content::localized_with_args("command-time-backwards", [
+                                ("t", n),
+                            ]));
                         }
                         n as f64
                     },
                     None => {
-                        return Err(format!("{} is not a valid time.", n));
+                        return Err(Content::localized_with_args("command-time-invalid", [(
+                            "t", n,
+                        )]));
                     },
                 },
             },
@@ -1154,7 +1293,7 @@ fn handle_health(
                 amount: hp - health.current(),
                 by: None,
                 cause: None,
-                crit: false,
+                precise: false,
                 time: *time,
                 instance: rand::random(),
             };
@@ -1216,7 +1355,7 @@ fn handle_alias(
         }
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -1227,13 +1366,13 @@ fn handle_tp(
     args: Vec<String>,
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    let (player, dismount_volume) = parse_cmd_args!(args, String, bool);
-    let player = if let Some(alias) = player {
-        find_alias(server.state.ecs(), &alias)?.0
+    let (entity_target, dismount_volume) = parse_cmd_args!(args, EntityTarget, bool);
+    let player = if let Some(entity_target) = entity_target {
+        get_entity_target(entity_target, server)?
     } else if client != target {
         client
     } else {
-        return Err(action.help_string());
+        return Err(Content::Plain(action.help_string()));
     };
     let player_pos = position(server, player, "player")?;
     server
@@ -1241,7 +1380,6 @@ fn handle_tp(
         .position_mut(target, dismount_volume.unwrap_or(true), |target_pos| {
             *target_pos = player_pos
         })
-        .map_err(ToString::to_string)
 }
 
 fn handle_rtsim_tp(
@@ -1252,9 +1390,8 @@ fn handle_rtsim_tp(
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
     use crate::rtsim::RtSim;
-    let (npc_index, dismount_volume) = parse_cmd_args!(args, u32, bool);
-    let pos = if let Some(id) = npc_index {
-        // TODO: Take some other identifier than an integer to this command.
+    let (npc_id, dismount_volume) = parse_cmd_args!(args, u64, bool);
+    let pos = if let Some(id) = npc_id {
         server
             .state
             .ecs()
@@ -1263,18 +1400,17 @@ fn handle_rtsim_tp(
             .data()
             .npcs
             .values()
-            .nth(id as usize)
-            .ok_or(action.help_string())?
+            .find(|npc| npc.uid == id)
+            .ok_or_else(|| format!("No NPC has the id {id}"))?
             .wpos
     } else {
-        return Err(action.help_string());
+        return Err(Content::Plain(action.help_string()));
     };
     server
         .state
         .position_mut(target, dismount_volume.unwrap_or(true), |target_pos| {
             target_pos.0 = pos;
         })
-        .map_err(ToString::to_string)
 }
 
 fn handle_rtsim_info(
@@ -1285,15 +1421,14 @@ fn handle_rtsim_info(
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
     use crate::rtsim::RtSim;
-    if let Some(id) = parse_cmd_args!(args, u32) {
-        // TODO: Take some other identifier than an integer to this command.
+    if let Some(id) = parse_cmd_args!(args, u64) {
         let rtsim = server.state.ecs().read_resource::<RtSim>();
         let data = rtsim.state().data();
-        let npc = data
+        let (id, npc) = data
             .npcs
-            .values()
-            .nth(id as usize)
-            .ok_or_else(|| format!("No NPC has index {}", id))?;
+            .iter()
+            .find(|(_, npc)| npc.uid == id)
+            .ok_or_else(|| format!("No NPC has the id {id}"))?;
 
         let mut info = String::new();
 
@@ -1310,7 +1445,10 @@ fn handle_rtsim_info(
         let _ = writeln!(
             &mut info,
             "Riding: {:?}",
-            npc.riding.as_ref().map(|riding| riding.vehicle)
+            data.npcs
+                .mounts
+                .get_mount_link(id)
+                .map(|link| data.npcs.get(link.mount).map_or(0, |mount| mount.uid))
         );
         let _ = writeln!(&mut info, "-- Action State --");
         if let Some(brain) = &npc.brain {
@@ -1330,7 +1468,7 @@ fn handle_rtsim_info(
 
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -1354,8 +1492,7 @@ fn handle_rtsim_npc(
         let mut npcs = data
             .npcs
             .values()
-            .enumerate()
-            .filter(|(idx, npc)| {
+            .filter(|npc| {
                 let mut tags = vec![
                     npc.profession()
                         .map(|p| format!("{:?}", p))
@@ -1364,9 +1501,10 @@ fn handle_rtsim_npc(
                         Role::Civilised(_) => "civilised".to_string(),
                         Role::Wild => "wild".to_string(),
                         Role::Monster => "monster".to_string(),
+                        Role::Vehicle => "vehicle".to_string(),
                     },
                     format!("{:?}", npc.mode),
-                    format!("{}", idx),
+                    format!("{}", npc.uid),
                     npc_names[&npc.body].keyword.clone(),
                 ];
                 if let Some(species_meta) = npc_names.get_species_meta(&npc.body) {
@@ -1378,14 +1516,14 @@ fn handle_rtsim_npc(
             })
             .collect::<Vec<_>>();
         if let Ok(pos) = position(server, target, "target") {
-            npcs.sort_by_key(|(_, npc)| (npc.wpos.distance_squared(pos.0) * 10.0) as u64);
+            npcs.sort_by_key(|npc| (npc.wpos.distance_squared(pos.0) * 10.0) as u64);
         }
 
         let mut info = String::new();
 
         let _ = writeln!(&mut info, "-- NPCs matching [{}] --", terms.join(", "));
-        for (idx, npc) in npcs.iter().take(count.unwrap_or(!0) as usize) {
-            let _ = write!(&mut info, "{} ({}), ", npc.get_name(), idx);
+        for npc in npcs.iter().take(count.unwrap_or(!0) as usize) {
+            let _ = write!(&mut info, "{} ({}), ", npc.get_name(), npc.uid);
         }
         let _ = writeln!(&mut info);
         let _ = writeln!(
@@ -1402,7 +1540,7 @@ fn handle_rtsim_npc(
 
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -1418,10 +1556,7 @@ fn handle_rtsim_purge(
     use crate::rtsim::RtSim;
     let client_uuid = uuid(server, client, "client")?;
     if !matches!(real_role(server, client_uuid, "client")?, AdminRole::Admin) {
-        return Err(
-            "You must be a real admin (not just a temporary admin) to purge rtsim data."
-                .to_string(),
-        );
+        return Err(Content::localized("command-rtsim-purge-perms"));
     }
 
     if let Some(should_purge) = parse_cmd_args!(args, bool) {
@@ -1442,7 +1577,7 @@ fn handle_rtsim_purge(
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -1464,11 +1599,19 @@ fn handle_rtsim_chunk(
     let chunk_states = rtsim.state().resource::<ChunkStates>();
     let chunk_state = match chunk_states.0.get(chunk_key) {
         Some(Some(chunk_state)) => chunk_state,
-        Some(None) => return Err(format!("Chunk {}, {} not loaded", chunk_key.x, chunk_key.y)),
+        Some(None) => {
+            return Err(Content::localized_with_args("command-chunk-not-loaded", [
+                ("x", chunk_key.x.to_string()),
+                ("y", chunk_key.y.to_string()),
+            ]));
+        },
         None => {
-            return Err(format!(
-                "Chunk {}, {} not within map bounds",
-                chunk_key.x, chunk_key.y
+            return Err(Content::localized_with_args(
+                "command-chunk-out-of-bounds",
+                [
+                    ("x", chunk_key.x.to_string()),
+                    ("y", chunk_key.y.to_string()),
+                ],
             ));
         },
     };
@@ -1506,10 +1649,28 @@ fn handle_spawn(
     args: Vec<String>,
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    match parse_cmd_args!(args, String, npc::NpcBody, u32, bool, f32) {
-        (Some(opt_align), Some(npc::NpcBody(id, mut body)), opt_amount, opt_ai, opt_scale) => {
+    match parse_cmd_args!(args, String, npc::NpcBody, u32, bool, f32, bool) {
+        (
+            Some(opt_align),
+            Some(npc::NpcBody(id, mut body)),
+            opt_amount,
+            opt_ai,
+            opt_scale,
+            opt_tethered,
+        ) => {
             let uid = uid(server, target, "target")?;
             let alignment = parse_alignment(uid, &opt_align)?;
+
+            if matches!(alignment, Alignment::Owned(_))
+                && server
+                    .state
+                    .ecs()
+                    .read_storage::<comp::Anchor>()
+                    .contains(target)
+            {
+                return Err("Spawning this pet would create an anchor chain".into());
+            }
+
             let amount = opt_amount.filter(|x| *x > 0).unwrap_or(1).min(50);
 
             let ai = opt_ai.unwrap_or(true);
@@ -1538,9 +1699,10 @@ fn handle_spawn(
                     .state
                     .create_npc(
                         pos,
+                        comp::Ori::default(),
                         comp::Stats::new(get_npc_name(id, npc::BodyType::from_body(body)), body),
                         comp::SkillSet::default(),
-                        Some(comp::Health::new(body, 0)),
+                        Some(comp::Health::new(body)),
                         comp::Poise::new(body),
                         inventory,
                         body,
@@ -1556,21 +1718,35 @@ fn handle_spawn(
 
                 let new_entity = entity_base.build();
 
+                if opt_tethered == Some(true) {
+                    let tether_leader = server
+                        .state
+                        .read_component_cloned::<Is<Rider>>(target)
+                        .map(|is_rider| is_rider.mount)
+                        .or_else(|| server.state.ecs().uid_from_entity(target));
+                    let tether_follower = server.state.ecs().uid_from_entity(new_entity);
+
+                    if let (Some(leader), Some(follower)) = (tether_leader, tether_follower) {
+                        server
+                            .state
+                            .link(Tethered {
+                                leader,
+                                follower,
+                                tether_length: 4.0,
+                            })
+                            .map_err(|_| "Failed to tether entities")?;
+                    } else {
+                        return Err("Tether members don't have Uids.".into());
+                    }
+                }
+
                 // Add to group system if a pet
                 if matches!(alignment, comp::Alignment::Owned { .. }) {
-                    let server_eventbus =
-                        server.state.ecs().read_resource::<EventBus<ServerEvent>>();
-                    server_eventbus.emit_now(ServerEvent::TamePet {
+                    server.state.emit_event_now(TamePetEvent {
                         owner_entity: target,
                         pet_entity: new_entity,
                     });
-                } else if let Some(group) = match alignment {
-                    Alignment::Wild => None,
-                    Alignment::Passive => None,
-                    Alignment::Enemy => Some(comp::group::ENEMY),
-                    Alignment::Npc | Alignment::Tame => Some(comp::group::NPC),
-                    comp::Alignment::Owned(_) => unreachable!(),
-                } {
+                } else if let Some(group) = alignment.group() {
                     insert_or_replace_component(server, new_entity, group, "new entity")?;
                 }
 
@@ -1579,7 +1755,7 @@ fn handle_spawn(
                         client,
                         ServerGeneral::server_msg(
                             ChatType::CommandInfo,
-                            format!("Spawned entity with ID: {}", uid),
+                            Content::localized_with_args("command-spawned-entity", [("id", uid.0)]),
                         ),
                     );
                 }
@@ -1593,7 +1769,7 @@ fn handle_spawn(
             );
             Ok(())
         },
-        _ => Err(action.help_string()),
+        _ => Err(Content::Plain(action.help_string())),
     }
 }
 
@@ -1615,13 +1791,14 @@ fn handle_spawn_training_dummy(
 
     let stats = comp::Stats::new("Training Dummy".to_string(), body);
     let skill_set = comp::SkillSet::default();
-    let health = comp::Health::new(body, 0);
+    let health = comp::Health::new(body);
     let poise = comp::Poise::new(body);
 
     server
         .state
         .create_npc(
             pos,
+            comp::Ori::default(),
             stats,
             skill_set,
             Some(health),
@@ -1634,7 +1811,10 @@ fn handle_spawn_training_dummy(
 
     server.notify_client(
         client,
-        ServerGeneral::server_msg(ChatType::CommandInfo, "Spawned a training dummy"),
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized("command-spawned-dummy"),
+        ),
     );
     Ok(())
 }
@@ -1678,7 +1858,10 @@ fn handle_spawn_airship(
 
     server.notify_client(
         client,
-        ServerGeneral::server_msg(ChatType::CommandInfo, "Spawned an airship"),
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized("command-spawned-airship"),
+        ),
     );
     Ok(())
 }
@@ -1690,7 +1873,7 @@ fn handle_spawn_ship(
     args: Vec<String>,
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    let (body_name, angle) = parse_cmd_args!(args, String, f32);
+    let (body_name, tethered, angle) = parse_cmd_args!(args, String, bool, f32);
     let mut pos = position(server, target, "target")?;
     pos.0.z += 2.0;
     const DESTINATION_RADIUS: f32 = 2000.0;
@@ -1709,6 +1892,7 @@ fn handle_spawn_ship(
     let mut builder = server
         .state
         .create_ship(pos, ori, ship, |ship| ship.make_collider());
+
     if let Some(pos) = destination {
         let (kp, ki, kd) =
             comp::agent::pid_coefficients(&comp::Body::Ship(ship)).unwrap_or((1.0, 0.0, 0.0));
@@ -1718,7 +1902,47 @@ fn handle_spawn_ship(
             .with_position_pid_controller(comp::PidController::new(kp, ki, kd, pos, 0.0, pure_z));
         builder = builder.with(agent);
     }
-    builder.build();
+
+    let new_entity = builder.build();
+
+    if tethered == Some(true) {
+        let tether_leader = server
+            .state
+            .read_component_cloned::<Is<Rider>>(target)
+            .map(|is_rider| is_rider.mount)
+            .or_else(|| {
+                server
+                    .state
+                    .read_component_cloned::<Is<VolumeRider>>(target)
+                    .and_then(|is_volume_rider| {
+                        if let Volume::Entity(uid) = is_volume_rider.pos.kind {
+                            Some(uid)
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .or_else(|| server.state.ecs().uid_from_entity(target));
+        let tether_follower = server.state.ecs().uid_from_entity(new_entity);
+
+        if let (Some(leader), Some(follower)) = (tether_leader, tether_follower) {
+            let tether_length = tether_leader
+                .and_then(|uid| server.state.ecs().entity_from_uid(uid))
+                .and_then(|e| server.state.read_component_cloned::<comp::Body>(e))
+                .map(|b| b.dimensions().y * 1.5 + 1.0)
+                .unwrap_or(6.0);
+            server
+                .state
+                .link(Tethered {
+                    leader,
+                    follower,
+                    tether_length,
+                })
+                .map_err(|_| "Failed to tether entities")?;
+        } else {
+            return Err("Tether members don't have Uids.".into());
+        }
+    }
 
     server.notify_client(
         client,
@@ -1741,7 +1965,7 @@ fn handle_make_volume(
     let ship = comp::ship::Body::Volume;
     let sz = parse_cmd_args!(args, u32).unwrap_or(15);
     if !(1..=127).contains(&sz) {
-        return Err("Size has to be between 1 and 127.".to_string());
+        return Err(Content::localized("command-volume-size-incorrect"));
     };
     let sz = Vec3::broadcast(sz);
     let collider = {
@@ -1766,7 +1990,10 @@ fn handle_make_volume(
 
     server.notify_client(
         client,
-        ServerGeneral::server_msg(ChatType::CommandInfo, "Created a volume"),
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized("command-volume-created"),
+        ),
     );
     Ok(())
 }
@@ -1779,50 +2006,74 @@ fn handle_spawn_campfire(
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
     let pos = position(server, target, "target")?;
-    let time = server.state.get_time();
     server
         .state
-        .create_object(pos, comp::object::Body::CampfireLit)
-        .with(LightEmitter {
-            col: Rgb::new(1.0, 0.65, 0.2),
-            strength: 2.0,
-            flicker: 1.0,
-            animated: true,
-        })
-        .with(WaypointArea::default())
-        .with(comp::Auras::new(vec![
-            Aura::new(
-                AuraKind::Buff {
-                    kind: BuffKind::CampfireHeal,
-                    data: BuffData::new(0.02, Some(Secs(1.0))),
-                    category: BuffCategory::Natural,
-                    source: BuffSource::World,
-                },
-                5.0,
-                None,
-                AuraTarget::All,
-                Time(time),
-            ),
-            Aura::new(
-                AuraKind::Buff {
-                    kind: BuffKind::Burning,
-                    data: BuffData::new(2.0, Some(Secs(10.0))),
-                    category: BuffCategory::Natural,
-                    source: BuffSource::World,
-                },
-                0.7,
-                None,
-                AuraTarget::All,
-                Time(time),
-            ),
-        ]))
-        .build();
+        .ecs()
+        .read_resource::<EventBus<CreateSpecialEntityEvent>>()
+        .emit_now(CreateSpecialEntityEvent {
+            pos: pos.0,
+            entity: SpecialEntity::Waypoint,
+        });
 
     server.notify_client(
         client,
-        ServerGeneral::server_msg(ChatType::CommandInfo, "Spawned a campfire"),
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized("command-spawned-campfire"),
+        ),
     );
     Ok(())
+}
+
+#[cfg(feature = "persistent_world")]
+fn handle_clear_persisted_terrain(
+    server: &mut Server,
+    _client: EcsEntity,
+    target: EcsEntity,
+    args: Vec<String>,
+    action: &ServerChatCommand,
+) -> CmdResult<()> {
+    let Some(radius) = parse_cmd_args!(args, i32) else {
+        return Err(Content::Plain(action.help_string()));
+    };
+    // Clamp the radius to prevent accidentally passing too large radiuses
+    let radius = radius.clamp(0, 64);
+
+    let pos = position(server, target, "target")?;
+    let chunk_key = server.state.terrain().pos_key(pos.0.as_());
+
+    let mut terrain_persistence2 = server
+        .state
+        .ecs()
+        .try_fetch_mut::<crate::terrain_persistence::TerrainPersistence>();
+    if let Some(ref mut terrain_persistence) = terrain_persistence2 {
+        for offset in Spiral2d::with_radius(radius) {
+            let chunk_key = chunk_key + offset;
+            terrain_persistence.clear_chunk(chunk_key);
+        }
+
+        drop(terrain_persistence2);
+        reload_chunks_inner(server, pos.0, Some(radius));
+
+        Ok(())
+    } else {
+        Err(Content::localized(
+            "command-experimental-terrain-persistence-disabled",
+        ))
+    }
+}
+
+#[cfg(not(feature = "persistent_world"))]
+fn handle_clear_persisted_terrain(
+    _server: &mut Server,
+    _client: EcsEntity,
+    _target: EcsEntity,
+    _args: Vec<String>,
+    _action: &ServerChatCommand,
+) -> CmdResult<()> {
+    Err(Content::localized(
+        "command-server-no-experimental-terrain-persistence",
+    ))
 }
 
 fn handle_safezone(
@@ -1838,7 +2089,10 @@ fn handle_safezone(
 
     server.notify_client(
         client,
-        ServerGeneral::server_msg(ChatType::CommandInfo, "Spawned a safe zone"),
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized("command-spawned-safezone"),
+        ),
     );
     Ok(())
 }
@@ -1867,7 +2121,10 @@ fn handle_permit_build(
                 target,
                 ServerGeneral::server_msg(
                     ChatType::CommandInfo,
-                    format!("You are now permitted to build in {}", area_name),
+                    Content::localized_with_args("command-permit-build-given", [(
+                        "area",
+                        area_name.clone(),
+                    )]),
                 ),
             );
         }
@@ -1875,12 +2132,12 @@ fn handle_permit_build(
             client,
             ServerGeneral::server_msg(
                 ChatType::CommandInfo,
-                format!("Permission to build in {} granted", area_name),
+                Content::localized_with_args("command-permit-build-granted", [("area", area_name)]),
             ),
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -1902,7 +2159,10 @@ fn handle_revoke_build(
                     target,
                     ServerGeneral::server_msg(
                         ChatType::CommandInfo,
-                        format!("Your permission to build in {} has been revoked", area_name),
+                        Content::localized_with_args("command-revoke-build-recv", [(
+                            "area",
+                            area_name.clone(),
+                        )]),
                     ),
                 );
             }
@@ -1910,15 +2170,15 @@ fn handle_revoke_build(
                 client,
                 ServerGeneral::server_msg(
                     ChatType::CommandInfo,
-                    format!("Permission to build in {} revoked", area_name),
+                    Content::localized_with_args("command-revoke-build", [("area", area_name)]),
                 ),
             );
             Ok(())
         } else {
-            Err("You do not have permission to build.".into())
+            Err(Content::localized("command-no-buid-perms"))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -1937,13 +2197,16 @@ fn handle_revoke_build_all(
             target,
             ServerGeneral::server_msg(
                 ChatType::CommandInfo,
-                "Your build permissions have been revoked.",
+                Content::localized("command-revoke-build-all"),
             ),
         );
     }
     server.notify_client(
         client,
-        ServerGeneral::server_msg(ChatType::CommandInfo, "All build permissions revoked"),
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized("command-revoked-all-build"),
+        ),
     );
     Ok(())
 }
@@ -1981,7 +2244,7 @@ fn handle_spawn_portal(
     client: EcsEntity,
     target: EcsEntity,
     args: Vec<String>,
-    _action: &ServerChatCommand,
+    action: &ServerChatCommand,
 ) -> CmdResult<()> {
     let pos = position(server, target, "target")?;
 
@@ -2005,7 +2268,7 @@ fn handle_spawn_portal(
         );
         Ok(())
     } else {
-        Err("Invalid arguments".to_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -2024,17 +2287,14 @@ fn handle_build(
     {
         can_build.enabled ^= true;
 
-        let toggle_string = if can_build.enabled { "on" } else { "off" };
-        let msg = format!(
-            "Toggled build mode {}.{}",
-            toggle_string,
-            if !can_build.enabled {
-                ""
-            } else if server.settings().experimental_terrain_persistence {
-                " Experimental terrain persistence is enabled. The server will attempt to persist \
-                 changes, but this is not guaranteed."
-            } else {
-                " Changes will not be persisted when a chunk unloads."
+        let msg = Content::localized(
+            match (
+                can_build.enabled,
+                server.settings().experimental_terrain_persistence,
+            ) {
+                (false, _) => "command-set-build-mode-off",
+                (true, false) => "command-set-build-mode-on-unpersistent",
+                (true, true) => "command-set-build-mode-on-persistent",
             },
         );
 
@@ -2093,7 +2353,7 @@ fn handle_area_add(
         server.notify_client(client, msg);
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -2162,7 +2422,7 @@ fn handle_area_remove(
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -2210,22 +2470,29 @@ fn parse_alignment(owner: Uid, alignment: &str) -> CmdResult<Alignment> {
         "enemy" => Ok(Alignment::Enemy),
         "npc" => Ok(Alignment::Npc),
         "pet" => Ok(comp::Alignment::Owned(owner)),
-        _ => Err(format!("Invalid alignment: {:?}", alignment)),
+        _ => Err(Content::localized_with_args("command-invalid-alignment", [
+            ("alignment", alignment),
+        ])),
     }
 }
 
 fn handle_kill_npcs(
     server: &mut Server,
     client: EcsEntity,
-    _target: EcsEntity,
+    target: EcsEntity,
     args: Vec<String>,
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    let kill_pets = if let Some(kill_option) = parse_cmd_args!(args, String) {
+    let (radius, options) = parse_cmd_args!(args, f32, String);
+    let kill_pets = if let Some(kill_option) = options {
         kill_option.contains("--also-pets")
     } else {
         false
     };
+
+    let position = radius
+        .map(|_| position(server, target, "target"))
+        .transpose()?;
 
     let to_kill = {
         let ecs = server.state.ecs();
@@ -2236,40 +2503,78 @@ fn handle_kill_npcs(
         let alignments = ecs.read_storage::<Alignment>();
         let rtsim_entities = ecs.read_storage::<common::rtsim::RtSimEntity>();
         let mut rtsim = ecs.write_resource::<crate::rtsim::RtSim>();
+        let spatial_grid;
 
-        (
-            &entities,
-            &healths,
-            !&players,
-            alignments.maybe(),
-            &positions,
-        )
-            .join()
-            .filter_map(|(entity, _health, (), alignment, pos)| {
-                let should_kill = kill_pets
-                    || if let Some(Alignment::Owned(owned)) = alignment {
-                        ecs.entity_from_uid(*owned)
-                            .map_or(true, |owner| !players.contains(owner))
-                    } else {
-                        true
-                    };
+        let mut iter_a;
+        let mut iter_b;
 
-                if should_kill {
-                    if let Some(rtsim_entity) = rtsim_entities.get(entity).copied() {
-                        rtsim.hook_rtsim_actor_death(
-                            &ecs.read_resource::<Arc<world::World>>(),
-                            ecs.read_resource::<world::IndexOwned>().as_index_ref(),
-                            Actor::Npc(rtsim_entity.0),
-                            Some(pos.0),
-                            None,
-                        );
-                    }
-                    Some(entity)
+        let iter: &mut dyn Iterator<
+            Item = (
+                EcsEntity,
+                &comp::Health,
+                (),
+                Option<&comp::Alignment>,
+                &comp::Pos,
+            ),
+        > = if let (Some(radius), Some(position)) = (radius, position) {
+            spatial_grid = ecs.read_resource::<CachedSpatialGrid>();
+            iter_a = spatial_grid
+                .0
+                .in_circle_aabr(position.0.xy(), radius)
+                .filter_map(|entity| {
+                    (
+                        &entities,
+                        &healths,
+                        !&players,
+                        alignments.maybe(),
+                        &positions,
+                    )
+                        .lend_join()
+                        .get(entity, &entities)
+                })
+                .filter(move |(_, _, _, _, pos)| {
+                    pos.0.distance_squared(position.0) <= radius.powi(2)
+                });
+
+            &mut iter_a as _
+        } else {
+            iter_b = (
+                &entities,
+                &healths,
+                !&players,
+                alignments.maybe(),
+                &positions,
+            )
+                .join();
+
+            &mut iter_b as _
+        };
+
+        iter.filter_map(|(entity, _health, (), alignment, pos)| {
+            let should_kill = kill_pets
+                || if let Some(Alignment::Owned(owned)) = alignment {
+                    ecs.entity_from_uid(*owned)
+                        .map_or(true, |owner| !players.contains(owner))
                 } else {
-                    None
+                    true
+                };
+
+            if should_kill {
+                if let Some(rtsim_entity) = rtsim_entities.get(entity).copied() {
+                    rtsim.hook_rtsim_actor_death(
+                        &ecs.read_resource::<Arc<world::World>>(),
+                        ecs.read_resource::<world::IndexOwned>().as_index_ref(),
+                        Actor::Npc(rtsim_entity.0),
+                        Some(pos.0),
+                        None,
+                    );
                 }
-            })
-            .collect::<Vec<_>>()
+                Some(entity)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
     };
     let count = to_kill.len();
     for entity in to_kill {
@@ -2292,6 +2597,15 @@ fn handle_kill_npcs(
     Ok(())
 }
 
+enum KitEntry {
+    Spec(KitSpec),
+    Item(Item),
+}
+
+impl From<KitSpec> for KitEntry {
+    fn from(spec: KitSpec) -> Self { Self::Spec(spec) }
+}
+
 fn handle_kit(
     server: &mut Server,
     client: EcsEntity,
@@ -2311,13 +2625,13 @@ fn handle_kit(
 
     match name.as_str() {
         "all" => {
-            // TODO: we will probably want to handle modular items here too
-            let items = &ITEM_SPECS;
+            // This can't fail, we have tests
+            let items = all_items_expect();
+            let total = items.len();
+
             let res = push_kit(
-                items
-                    .iter()
-                    .map(|item_id| (KitSpec::Item(item_id.to_string()), 1)),
-                items.len(),
+                items.into_iter().map(|item| (KitEntry::Item(item), 1)),
+                total,
                 server,
                 target,
             );
@@ -2338,7 +2652,7 @@ fn handle_kit(
 
             let res = push_kit(
                 kit.iter()
-                    .map(|(item_id, quantity)| (item_id.clone(), *quantity)),
+                    .map(|(item_id, quantity)| (item_id.clone().into(), *quantity)),
                 kit.len(),
                 server,
                 target,
@@ -2353,7 +2667,7 @@ fn handle_kit(
 
 fn push_kit<I>(kit: I, count: usize, server: &mut Server, target: EcsEntity) -> CmdResult<()>
 where
-    I: Iterator<Item = (KitSpec, u32)>,
+    I: Iterator<Item = (KitEntry, u32)>,
 {
     if let (Some(mut target_inventory), mut target_inv_update) = (
         server
@@ -2365,7 +2679,7 @@ where
     ) {
         // TODO: implement atomic `insert_all_or_nothing` on Inventory
         if target_inventory.free_slots() < count {
-            return Err("Inventory doesn't have enough slots".to_owned());
+            return Err(Content::localized("command-kit-not-enough-slots"));
         }
 
         for (item_id, quantity) in kit {
@@ -2382,24 +2696,25 @@ where
 
         Ok(())
     } else {
-        Err("Could not get inventory".to_string())
+        Err(Content::localized("command-kit-inventory-unavailable"))
     }
 }
 
 fn push_item(
-    item_id: KitSpec,
+    item_id: KitEntry,
     quantity: u32,
     server: &Server,
-    push: &mut dyn FnMut(Item) -> Result<(), Item>,
+    push: &mut dyn FnMut(Item) -> Result<(), (Item, Option<NonZeroU32>)>,
 ) -> CmdResult<()> {
-    let items = match &item_id {
-        KitSpec::Item(item_id) => vec![
-            Item::new_from_asset(item_id).map_err(|_| format!("Unknown item: {:#?}", item_id))?,
+    let items = match item_id {
+        KitEntry::Spec(KitSpec::Item(item_id)) => vec![
+            Item::new_from_asset(&item_id).map_err(|_| format!("Unknown item: {:#?}", item_id))?,
         ],
-        KitSpec::ModularWeapon { tool, material } => {
-            comp::item::modular::generate_weapons(*tool, *material, None)
+        KitEntry::Spec(KitSpec::ModularWeapon { tool, material }) => {
+            comp::item::modular::generate_weapons(tool, material, None)
                 .map_err(|err| format!("{:#?}", err))?
         },
+        KitEntry::Item(item) => vec![item],
     };
 
     let mut res = Ok(());
@@ -2426,7 +2741,7 @@ fn push_item(
         // I think it's possible to pick-up item during this loop
         // and fail into case where you had space but now you don't?
         if res.is_err() {
-            return Err("Can't fit item to inventory".to_owned());
+            return Err(Content::localized("command-inventory-cant-fit-item"));
         }
     }
 
@@ -2567,7 +2882,7 @@ fn handle_lantern(
                     client,
                     ServerGeneral::server_msg(
                         ChatType::CommandInfo,
-                        "You adjusted flame strength and color.",
+                        Content::localized("command-lantern-adjusted-strength-color"),
                     ),
                 )
             } else {
@@ -2575,16 +2890,16 @@ fn handle_lantern(
                     client,
                     ServerGeneral::server_msg(
                         ChatType::CommandInfo,
-                        "You adjusted flame strength.",
+                        Content::localized("command-lantern-adjusted-strength"),
                     ),
                 )
             }
             Ok(())
         } else {
-            Err("Please equip a lantern first".into())
+            Err(Content::localized("command-lantern-unequiped"))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -2601,14 +2916,14 @@ fn handle_explosion(
     const MAX_POWER: f32 = 512.0;
 
     if power > MAX_POWER {
-        return Err(format!(
-            "Explosion power mustn't be more than {:?}.",
-            MAX_POWER
+        return Err(Content::localized_with_args(
+            "command-explosion-power-too-high",
+            [("power", MAX_POWER.to_string())],
         ));
-    } else if power <= 0.0 {
-        return Err(format!(
-            "Explosion power must be more than {:?}.",
-            MIN_POWER
+    } else if power <= MIN_POWER {
+        return Err(Content::localized_with_args(
+            "command-explosion-power-too-low",
+            [("power", MIN_POWER.to_string())],
         ));
     }
 
@@ -2619,26 +2934,23 @@ fn handle_explosion(
         .read_storage::<Uid>()
         .get(target)
         .copied();
-    server
-        .state
-        .mut_resource::<EventBus<ServerEvent>>()
-        .emit_now(ServerEvent::Explosion {
-            pos: pos.0,
-            explosion: Explosion {
-                effects: vec![
-                    RadiusEffect::Entity(Effect::Damage(Damage {
-                        source: DamageSource::Explosion,
-                        kind: DamageKind::Energy,
-                        value: 100.0 * power,
-                    })),
-                    RadiusEffect::TerrainDestruction(power, Rgb::black()),
-                ],
-                radius: 3.0 * power,
-                reagent: None,
-                min_falloff: 0.0,
-            },
-            owner,
-        });
+    server.state.emit_event_now(ExplosionEvent {
+        pos: pos.0,
+        explosion: Explosion {
+            effects: vec![
+                RadiusEffect::Entity(Effect::Damage(Damage {
+                    source: DamageSource::Explosion,
+                    kind: DamageKind::Energy,
+                    value: 100.0 * power,
+                })),
+                RadiusEffect::TerrainDestruction(power, Rgb::black()),
+            ],
+            radius: 3.0 * power,
+            reagent: None,
+            min_falloff: 0.0,
+        },
+        owner,
+    });
     Ok(())
 }
 
@@ -2767,7 +3079,7 @@ fn handle_adminify(
                 "admin" => AdminRole::Admin,
                 "moderator" => AdminRole::Moderator,
                 _ => {
-                    return Err(action.help_string());
+                    return Err(Content::Plain(action.help_string()));
                 },
             })
         } else {
@@ -2859,7 +3171,7 @@ fn handle_adminify(
         server.state.notify_players(msg);
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -2882,19 +3194,23 @@ fn handle_tell(
         let target_uid = uid(server, target, "target")?;
         let player_uid = uid(server, player, "player")?;
         let mode = comp::ChatMode::Tell(player_uid);
-        insert_or_replace_component(server, target, mode.clone(), "target")?;
+        let players = ecs.read_storage::<comp::Player>();
+        let sender = players.get(target).ok_or(Content::localized_with_args(
+            "command-player-info-unavailable",
+            [("target", "sender")],
+        ))?;
         let msg = if message_opt.is_empty() {
-            format!("{} wants to talk to you.", alias)
+            Content::localized_with_args("command-tell-request", [("sender", sender.alias.clone())])
         } else {
-            message_opt.join(" ")
+            Content::Plain(message_opt.join(" "))
         };
-        server
-            .state
-            .send_chat(mode.to_plain_msg(target_uid, msg, None)?);
+        drop(players);
+        insert_or_replace_component(server, target, mode.clone(), "target")?;
+        server.state.send_chat(mode.to_msg(target_uid, msg, None)?);
         server.notify_client(target, ServerGeneral::ChatMode(mode));
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -2915,7 +3231,9 @@ fn handle_faction(
         let msg = args.join(" ");
         if !msg.is_empty() {
             if let Some(uid) = server.state.ecs().read_storage().get(target) {
-                server.state.send_chat(mode.to_plain_msg(*uid, msg, None)?);
+                server
+                    .state
+                    .send_chat(mode.to_msg(*uid, Content::Plain(msg), None)?);
             }
         }
         server.notify_client(target, ServerGeneral::ChatMode(mode));
@@ -2944,7 +3262,7 @@ fn handle_group(
             if let Some(uid) = server.state.ecs().read_storage().get(target) {
                 server
                     .state
-                    .send_chat(mode.to_plain_msg(*uid, msg, Some(group))?);
+                    .send_chat(mode.to_msg(*uid, Content::Plain(msg), Some(group))?);
             }
         }
         server.notify_client(target, ServerGeneral::ChatMode(mode));
@@ -2967,8 +3285,7 @@ fn handle_group_invite(
 
         server
             .state
-            .mut_resource::<EventBus<ServerEvent>>()
-            .emit_now(ServerEvent::InitiateInvite(target, uid, InviteKind::Group));
+            .emit_event_now(InitiateInviteEvent(target, uid, InviteKind::Group));
 
         if client != target {
             server.notify_client(
@@ -2989,7 +3306,7 @@ fn handle_group_invite(
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3007,11 +3324,10 @@ fn handle_group_kick(
 
         server
             .state
-            .mut_resource::<EventBus<ServerEvent>>()
-            .emit_now(ServerEvent::GroupManip(target, comp::GroupManip::Kick(uid)));
+            .emit_event_now(GroupManipEvent(target, comp::GroupManip::Kick(uid)));
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3024,8 +3340,7 @@ fn handle_group_leave(
 ) -> CmdResult<()> {
     server
         .state
-        .mut_resource::<EventBus<ServerEvent>>()
-        .emit_now(ServerEvent::GroupManip(target, comp::GroupManip::Leave));
+        .emit_event_now(GroupManipEvent(target, comp::GroupManip::Leave));
     Ok(())
 }
 
@@ -3043,14 +3358,31 @@ fn handle_group_promote(
 
         server
             .state
-            .mut_resource::<EventBus<ServerEvent>>()
-            .emit_now(ServerEvent::GroupManip(
-                target,
-                comp::GroupManip::AssignLeader(uid),
-            ));
+            .emit_event_now(GroupManipEvent(target, comp::GroupManip::AssignLeader(uid)));
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
+    }
+}
+
+fn handle_reset_recipes(
+    server: &mut Server,
+    _client: EcsEntity,
+    target: EcsEntity,
+    _args: Vec<String>,
+    action: &ServerChatCommand,
+) -> CmdResult<()> {
+    if let Some(mut inventory) = server
+        .state
+        .ecs()
+        .write_storage::<comp::Inventory>()
+        .get_mut(target)
+    {
+        inventory.reset_recipes();
+        server.notify_client(target, ServerGeneral::UpdateRecipes);
+        Ok(())
+    } else {
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3068,7 +3400,9 @@ fn handle_region(
     let msg = args.join(" ");
     if !msg.is_empty() {
         if let Some(uid) = server.state.ecs().read_storage().get(target) {
-            server.state.send_chat(mode.to_plain_msg(*uid, msg, None)?);
+            server
+                .state
+                .send_chat(mode.to_msg(*uid, Content::Plain(msg), None)?);
         }
     }
     server.notify_client(target, ServerGeneral::ChatMode(mode));
@@ -3089,7 +3423,9 @@ fn handle_say(
     let msg = args.join(" ");
     if !msg.is_empty() {
         if let Some(uid) = server.state.ecs().read_storage().get(target) {
-            server.state.send_chat(mode.to_plain_msg(*uid, msg, None)?);
+            server
+                .state
+                .send_chat(mode.to_msg(*uid, Content::Plain(msg), None)?);
         }
     }
     server.notify_client(target, ServerGeneral::ChatMode(mode));
@@ -3110,7 +3446,9 @@ fn handle_world(
     let msg = args.join(" ");
     if !msg.is_empty() {
         if let Some(uid) = server.state.ecs().read_storage().get(target) {
-            server.state.send_chat(mode.to_plain_msg(*uid, msg, None)?);
+            server
+                .state
+                .send_chat(mode.to_msg(*uid, Content::Plain(msg), None)?);
         }
     }
     server.notify_client(target, ServerGeneral::ChatMode(mode));
@@ -3171,9 +3509,9 @@ fn handle_join_faction(
 
 #[cfg(not(feature = "worldgen"))]
 fn handle_debug_column(
-    server: &mut Server,
-    client: EcsEntity,
-    target: EcsEntity,
+    _server: &mut Server,
+    _client: EcsEntity,
+    _target: EcsEntity,
     _args: Vec<String>,
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
@@ -3265,9 +3603,9 @@ cliff_height {:?} "#,
 
 #[cfg(not(feature = "worldgen"))]
 fn handle_debug_ways(
-    server: &mut Server,
-    client: EcsEntity,
-    target: EcsEntity,
+    _server: &mut Server,
+    _client: EcsEntity,
+    _target: EcsEntity,
     _args: Vec<String>,
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
@@ -3320,11 +3658,7 @@ fn handle_disconnect_all_players(
     let _role = real_role(server, client_uuid, "role")?;
 
     if parse_cmd_args!(args, String).as_deref() != Some("confirm") {
-        return Err(
-            "Please run the command again with the second argument of \"confirm\" to confirm that \
-             you really want to disconnect all players from the server"
-                .to_string(),
-        );
+        return Err(Content::localized("command-disconnectall-confirm"));
     }
 
     let ecs = server.state.ecs();
@@ -3340,7 +3674,7 @@ fn handle_disconnect_all_players(
             "Failed to get player name for admin who used /disconnect_all_players - ignoring \
              command."
         );
-        return Err("You do not exist, so you cannot use this command".to_string());
+        return Err(Content::localized("command-you-dont-exist"));
     };
 
     info!(
@@ -3359,10 +3693,12 @@ fn handle_skill_point(
     args: Vec<String>,
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    if let (Some(a_skill_tree), Some(sp), a_alias) = parse_cmd_args!(args, String, u16, String) {
+    if let (Some(a_skill_tree), Some(sp), entity_target) =
+        parse_cmd_args!(args, String, u16, EntityTarget)
+    {
         let skill_tree = parse_skill_tree(&a_skill_tree)?;
-        let player = a_alias
-            .map(|alias| find_alias(server.state.ecs(), &alias).map(|(target, _)| target))
+        let player = entity_target
+            .map(|entity_target| get_entity_target(entity_target, server))
             .unwrap_or(Ok(target))?;
 
         if let Some(mut skill_set) = server
@@ -3374,10 +3710,10 @@ fn handle_skill_point(
             skill_set.add_skill_points(skill_tree, sp);
             Ok(())
         } else {
-            Err("Player has no stats!".into())
+            Err("Entity has no stats!".into())
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3392,18 +3728,67 @@ fn parse_skill_tree(skill_tree: &str) -> CmdResult<comp::skillset::SkillGroupKin
         "staff" => Ok(SkillGroupKind::Weapon(ToolKind::Staff)),
         "sceptre" => Ok(SkillGroupKind::Weapon(ToolKind::Sceptre)),
         "mining" => Ok(SkillGroupKind::Weapon(ToolKind::Pick)),
-        _ => Err(format!("{} is not a skill group!", skill_tree)),
+        _ => Err(Content::localized_with_args(
+            "command-invalid-skill-group",
+            [("group", skill_tree)],
+        )),
     }
+}
+
+fn reload_chunks_inner(server: &mut Server, pos: Vec3<f32>, radius: Option<i32>) -> usize {
+    let mut removed = 0;
+
+    if let Some(radius) = radius {
+        let chunk_key = server.state.terrain().pos_key(pos.as_());
+
+        for key_offset in Spiral2d::with_radius(radius) {
+            let chunk_key = chunk_key + key_offset;
+
+            #[cfg(feature = "persistent_world")]
+            server
+                .state
+                .ecs()
+                .try_fetch_mut::<crate::terrain_persistence::TerrainPersistence>()
+                .map(|mut terrain_persistence| terrain_persistence.unload_chunk(chunk_key));
+            if server.state.remove_chunk(chunk_key) {
+                removed += 1;
+            }
+        }
+    } else {
+        #[cfg(feature = "persistent_world")]
+        server
+            .state
+            .ecs()
+            .try_fetch_mut::<crate::terrain_persistence::TerrainPersistence>()
+            .map(|mut terrain_persistence| terrain_persistence.unload_all());
+        removed = server.state.clear_terrain();
+    }
+
+    removed
 }
 
 fn handle_reload_chunks(
     server: &mut Server,
-    _client: EcsEntity,
-    _target: EcsEntity,
-    _args: Vec<String>,
+    client: EcsEntity,
+    target: EcsEntity,
+    args: Vec<String>,
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    server.state.clear_terrain();
+    let radius = parse_cmd_args!(args, i32);
+
+    let pos = position(server, target, "target")?.0;
+    let removed = reload_chunks_inner(server, pos, radius.map(|radius| radius.clamp(0, 64)));
+
+    server.notify_client(
+        client,
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized_with_args("command-reloaded-chunks", [(
+                "reloaded",
+                removed.to_string(),
+            )]),
+        ),
+    );
 
     Ok(())
 }
@@ -3452,6 +3837,37 @@ fn handle_remove_lights(
     Ok(())
 }
 
+fn get_entity_target(entity_target: EntityTarget, server: &Server) -> CmdResult<EcsEntity> {
+    match entity_target {
+        EntityTarget::Player(alias) => Ok(find_alias(server.state.ecs(), &alias)?.0),
+        EntityTarget::RtsimNpc(id) => {
+            let (npc_id, _) = server
+                .state
+                .ecs()
+                .read_resource::<crate::rtsim::RtSim>()
+                .state()
+                .data()
+                .npcs
+                .iter()
+                .find(|(_, npc)| npc.uid == id)
+                .ok_or(Content::Plain(format!(
+                    "Could not find rtsim npc with id {id}."
+                )))?;
+            server
+                .state()
+                .ecs()
+                .read_resource::<common::uid::IdMaps>()
+                .rtsim_entity(common::rtsim::RtSimEntity(npc_id))
+                .ok_or(Content::Plain(format!("Npc with id {id} isn't loaded.")))
+        },
+        EntityTarget::Uid(uid) => server
+            .state
+            .ecs()
+            .entity_from_uid(uid)
+            .ok_or(Content::Plain(format!("{uid:?} not found."))),
+    }
+}
+
 fn handle_sudo(
     server: &mut Server,
     client: EcsEntity,
@@ -3459,28 +3875,39 @@ fn handle_sudo(
     args: Vec<String>,
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    if let (Some(player_alias), Some(cmd), cmd_args) =
-        parse_cmd_args!(args, String, String, ..Vec<String>)
+    if let (Some(entity_target), Some(cmd), cmd_args) =
+        parse_cmd_args!(args, EntityTarget, String, ..Vec<String>)
     {
         if let Ok(action) = cmd.parse() {
-            let (player, player_uuid) = find_alias(server.state.ecs(), &player_alias)?;
+            let entity = get_entity_target(entity_target, server)?;
             let client_uuid = uuid(server, client, "client")?;
-            verify_above_role(
-                server,
-                (client, client_uuid),
-                (player, player_uuid),
-                "Cannot sudo players with roles higher than your own.",
-            )?;
+
+            // If the entity target is a player check if client has authority to sudo it.
+            {
+                let players = server.state.ecs().read_storage::<comp::Player>();
+                if let Some(player) = players.get(entity) {
+                    let player_uuid = player.uuid();
+                    drop(players);
+                    verify_above_role(
+                        server,
+                        (client, client_uuid),
+                        (entity, player_uuid),
+                        "Cannot sudo players with roles higher than your own.",
+                    )?;
+                } else if server.entity_admin_role(client) < Some(AdminRole::Admin) {
+                    return Err("You don't have permission to sudo non-players.".into());
+                }
+            }
 
             // TODO: consider making this into a tail call or loop (to avoid the potential
             // stack overflow, although it's less of a risk coming from only mods and
             // admins).
-            do_command(server, client, player, cmd_args, &action)
+            do_command(server, client, entity, cmd_args, &action)
         } else {
-            Err(format!("Unknown command: /{}", cmd))
+            Err(Content::localized("command-unknown"))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3570,10 +3997,10 @@ fn handle_whitelist(
                     });
             edit_setting_feedback(server, client, edit, || format!("{}{}", err_info, username))
         } else {
-            Err(action.help_string())
+            Err(Content::Plain(action.help_string()))
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3595,8 +4022,8 @@ fn kick_player(
     );
     server
         .state
-        .mut_resource::<EventBus<ServerEvent>>()
-        .emit_now(ServerEvent::ClientDisconnect(
+        .mut_resource::<EventBus<ClientDisconnectEvent>>()
+        .emit_now(ClientDisconnectEvent(
             target_player,
             comp::DisconnectReason::Kicked,
         ));
@@ -3629,7 +4056,7 @@ fn handle_kick(
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3707,8 +4134,115 @@ fn handle_ban(
         }
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
+}
+
+fn handle_aura(
+    server: &mut Server,
+    client: EcsEntity,
+    target: EcsEntity,
+    args: Vec<String>,
+    action: &ServerChatCommand,
+) -> CmdResult<()> {
+    let target_uid = uid(server, target, "target")?;
+
+    let (Some(aura_radius), aura_duration, new_entity, aura_target, Some(aura_kind_variant), spec) =
+        parse_cmd_args!(args, f32, f32, bool, GroupTarget, AuraKindVariant, ..Vec<String>)
+    else {
+        return Err(Content::Plain(action.help_string()));
+    };
+    let new_entity = new_entity.unwrap_or(false);
+    let aura_kind = match aura_kind_variant {
+        AuraKindVariant::Buff => {
+            let (Some(buff), strength, duration, misc_data_spec) =
+                parse_cmd_args!(spec, String, f32, f64, String)
+            else {
+                return Err(Content::localized("command-aura-invalid-buff-parameters"));
+            };
+            let buffkind = parse_buffkind(&buff).ok_or_else(|| {
+                Content::localized_with_args("command-buff-unknown", [("buff", buff.clone())])
+            })?;
+            let buffdata = build_buff(
+                buffkind,
+                strength.unwrap_or(1.0),
+                duration.unwrap_or(10.0),
+                (!buffkind.is_simple())
+                    .then(|| {
+                        misc_data_spec.ok_or_else(|| {
+                            Content::localized_with_args("command-buff-data", [(
+                                "buff",
+                                buff.clone(),
+                            )])
+                        })
+                    })
+                    .transpose()?,
+            )?;
+
+            AuraKind::Buff {
+                kind: buffkind,
+                data: buffdata,
+                category: BuffCategory::Natural,
+                source: if new_entity {
+                    BuffSource::World
+                } else {
+                    BuffSource::Character { by: target_uid }
+                },
+            }
+        },
+        AuraKindVariant::FriendlyFire => AuraKind::FriendlyFire,
+        AuraKindVariant::ForcePvP => AuraKind::ForcePvP,
+    };
+    let aura_target = server
+        .state
+        .read_component_copied::<Uid>(target)
+        .map(|uid| match aura_target {
+            Some(GroupTarget::InGroup) => AuraTarget::GroupOf(uid),
+            Some(GroupTarget::OutOfGroup) => AuraTarget::NotGroupOf(uid),
+            None => AuraTarget::All,
+        })
+        .unwrap_or(AuraTarget::All);
+
+    let time = Time(server.state.get_time());
+    let aura = Aura::new(
+        aura_kind,
+        aura_radius,
+        aura_duration.map(|duration| Secs(duration as f64)),
+        aura_target,
+        time,
+    );
+
+    if new_entity {
+        let pos = position(server, target, "target")?;
+        server
+            .state
+            .create_empty(pos)
+            .with(comp::Auras::new(vec![aura]))
+            .maybe_with(aura_duration.map(|duration| comp::Object::DeleteAfter {
+                spawned_at: time,
+                timeout: Duration::from_secs_f32(duration),
+            }))
+            .build();
+    } else {
+        let mut auras = server.state.ecs().write_storage::<comp::Auras>();
+        if let Some(mut auras) = auras.get_mut(target) {
+            auras.insert(aura);
+        }
+    }
+
+    server.notify_client(
+        client,
+        ServerGeneral::server_msg(
+            ChatType::CommandInfo,
+            Content::localized(if new_entity {
+                "command-aura-spawn-new-entity"
+            } else {
+                "command-aura-spawn"
+            }),
+        ),
+    );
+
+    Ok(())
 }
 
 fn handle_battlemode(
@@ -3726,7 +4260,7 @@ fn handle_battlemode(
     let settings = ecs.read_resource::<Settings>();
     if let Some(mode) = parse_cmd_args!(args, String) {
         if !settings.gameplay.battle_mode.allow_choosing() {
-            return Err("Command disabled in server settings".to_owned());
+            return Err(Content::localized("command-disabled-by-settings"));
         }
 
         #[cfg(feature = "worldgen")]
@@ -3750,7 +4284,7 @@ fn handle_battlemode(
         let in_town = true;
 
         if !in_town {
-            return Err("You need to be in town to change battle mode!".to_owned());
+            return Err(Content::localized("command-battlemode-intown"));
         }
 
         let mut players = ecs.write_storage::<comp::Player>();
@@ -3762,20 +4296,19 @@ fn handle_battlemode(
             let Time(time) = *time;
             let elapsed = time - last_change;
             if elapsed < COOLDOWN {
-                let msg = format!(
-                    "Cooldown period active. Try again in {:.0} seconds",
-                    COOLDOWN - elapsed,
-                );
-                return Err(msg);
+                return Err(Content::localized_with_args(
+                    "command-battlemode-cooldown",
+                    [("cooldown", format!("{:.0}", COOLDOWN - elapsed))],
+                ));
             }
         }
         let mode = match mode.as_str() {
             "pvp" => BattleMode::PvP,
             "pve" => BattleMode::PvE,
-            _ => return Err("Available modes: pvp, pve".to_owned()),
+            _ => return Err(Content::localized("command-battlemode-available-modes")),
         };
         if player_info.battle_mode == mode {
-            return Err("Attempted to set the same battlemode".to_owned());
+            return Err(Content::localized("command-battlemode-same"));
         }
         player_info.battle_mode = mode;
         player_info.last_battlemode_change = Some(*time);
@@ -3783,7 +4316,10 @@ fn handle_battlemode(
             client,
             ServerGeneral::server_msg(
                 ChatType::CommandInfo,
-                format!("New battle mode: {:?}", mode),
+                Content::localized_with_args("command-battlemode-updated", [(
+                    "battlemode",
+                    format!("{mode:?}"),
+                )]),
             ),
         );
         Ok(())
@@ -3804,8 +4340,11 @@ fn handle_battlemode(
             let Time(change) = change;
             let elapsed = time - change;
             let next = COOLDOWN - elapsed;
-            let notice = format!(" Next change will be available in: {:.0} seconds", next);
-            msg.push_str(&notice);
+
+            if next > 0.0 {
+                let notice = format!(" Next change will be available in: {:.0} seconds", next);
+                msg.push_str(&notice);
+            }
         }
         server.notify_client(
             client,
@@ -3825,13 +4364,13 @@ fn handle_battlemode_force(
     let ecs = server.state.ecs();
     let settings = ecs.read_resource::<Settings>();
     if !settings.gameplay.battle_mode.allow_choosing() {
-        return Err("Command disabled in server settings".to_owned());
+        return Err(Content::localized("command-disabled-by-settings"));
     }
     let mode = parse_cmd_args!(args, String).ok_or_else(|| action.help_string())?;
     let mode = match mode.as_str() {
         "pvp" => BattleMode::PvP,
         "pve" => BattleMode::PvE,
-        _ => return Err("Available modes: pvp, pve".to_owned()),
+        _ => return Err(Content::localized("command-battlemode-available-modes")),
     };
     let mut players = ecs.write_storage::<comp::Player>();
     let mut player_info = players
@@ -3842,7 +4381,10 @@ fn handle_battlemode_force(
         client,
         ServerGeneral::server_msg(
             ChatType::CommandInfo,
-            format!("Set battle mode to: {:?}", mode),
+            Content::localized_with_args("command-battlemode-updated", [(
+                "battlemode",
+                format!("{mode:?}"),
+            )]),
         ),
     );
     Ok(())
@@ -3889,7 +4431,7 @@ fn handle_unban(
             format!("{} was already unbanned", username)
         })
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3921,7 +4463,7 @@ fn handle_server_physics(
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -3932,47 +4474,147 @@ fn handle_buff(
     args: Vec<String>,
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
-    if let (Some(buff), strength, duration) = parse_cmd_args!(args, String, f32, f64) {
-        let strength = strength.unwrap_or(0.01);
-        let duration = duration.unwrap_or(1.0);
+    let (Some(buff), strength, duration, misc_data_spec) =
+        parse_cmd_args!(args, String, f32, f64, String)
+    else {
+        return Err(Content::Plain(action.help_string()));
+    };
+
+    let strength = strength.unwrap_or(0.01);
+
+    if buff == "all" {
+        let duration = duration.unwrap_or(5.0);
         let buffdata = BuffData::new(strength, Some(Secs(duration)));
-        if buff != "all" {
-            cast_buff(&buff, buffdata, server, target)
-        } else {
-            for kind in BUFF_PACK.iter() {
-                cast_buff(kind, buffdata, server, target)?;
-            }
-            Ok(())
-        }
+
+        // apply every(*) non-complex buff
+        //
+        // (*) BUFF_PACK contains all buffs except
+        // invulnerability
+        BUFF_PACK
+            .iter()
+            .filter_map(|kind_key| parse_buffkind(kind_key))
+            .filter(|buffkind| buffkind.is_simple())
+            .for_each(|buffkind| cast_buff(buffkind, buffdata, server, target));
+        Ok(())
     } else {
-        Err(action.help_string())
+        let buffkind = parse_buffkind(&buff).ok_or_else(|| {
+            Content::localized_with_args("command-buff-unknown", [("buff", buff.clone())])
+        })?;
+        let buffdata = build_buff(
+            buffkind,
+            strength,
+            duration.unwrap_or(10.0),
+            (!buffkind.is_simple())
+                .then(|| {
+                    misc_data_spec.ok_or_else(|| {
+                        Content::localized_with_args("command-buff-data", [("buff", buff.clone())])
+                    })
+                })
+                .transpose()?,
+        )?;
+
+        cast_buff(buffkind, buffdata, server, target);
+        Ok(())
     }
 }
 
-fn cast_buff(kind: &str, data: BuffData, server: &mut Server, target: EcsEntity) -> CmdResult<()> {
-    if let Some(buffkind) = parse_buffkind(kind) {
-        let ecs = &server.state.ecs();
-        let mut buffs_all = ecs.write_storage::<comp::Buffs>();
-        let stats = ecs.read_storage::<comp::Stats>();
-        let healths = ecs.read_storage::<comp::Health>();
-        let time = ecs.read_resource::<Time>();
-        if let Some(mut buffs) = buffs_all.get_mut(target) {
-            buffs.insert(
-                Buff::new(
-                    buffkind,
-                    data,
-                    vec![],
-                    BuffSource::Command,
-                    *time,
-                    stats.get(target),
-                    healths.get(target),
-                ),
-                *time,
-            );
-        }
-        Ok(())
+fn build_buff(
+    buff_kind: BuffKind,
+    strength: f32,
+    duration: f64,
+    spec: Option<String>,
+) -> CmdResult<BuffData> {
+    if buff_kind.is_simple() {
+        Ok(BuffData::new(strength, Some(Secs(duration))))
     } else {
-        Err(format!("unknown buff: {}", kind))
+        let spec = spec.expect("spec must be passed to build_buff if buff_kind is not simple");
+
+        // Explicit match to remember that this function exists
+        let misc_data = match buff_kind {
+            BuffKind::Polymorphed => {
+                let Ok(npc::NpcBody(_id, mut body)) = spec.parse() else {
+                    return Err(Content::localized_with_args("command-buff-body-unknown", [
+                        ("spec", spec.clone()),
+                    ]));
+                };
+                MiscBuffData::Body(body())
+            },
+            BuffKind::Regeneration
+            | BuffKind::Saturation
+            | BuffKind::Potion
+            | BuffKind::Agility
+            | BuffKind::CampfireHeal
+            | BuffKind::Frenzied
+            | BuffKind::EnergyRegen
+            | BuffKind::IncreaseMaxEnergy
+            | BuffKind::IncreaseMaxHealth
+            | BuffKind::Invulnerability
+            | BuffKind::ProtectingWard
+            | BuffKind::Hastened
+            | BuffKind::Fortitude
+            | BuffKind::Reckless
+            | BuffKind::Flame
+            | BuffKind::Frigid
+            | BuffKind::Lifesteal
+            | BuffKind::ImminentCritical
+            | BuffKind::Fury
+            | BuffKind::Sunderer
+            | BuffKind::Defiance
+            | BuffKind::Bloodfeast
+            | BuffKind::Berserk
+            | BuffKind::Bleeding
+            | BuffKind::Cursed
+            | BuffKind::Burning
+            | BuffKind::Crippled
+            | BuffKind::Frozen
+            | BuffKind::Wet
+            | BuffKind::Ensnared
+            | BuffKind::Poisoned
+            | BuffKind::Parried
+            | BuffKind::PotionSickness
+            | BuffKind::Heatstroke
+            | BuffKind::ScornfulTaunt
+            | BuffKind::Rooted
+            | BuffKind::Winded
+            | BuffKind::Concussion
+            | BuffKind::Staggered
+            | BuffKind::Tenacity
+            | BuffKind::Resilience => {
+                if buff_kind.is_simple() {
+                    unreachable!("is_simple() above")
+                } else {
+                    panic!("Buff Kind {buff_kind:?} is complex but has no defined spec parser")
+                }
+            },
+        };
+
+        Ok(BuffData::new(strength, Some(Secs(duration))).with_misc_data(misc_data))
+    }
+}
+
+fn cast_buff(buffkind: BuffKind, data: BuffData, server: &mut Server, target: EcsEntity) {
+    let ecs = &server.state.ecs();
+    let mut buffs_all = ecs.write_storage::<comp::Buffs>();
+    let stats = ecs.read_storage::<comp::Stats>();
+    let masses = ecs.read_storage::<comp::Mass>();
+    let time = ecs.read_resource::<Time>();
+    if let Some(mut buffs) = buffs_all.get_mut(target) {
+        let dest_info = DestInfo {
+            stats: stats.get(target),
+            mass: masses.get(target),
+        };
+        buffs.insert(
+            Buff::new(
+                buffkind,
+                data,
+                vec![],
+                BuffSource::Command,
+                *time,
+                dest_info,
+                None,
+            ),
+            *time,
+        );
     }
 }
 
@@ -4003,7 +4645,7 @@ fn handle_skill_preset(
             Err("Player has no stats!".into())
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -4014,7 +4656,7 @@ fn set_skills(skill_set: &mut comp::SkillSet, preset: &str) -> CmdResult<()> {
         Ok(presets) => presets.read().0.clone(),
         Err(err) => {
             warn!("Error in preset: {}", err);
-            return Err("Error while loading presets".to_owned());
+            return Err(Content::localized("command-skillpreset-load-error"));
         },
     };
     if let Some(preset) = presets.get(preset) {
@@ -4023,7 +4665,7 @@ fn set_skills(skill_set: &mut comp::SkillSet, preset: &str) -> CmdResult<()> {
                 group
             } else {
                 warn!("Skill in preset doesn't exist in any group");
-                return Err("Preset is broken".to_owned());
+                return Err(Content::localized("command-skillpreset-broken"));
             };
             for _ in 0..*level {
                 let cost = skill_set.skill_cost(*skill);
@@ -4036,7 +4678,10 @@ fn set_skills(skill_set: &mut comp::SkillSet, preset: &str) -> CmdResult<()> {
         }
         Ok(())
     } else {
-        Err("Such preset doesn't exist".to_owned())
+        Err(Content::localized_with_args(
+            "command-skillpreset-missing",
+            [("preset", preset)],
+        ))
     }
 }
 
@@ -4048,16 +4693,10 @@ fn handle_location(
     _action: &ServerChatCommand,
 ) -> CmdResult<()> {
     if let Some(name) = parse_cmd_args!(args, String) {
-        let loc = server.state.ecs().read_resource::<Locations>().get(&name);
-        match loc {
-            Ok(loc) => server
-                .state
-                .position_mut(target, true, |target_pos| {
-                    target_pos.0 = loc;
-                })
-                .map_err(ToString::to_string),
-            Err(e) => Err(e.to_string()),
-        }
+        let loc = server.state.ecs().read_resource::<Locations>().get(&name)?;
+        server.state.position_mut(target, true, |target_pos| {
+            target_pos.0 = loc;
+        })
     } else {
         let locations = server.state.ecs().read_resource::<Locations>();
         let mut locations = locations.iter().map(|s| s.as_str()).collect::<Vec<_>>();
@@ -4067,9 +4706,12 @@ fn handle_location(
             ServerGeneral::server_msg(
                 ChatType::CommandInfo,
                 if locations.is_empty() {
-                    "No locations currently exist".to_owned()
+                    Content::localized("command-locations-empty")
                 } else {
-                    format!("Available locations:\n{}", locations.join(", "))
+                    Content::localized_with_args("command-locations-list", [(
+                        "locations",
+                        locations.join(", "),
+                    )])
                 },
             ),
         );
@@ -4087,26 +4729,22 @@ fn handle_create_location(
     if let Some(name) = parse_cmd_args!(args, String) {
         let target_pos = position(server, target, "target")?;
 
-        let res = server
+        server
             .state
             .ecs_mut()
             .write_resource::<Locations>()
-            .insert(name.clone(), target_pos.0);
-        match res {
-            Ok(()) => {
-                server.notify_client(
-                    client,
-                    ServerGeneral::server_msg(
-                        ChatType::CommandInfo,
-                        format!("Created location '{}'", name),
-                    ),
-                );
-                Ok(())
-            },
-            Err(e) => Err(e.to_string()),
-        }
+            .insert(name.clone(), target_pos.0)?;
+        server.notify_client(
+            client,
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::localized_with_args("command-location-created", [("location", name)]),
+            ),
+        );
+
+        Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -4118,29 +4756,37 @@ fn handle_delete_location(
     action: &ServerChatCommand,
 ) -> CmdResult<()> {
     if let Some(name) = parse_cmd_args!(args, String) {
-        let res = server
+        server
             .state
             .ecs_mut()
             .write_resource::<Locations>()
-            .remove(&name);
-        match res {
-            Ok(()) => {
-                server.notify_client(
-                    client,
-                    ServerGeneral::server_msg(
-                        ChatType::CommandInfo,
-                        format!("Deleted location '{}'", name),
-                    ),
-                );
-                Ok(())
-            },
-            Err(e) => Err(e.to_string()),
-        }
+            .remove(&name)?;
+        server.notify_client(
+            client,
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::localized_with_args("command-location-deleted", [("location", name)]),
+            ),
+        );
+
+        Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
+#[cfg(not(feature = "worldgen"))]
+fn handle_weather_zone(
+    _server: &mut Server,
+    _client: EcsEntity,
+    _target: EcsEntity,
+    _args: Vec<String>,
+    _action: &ServerChatCommand,
+) -> CmdResult<()> {
+    Err("Unsupported without worldgen enabled".into())
+}
+
+#[cfg(feature = "worldgen")]
 fn handle_weather_zone(
     server: &mut Server,
     client: EcsEntity,
@@ -4155,11 +4801,14 @@ fn handle_weather_zone(
         let mut add_zone = |weather: weather::Weather| {
             if let Ok(pos) = position(server, client, "player") {
                 let pos = pos.0.xy() / weather::CELL_SIZE as f32;
-                server
+                if let Some(weather_job) = server
                     .state
                     .ecs_mut()
-                    .write_resource::<WeatherSim>()
-                    .add_zone(weather, pos, radius, time);
+                    .write_resource::<Option<WeatherJob>>()
+                    .as_mut()
+                {
+                    weather_job.queue_zone(weather, pos, radius, time);
+                }
             }
         };
         match name.as_str() {
@@ -4203,10 +4852,10 @@ fn handle_weather_zone(
                 });
                 Ok(())
             },
-            _ => Err("Valid values are 'clear', 'rain', 'wind', 'storm'".to_string()),
+            _ => Err(Content::localized("command-weather-valid-values")),
         }
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -4250,7 +4899,7 @@ fn handle_body(
         }
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -4276,11 +4925,17 @@ fn handle_scale(
         }
         server.notify_client(
             client,
-            ServerGeneral::server_msg(ChatType::CommandInfo, format!("Set scale to {}", scale)),
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::localized_with_args("command-scale-set", [(
+                    "scale",
+                    format!("{scale:.1}"),
+                )]),
+            ),
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
     }
 }
 
@@ -4305,10 +4960,179 @@ fn handle_repair_equipment(
         }
         server.notify_client(
             client,
-            ServerGeneral::server_msg(ChatType::CommandInfo, "Repaired all equipped items"),
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::localized("command-repaired-items"),
+            ),
         );
         Ok(())
     } else {
-        Err(action.help_string())
+        Err(Content::Plain(action.help_string()))
+    }
+}
+
+fn handle_tether(
+    server: &mut Server,
+    _client: EcsEntity,
+    target: EcsEntity,
+    args: Vec<String>,
+    action: &ServerChatCommand,
+) -> CmdResult<()> {
+    enum Either<A, B> {
+        Left(A),
+        Right(B),
+    }
+
+    impl<A: FromStr, B: FromStr> FromStr for Either<A, B> {
+        type Err = B::Err;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            A::from_str(s)
+                .map(Either::Left)
+                .or_else(|_| B::from_str(s).map(Either::Right))
+        }
+    }
+    if let (Some(entity_target), length) = parse_cmd_args!(args, EntityTarget, Either<f32, bool>) {
+        let entity_target = get_entity_target(entity_target, server)?;
+
+        let tether_leader = server.state.ecs().uid_from_entity(target);
+        let tether_follower = server.state.ecs().uid_from_entity(entity_target);
+
+        if let (Some(leader), Some(follower)) = (tether_leader, tether_follower) {
+            let base_len = server
+                .state
+                .read_component_cloned::<comp::Body>(target)
+                .map(|b| b.dimensions().y * 1.5 + 1.0)
+                .unwrap_or(6.0);
+            let tether_length = match length {
+                Some(Either::Left(l)) => l.max(0.0) + base_len,
+                Some(Either::Right(true)) => {
+                    let leader_pos = position(server, target, "leader")?;
+                    let follower_pos = position(server, entity_target, "follower")?;
+
+                    leader_pos.0.distance(follower_pos.0) + base_len
+                },
+                _ => base_len,
+            };
+            server
+                .state
+                .link(Tethered {
+                    leader,
+                    follower,
+                    tether_length,
+                })
+                .map_err(|_| "Failed to tether entities".into())
+        } else {
+            Err("Tether members don't have Uids.".into())
+        }
+    } else {
+        Err(Content::Plain(action.help_string()))
+    }
+}
+
+fn handle_destroy_tethers(
+    server: &mut Server,
+    client: EcsEntity,
+    target: EcsEntity,
+    _args: Vec<String>,
+    _action: &ServerChatCommand,
+) -> CmdResult<()> {
+    let mut destroyed = false;
+    destroyed |= server
+        .state
+        .ecs()
+        .write_storage::<Is<common::tether::Leader>>()
+        .remove(target)
+        .is_some();
+    destroyed |= server
+        .state
+        .ecs()
+        .write_storage::<Is<common::tether::Follower>>()
+        .remove(target)
+        .is_some();
+    if destroyed {
+        server.notify_client(
+            client,
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::localized("command-destroyed-tethers"),
+            ),
+        );
+        Ok(())
+    } else {
+        Err(Content::localized("command-destroyed-no-tethers"))
+    }
+}
+
+fn handle_mount(
+    server: &mut Server,
+    _client: EcsEntity,
+    target: EcsEntity,
+    args: Vec<String>,
+    action: &ServerChatCommand,
+) -> CmdResult<()> {
+    if let Some(entity_target) = parse_cmd_args!(args, EntityTarget) {
+        let entity_target = get_entity_target(entity_target, server)?;
+
+        let rider = server.state.ecs().uid_from_entity(target);
+        let mount = server.state.ecs().uid_from_entity(entity_target);
+
+        if let (Some(rider), Some(mount)) = (rider, mount) {
+            server
+                .state
+                .link(common::mounting::Mounting { mount, rider })
+                .map_err(|_| "Failed to mount entities".into())
+        } else {
+            Err("Mount and/or rider doesn't have an Uid component.".into())
+        }
+    } else {
+        Err(Content::Plain(action.help_string()))
+    }
+}
+
+fn handle_dismount(
+    server: &mut Server,
+    client: EcsEntity,
+    target: EcsEntity,
+    _args: Vec<String>,
+    _action: &ServerChatCommand,
+) -> CmdResult<()> {
+    let mut destroyed = false;
+    destroyed |= server
+        .state
+        .ecs()
+        .write_storage::<Is<common::mounting::Rider>>()
+        .remove(target)
+        .is_some();
+    destroyed |= server
+        .state
+        .ecs()
+        .write_storage::<Is<common::mounting::VolumeRider>>()
+        .remove(target)
+        .is_some();
+    destroyed |= server
+        .state
+        .ecs()
+        .write_storage::<Is<common::mounting::Mount>>()
+        .remove(target)
+        .is_some();
+    destroyed |= server
+        .state
+        .ecs()
+        .write_storage::<common::mounting::VolumeRiders>()
+        .get_mut(target)
+        .map_or(false, |volume_riders| volume_riders.clear());
+
+    if destroyed {
+        server.notify_client(
+            client,
+            ServerGeneral::server_msg(
+                ChatType::CommandInfo,
+                Content::localized("command-dismounted"),
+            ),
+        );
+        Ok(())
+    } else {
+        Err(Content::localized("command-no-dismount"))
     }
 }

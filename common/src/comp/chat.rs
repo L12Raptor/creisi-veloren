@@ -2,7 +2,7 @@ use crate::{
     comp::{group::Group, BuffKind},
     uid::Uid,
 };
-use hashbrown::HashMap;
+use common_i18n::Content;
 use serde::{Deserialize, Serialize};
 use specs::{Component, DenseVecStorage};
 use std::time::{Duration, Instant};
@@ -30,32 +30,26 @@ impl Component for ChatMode {
 }
 
 impl ChatMode {
-    /// Create a plain message from your current chat mode and uuid.
-    pub fn to_plain_msg(
+    /// Create a message from your current chat mode and uuid
+    pub fn to_msg(
         &self,
         from: Uid,
-        text: impl ToString,
+        content: Content,
         group: Option<Group>,
-    ) -> Result<UnresolvedChatMsg, &'static str> {
+    ) -> Result<UnresolvedChatMsg, Content> {
         let chat_type = match self {
             ChatMode::Tell(to) => ChatType::Tell(from, *to),
             ChatMode::Say => ChatType::Say(from),
             ChatMode::Region => ChatType::Region(from),
             ChatMode::Group => ChatType::Group(
                 from,
-                group.ok_or(
-                    "You tried sending a group message while not belonging to a group. Use /world \
-                     or /region to change your chat mode.",
-                )?,
+                group.ok_or(Content::localized("command-message-group-missing"))?,
             ),
             ChatMode::Faction(faction) => ChatType::Faction(from, faction.clone()),
             ChatMode::World => ChatType::World(from),
         };
 
-        Ok(UnresolvedChatMsg {
-            chat_type,
-            content: Content::Plain(text.to_string()),
-        })
+        Ok(UnresolvedChatMsg { chat_type, content })
     }
 }
 
@@ -63,6 +57,11 @@ impl ChatMode {
     pub const fn default() -> Self { Self::World }
 }
 
+/// Enum representing death types
+///
+/// All variants should be strictly typed, no string content.
+///
+/// If it's too complicated to create an enum for death type, consult i18n team
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KillType {
     Buff(BuffKind),
@@ -71,15 +70,17 @@ pub enum KillType {
     Explosion,
     Energy,
     Other,
-    // Projectile(String), TODO: add projectile name when available
+    // Projectile(Type), TODO: add projectile name when available
 }
 
+/// Enum representing death reasons
+///
+/// All variants should be strictly typed, no string content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KillSource {
     Player(Uid, KillType),
     NonPlayer(String, KillType),
     NonExistent(KillType),
-    Environment(String),
     FallDamage,
     Suicide,
     Other,
@@ -185,121 +186,6 @@ impl<G> ChatType<G> {
     }
 }
 
-/// The content of a chat message.
-// TODO: This could be generalised to *any* in-game text, not just chat messages (hence it not being
-// called `ChatContent`). A few examples:
-//
-// - Signposts, both those appearing as overhead messages and those displayed 'in-world' on a shop
-//   sign
-// - UI elements
-// - In-game notes/books (we could add a variant that allows structuring complex, novel textual
-//   information as a syntax tree or some other intermediate format that can be localised by the
-//   client)
-// TODO: We probably want to have this type be able to represent similar things to
-// `fluent::FluentValue`, such as numeric values, so that they can be properly localised in whatever
-// manner is required.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Content {
-    /// The content is a plaintext string that should be shown to the user
-    /// verbatim.
-    Plain(String),
-    /// The content is a localizable message with the given arguments.
-    Localized {
-        /// i18n key
-        key: String,
-        /// Pseudorandom seed value that allows frontends to select a
-        /// deterministic (but pseudorandom) localised output
-        #[serde(default = "random_seed")]
-        seed: u16,
-        /// i18n arguments
-        #[serde(default)]
-        args: HashMap<String, LocalizationArg>,
-    },
-}
-
-// TODO: Remove impl and make use of `Plain(...)` explicit (to discourage it)
-impl From<String> for Content {
-    fn from(text: String) -> Self { Self::Plain(text) }
-}
-
-// TODO: Remove impl and make use of `Plain(...)` explicit (to discourage it)
-impl<'a> From<&'a str> for Content {
-    fn from(text: &'a str) -> Self { Self::Plain(text.to_string()) }
-}
-
-/// A localisation argument for localised content (see [`Content::Localized`]).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum LocalizationArg {
-    /// The localisation argument is itself a section of content.
-    ///
-    /// Note that this allows [`Content`] to recursively refer to itself. It may
-    /// be tempting to decide to parameterise everything, having dialogue
-    /// generated with a compact tree. "It's simpler!", you might say. False.
-    /// Over-parameterisation is an anti-pattern that hurts translators. Where
-    /// possible, prefer fewer levels of nesting unless doing so would
-    /// result in an intractably larger number of combinations. See [here](https://github.com/projectfluent/fluent/wiki/Good-Practices-for-Developers#prefer-wet-over-dry) for the
-    /// guidance provided by the docs for `fluent`, the localisation library
-    /// used by clients.
-    Content(Content),
-    /// The localisation argument is a natural number
-    Nat(u64),
-}
-
-impl From<Content> for LocalizationArg {
-    fn from(content: Content) -> Self { Self::Content(content) }
-}
-
-// TODO: Remove impl and make use of `Content(Plain(...))` explicit (to
-// discourage it)
-impl From<String> for LocalizationArg {
-    fn from(text: String) -> Self { Self::Content(Content::Plain(text)) }
-}
-
-// TODO: Remove impl and make use of `Content(Plain(...))` explicit (to
-// discourage it)
-impl<'a> From<&'a str> for LocalizationArg {
-    fn from(text: &'a str) -> Self { Self::Content(Content::Plain(text.to_string())) }
-}
-
-// TODO: Remove impl and make use of `Content(Plain(...))` explicit (to
-// discourage it)
-impl From<u64> for LocalizationArg {
-    fn from(n: u64) -> Self { Self::Nat(n) }
-}
-
-fn random_seed() -> u16 { rand::random() }
-
-impl Content {
-    pub fn localized(key: impl ToString) -> Self {
-        Self::Localized {
-            key: key.to_string(),
-            seed: random_seed(),
-            args: HashMap::default(),
-        }
-    }
-
-    pub fn localized_with_args<'a, A: Into<LocalizationArg>>(
-        key: impl ToString,
-        args: impl IntoIterator<Item = (&'a str, A)>,
-    ) -> Self {
-        Self::Localized {
-            key: key.to_string(),
-            seed: rand::random(),
-            args: args
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.into()))
-                .collect(),
-        }
-    }
-
-    pub fn as_plain(&self) -> Option<&str> {
-        match self {
-            Self::Plain(text) => Some(text.as_str()),
-            Self::Localized { .. } => None,
-        }
-    }
-}
-
 // Stores chat text, type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenericChatMsg<G> {
@@ -329,6 +215,13 @@ impl<G> GenericChatMsg<G> {
     pub fn npc_tell(from: Uid, to: Uid, content: Content) -> Self {
         let chat_type = ChatType::NpcTell(from, to);
         Self { chat_type, content }
+    }
+
+    pub fn death(kill_source: KillSource, victim: Uid) -> Self {
+        Self {
+            chat_type: ChatType::Kill(kill_source, victim),
+            content: Content::Plain(String::new()),
+        }
     }
 
     pub fn map_group<T>(self, mut f: impl FnMut(G) -> T) -> GenericChatMsg<T> {

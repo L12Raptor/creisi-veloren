@@ -1,5 +1,5 @@
 use crate::{
-    assets::{self, AssetExt, AssetHandle},
+    assets::{self, AssetExt, AssetHandle, CacheCombined, Concatenate},
     comp::{
         inventory::slot::{InvSlotId, Slot},
         item::{
@@ -428,14 +428,18 @@ pub fn modular_weapon(
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RecipeBook {
+pub struct RecipeBookManifest {
     recipes: HashMap<String, Recipe>,
 }
 
-impl RecipeBook {
+impl RecipeBookManifest {
+    pub fn load() -> AssetHandle<Self> { Self::load_expect("common.recipe_book_manifest") }
+
     pub fn get(&self, recipe: &str) -> Option<&Recipe> { self.recipes.get(recipe) }
 
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&String, &Recipe)> { self.recipes.iter() }
+
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &String> { self.recipes.keys() }
 
     pub fn get_available(&self, inv: &Inventory) -> Vec<(String, Recipe)> {
         self.recipes
@@ -451,8 +455,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_recipe_valid_key_check() {
-        let recipe_book = default_recipe_book().read();
+    fn complete_recipe_book_valid_key_check() {
+        let recipe_book = complete_recipe_book().read();
         let is_invalid_key =
             |input: &str| input.chars().any(|c| c.is_uppercase() || c.is_whitespace());
         assert!(!recipe_book.iter().any(|(k, _)| is_invalid_key(k)));
@@ -504,6 +508,9 @@ impl assets::Asset for RawRecipeBook {
 
     const EXTENSION: &'static str = "ron";
 }
+impl Concatenate for RawRecipeBook {
+    fn concatenate(self, b: Self) -> Self { RawRecipeBook(self.0.concatenate(b.0)) }
+}
 
 #[derive(Deserialize, Clone)]
 struct ItemList(Vec<String>);
@@ -514,7 +521,7 @@ impl assets::Asset for ItemList {
     const EXTENSION: &'static str = "ron";
 }
 
-impl assets::Compound for RecipeBook {
+impl assets::Compound for RecipeBookManifest {
     fn load(
         cache: assets::AnyCache,
         specifier: &assets::SharedString,
@@ -531,7 +538,7 @@ impl assets::Compound for RecipeBook {
             Ok((def, *amount, *is_mod_comp))
         }
 
-        let raw = cache.load::<RawRecipeBook>(specifier)?.cloned();
+        let raw = cache.load_and_combine::<RawRecipeBook>(specifier)?.cloned();
 
         let recipes = raw
             .0
@@ -559,7 +566,7 @@ impl assets::Compound for RecipeBook {
             )
             .collect::<Result<_, assets::Error>>()?;
 
-        Ok(RecipeBook { recipes })
+        Ok(RecipeBookManifest { recipes })
     }
 }
 
@@ -596,6 +603,9 @@ impl assets::Asset for RawComponentRecipeBook {
 
     const EXTENSION: &'static str = "ron";
 }
+impl Concatenate for RawComponentRecipeBook {
+    fn concatenate(self, b: Self) -> Self { RawComponentRecipeBook(self.0.concatenate(b.0)) }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct ComponentKey {
@@ -611,6 +621,7 @@ pub struct ComponentKey {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ComponentRecipe {
+    pub recipe_book_key: String,
     output: ComponentOutput,
     material: (RecipeInput, u32),
     modifier: Option<(RecipeInput, u32)>,
@@ -760,50 +771,51 @@ impl ComponentRecipe {
     }
 
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = (&RecipeInput, u32)> {
-        pub struct ComponentRecipeInputsIterator<'a> {
-            material: Option<&'a (RecipeInput, u32)>,
-            modifier: Option<&'a (RecipeInput, u32)>,
-            additional_inputs: std::slice::Iter<'a, (RecipeInput, u32)>,
-        }
-
-        impl<'a> Iterator for ComponentRecipeInputsIterator<'a> {
-            type Item = &'a (RecipeInput, u32);
-
-            fn next(&mut self) -> Option<&'a (RecipeInput, u32)> {
-                self.material
-                    .take()
-                    .or_else(|| self.modifier.take())
-                    .or_else(|| self.additional_inputs.next())
-            }
-        }
-
-        impl<'a> IntoIterator for &'a ComponentRecipe {
-            type IntoIter = ComponentRecipeInputsIterator<'a>;
-            type Item = &'a (RecipeInput, u32);
-
-            fn into_iter(self) -> Self::IntoIter {
-                ComponentRecipeInputsIterator {
-                    material: Some(&self.material),
-                    modifier: self.modifier.as_ref(),
-                    additional_inputs: self.additional_inputs.as_slice().iter(),
-                }
-            }
-        }
-
-        impl<'a> ExactSizeIterator for ComponentRecipeInputsIterator<'a> {
-            fn len(&self) -> usize {
-                self.material.is_some() as usize
-                    + self.modifier.is_some() as usize
-                    + self.additional_inputs.len()
-            }
-        }
-
         self.into_iter().map(|(recipe, amount)| (recipe, *amount))
+    }
+}
+
+pub struct ComponentRecipeInputsIterator<'a> {
+    material: Option<&'a (RecipeInput, u32)>,
+    modifier: Option<&'a (RecipeInput, u32)>,
+    additional_inputs: std::slice::Iter<'a, (RecipeInput, u32)>,
+}
+
+impl<'a> Iterator for ComponentRecipeInputsIterator<'a> {
+    type Item = &'a (RecipeInput, u32);
+
+    fn next(&mut self) -> Option<&'a (RecipeInput, u32)> {
+        self.material
+            .take()
+            .or_else(|| self.modifier.take())
+            .or_else(|| self.additional_inputs.next())
+    }
+}
+
+impl<'a> IntoIterator for &'a ComponentRecipe {
+    type IntoIter = ComponentRecipeInputsIterator<'a>;
+    type Item = &'a (RecipeInput, u32);
+
+    fn into_iter(self) -> Self::IntoIter {
+        ComponentRecipeInputsIterator {
+            material: Some(&self.material),
+            modifier: self.modifier.as_ref(),
+            additional_inputs: self.additional_inputs.as_slice().iter(),
+        }
+    }
+}
+
+impl<'a> ExactSizeIterator for ComponentRecipeInputsIterator<'a> {
+    fn len(&self) -> usize {
+        self.material.is_some() as usize
+            + self.modifier.is_some() as usize
+            + self.additional_inputs.len()
     }
 }
 
 #[derive(Clone, Deserialize)]
 struct RawComponentRecipe {
+    recipe_book_key: String,
     output: RawComponentOutput,
     /// String refers to an item definition id
     material: (String, u32),
@@ -875,7 +887,9 @@ impl assets::Compound for ComponentRecipeBook {
                 .iter()
                 .map(|(input, amount)| input.load_recipe_input().map(|input| (input, *amount)))
                 .collect::<Result<Vec<_>, _>>()?;
+            let recipe_book_key = String::from(&raw_recipe.recipe_book_key);
             Ok(ComponentRecipe {
+                recipe_book_key,
                 output,
                 material,
                 modifier,
@@ -884,7 +898,9 @@ impl assets::Compound for ComponentRecipeBook {
             })
         }
 
-        let raw = cache.load::<RawComponentRecipeBook>(specifier)?.cloned();
+        let raw = cache
+            .load_and_combine::<RawComponentRecipeBook>(specifier)?
+            .cloned();
 
         let recipes = raw
             .0
@@ -1022,6 +1038,8 @@ impl RepairRecipeBook {
         if let Some(item) = match item {
             Slot::Equip(slot) => inv.equipped(slot),
             Slot::Inventory(slot) => inv.get(slot),
+            // Items in overflow slots cannot be repaired until item is moved to a real slot
+            Slot::Overflow(_) => None,
         } {
             if let Some(repair_recipe) = self.repair_recipe(item) {
                 repair_recipe
@@ -1102,8 +1120,8 @@ impl assets::Compound for RepairRecipeBook {
     }
 }
 
-pub fn default_recipe_book() -> AssetHandle<RecipeBook> {
-    RecipeBook::load_expect("common.recipe_book")
+pub fn complete_recipe_book() -> AssetHandle<RecipeBookManifest> {
+    RecipeBookManifest::load_expect("common.recipe_book_manifest")
 }
 
 pub fn default_component_recipe_book() -> AssetHandle<ComponentRecipeBook> {

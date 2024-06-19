@@ -1,33 +1,35 @@
 use common::{
     combat,
     comp::{
-        self,
-        item::MaterialStatManifest,
-        skills::{GeneralSkill, Skill},
-        Body, CharacterState, Combo, Energy, Health, Inventory, Poise, Pos, SkillSet, Stats,
-        StatsModifier,
+        self, item::MaterialStatManifest, CharacterState, Combo, Energy, Health, Inventory, Poise,
+        Pos, Stats, StatsModifier,
     },
-    event::{EventBus, ServerEvent},
+    event::{DestroyEvent, EmitExt},
+    event_emitters,
     resources::{DeltaTime, EntitiesDiedLastTick, Time},
 };
 use common_ecs::{Job, Origin, Phase, System};
 use specs::{
-    shred::ResourceId, Entities, Join, Read, ReadExpect, ReadStorage, SystemData, World, Write,
-    WriteStorage,
+    shred, Entities, LendJoin, Read, ReadExpect, ReadStorage, SystemData, Write, WriteStorage,
 };
 
 const ENERGY_REGEN_ACCEL: f32 = 1.0;
 const SIT_ENERGY_REGEN_ACCEL: f32 = 2.5;
 const POISE_REGEN_ACCEL: f32 = 2.0;
 
+event_emitters! {
+    struct Events[Emitters] {
+        destroy: DestroyEvent,
+    }
+}
+
 #[derive(SystemData)]
 pub struct ReadData<'a> {
     entities: Entities<'a>,
     dt: Read<'a, DeltaTime>,
     time: Read<'a, Time>,
-    server_bus: Read<'a, EventBus<ServerEvent>>,
+    events: Events<'a>,
     positions: ReadStorage<'a, Pos>,
-    bodies: ReadStorage<'a, Body>,
     char_states: ReadStorage<'a, CharacterState>,
     inventories: ReadStorage<'a, Inventory>,
     msm: ReadExpect<'a, MaterialStatManifest>,
@@ -40,7 +42,6 @@ impl<'a> System<'a> for Sys {
     type SystemData = (
         ReadData<'a>,
         WriteStorage<'a, Stats>,
-        WriteStorage<'a, SkillSet>,
         WriteStorage<'a, Health>,
         WriteStorage<'a, Poise>,
         WriteStorage<'a, Energy>,
@@ -57,7 +58,6 @@ impl<'a> System<'a> for Sys {
         (
             read_data,
             stats,
-            mut skill_sets,
             mut healths,
             mut poises,
             mut energies,
@@ -66,11 +66,11 @@ impl<'a> System<'a> for Sys {
         ): Self::SystemData,
     ) {
         entities_died_last_tick.0.clear();
-        let mut server_event_emitter = read_data.server_bus.emitter();
+        let mut emitters = read_data.events.get_emitters();
         let dt = read_data.dt.0;
 
         // Update stats
-        for (entity, stats, mut health, pos, mut energy, inventory) in (
+        let join = (
             &read_data.entities,
             &stats,
             &mut healths,
@@ -78,14 +78,14 @@ impl<'a> System<'a> for Sys {
             &mut energies,
             read_data.inventories.maybe(),
         )
-            .join()
-        {
+            .lend_join();
+        join.for_each(|(entity, stats, mut health, pos, mut energy, inventory)| {
             let set_dead = { health.should_die() && !health.is_dead };
 
             if set_dead {
                 let cloned_entity = (entity, *pos);
                 entities_died_last_tick.0.push(cloned_entity);
-                server_event_emitter.emit(ServerEvent::Destroy {
+                emitters.emit(DestroyEvent {
                     entity,
                     cause: health.last_change,
                 });
@@ -112,37 +112,11 @@ impl<'a> System<'a> for Sys {
                 // update to the client.
                 energy.update_internal_integer_maximum(new_max);
             }
-        }
-
-        // Apply effects from leveling skills
-        for (mut skill_set, mut health, mut energy, body) in (
-            &mut skill_sets,
-            &mut healths,
-            &mut energies,
-            &read_data.bodies,
-        )
-            .join()
-        {
-            if skill_set.modify_health {
-                let health_level = skill_set
-                    .skill_level(Skill::General(GeneralSkill::HealthIncrease))
-                    .unwrap_or(0);
-                health.update_max_hp(*body, health_level);
-                skill_set.modify_health = false;
-            }
-            if skill_set.modify_energy {
-                let energy_level = skill_set
-                    .skill_level(Skill::General(GeneralSkill::EnergyIncrease))
-                    .unwrap_or(0);
-                energy.update_max_energy(*body, energy_level);
-                skill_set.modify_energy = false;
-            }
-        }
+        });
 
         // Update energies and poises
-        for (character_state, mut energy, mut poise) in
-            (&read_data.char_states, &mut energies, &mut poises).join()
-        {
+        let join = (&read_data.char_states, &mut energies, &mut poises).lend_join();
+        join.for_each(|(character_state, mut energy, mut poise)| {
             match character_state {
                 // Sitting accelerates recharging energy the most
                 CharacterState::Sit => {
@@ -157,8 +131,9 @@ impl<'a> System<'a> for Sys {
                 CharacterState::Idle(_)
                 | CharacterState::Talk
                 | CharacterState::Dance
-                | CharacterState::Glide(_)
+                | CharacterState::Pet(_)
                 | CharacterState::Skate(_)
+                | CharacterState::Glide(_)
                 | CharacterState::GlideWield(_)
                 | CharacterState::Wielding(_)
                 | CharacterState::Equipping(_)
@@ -175,8 +150,6 @@ impl<'a> System<'a> for Sys {
                 | CharacterState::DashMelee(_)
                 | CharacterState::LeapMelee(_)
                 | CharacterState::LeapShockwave(_)
-                | CharacterState::SpinMelee(_)
-                | CharacterState::ComboMelee(_)
                 | CharacterState::ComboMelee2(_)
                 | CharacterState::BasicRanged(_)
                 | CharacterState::Music(_)
@@ -194,7 +167,8 @@ impl<'a> System<'a> for Sys {
                 | CharacterState::FinisherMelee(_)
                 | CharacterState::DiveMelee(_)
                 | CharacterState::RiposteMelee(_)
-                | CharacterState::RapidMelee(_) => {
+                | CharacterState::RapidMelee(_)
+                | CharacterState::StaticAura(_) => {
                     if energy.needs_regen_rate_reset() {
                         energy.reset_regen_rate();
                     }
@@ -205,17 +179,20 @@ impl<'a> System<'a> for Sys {
                 | CharacterState::Stunned(_)
                 | CharacterState::BasicBlock(_)
                 | CharacterState::UseItem(_)
+                | CharacterState::Transform(_)
                 | CharacterState::SpriteInteract(_) => {},
             }
-        }
+        });
 
         // Decay combo
-        for (_, mut combo) in (&read_data.entities, &mut combos).join() {
-            if combo.counter() > 0
-                && read_data.time.0 - combo.last_increase() > comp::combo::COMBO_DECAY_START
-            {
-                combo.reset();
-            }
-        }
+        (&read_data.entities, &mut combos)
+            .lend_join()
+            .for_each(|(_, mut combo)| {
+                if combo.counter() > 0
+                    && read_data.time.0 - combo.last_increase() > comp::combo::COMBO_DECAY_START
+                {
+                    combo.reset();
+                }
+            });
     }
 }

@@ -6,7 +6,8 @@ use common::{
         Admin, AdminRole, CanBuild, ControlEvent, Controller, ForceUpdate, Health, Ori, Player,
         Pos, Presence, PresenceKind, SkillSet, Vel,
     },
-    event::{EventBus, ServerEvent},
+    event::{self, EmitExt},
+    event_emitters,
     link::Is,
     mounting::{Rider, VolumeRider},
     resources::{DeltaTime, PlayerPhysicsSetting, PlayerPhysicsSettings},
@@ -19,7 +20,7 @@ use common_net::msg::{ClientGeneral, ServerGeneral};
 use common_state::{AreasContainer, BlockChange, BuildArea};
 use core::mem;
 use rayon::prelude::*;
-use specs::{Entities, Join, Read, ReadExpect, ReadStorage, Write, WriteStorage};
+use specs::{Entities, Join, LendJoin, Read, ReadExpect, ReadStorage, Write, WriteStorage};
 use std::{borrow::Cow, time::Instant};
 use tracing::{debug, trace, warn};
 use vek::*;
@@ -42,10 +43,19 @@ struct RareWrites<'a, 'b> {
     _terrain_persistence: &'b mut TerrainPersistenceData<'a>,
 }
 
+event_emitters! {
+    struct Events[Emitters] {
+        exit_ingame: event::ExitIngameEvent,
+        request_site_info: event::RequestSiteInfoEvent,
+        update_map_marker: event::UpdateMapMarkerEvent,
+        client_disconnect: event::ClientDisconnectEvent,
+    }
+}
+
 impl Sys {
     #[allow(clippy::too_many_arguments)]
     fn handle_client_in_game_msg(
-        server_emitter: &mut common::event::Emitter<'_, ServerEvent>,
+        emitters: &mut Emitters,
         entity: specs::Entity,
         client: &Client,
         maybe_presence: &mut Option<&mut Presence>,
@@ -78,15 +88,19 @@ impl Sys {
         match msg {
             // Go back to registered state (char selection screen)
             ClientGeneral::ExitInGame => {
-                server_emitter.emit(ServerEvent::ExitIngame { entity });
+                emitters.emit(event::ExitIngameEvent { entity });
                 client.send(ServerGeneral::ExitInGameSuccess)?;
                 *maybe_presence = None;
             },
             ClientGeneral::SetViewDistance(view_distances) => {
                 let clamped_vds = view_distances.clamp(settings.max_view_distance);
 
-                presence.terrain_view_distance.set_target(clamped_vds.terrain, time_for_vd_changes);
-                presence.entity_view_distance.set_target(clamped_vds.entity, time_for_vd_changes);
+                presence
+                    .terrain_view_distance
+                    .set_target(clamped_vds.terrain, time_for_vd_changes);
+                presence
+                    .entity_view_distance
+                    .set_target(clamped_vds.entity, time_for_vd_changes);
 
                 // Correct client if its requested VD is too high.
                 if view_distances.terrain != clamped_vds.terrain {
@@ -101,7 +115,9 @@ impl Sys {
                 }
             },
             ClientGeneral::ControlEvent(event) => {
-                if presence.kind.controlling_char() && let Some(controller) = controller {
+                if presence.kind.controlling_char()
+                    && let Some(controller) = controller
+                {
                     // Skip respawn if client entity is alive
                     let skip_respawn = matches!(event, ControlEvent::Respawn)
                         && healths.get(entity).map_or(true, |h| !h.is_dead);
@@ -118,9 +134,15 @@ impl Sys {
                     }
                 }
             },
-            ClientGeneral::PlayerPhysics { pos, vel, ori, force_counter } => {
+            ClientGeneral::PlayerPhysics {
+                pos,
+                vel,
+                ori,
+                force_counter,
+            } => {
                 if presence.kind.controlling_char()
-                    && force_update.map_or(true, |force_update| force_update.counter() == force_counter)
+                    && force_update
+                        .map_or(true, |force_update| force_update.counter() == force_counter)
                     && healths.get(entity).map_or(true, |h| !h.is_dead)
                     && is_rider.get(entity).is_none()
                     && is_volume_rider.get(entity).is_none()
@@ -146,10 +168,12 @@ impl Sys {
                                 let new_block = old_block.into_vacant();
                                 // Take the rare writes lock as briefly as possible.
                                 let mut guard = rare_writes.lock();
-                                let _was_set = guard.block_changes.try_set(pos, new_block).is_some();
+                                let _was_set =
+                                    guard.block_changes.try_set(pos, new_block).is_some();
                                 #[cfg(feature = "persistent_world")]
                                 if _was_set {
-                                    if let Some(terrain_persistence) = guard._terrain_persistence.as_mut()
+                                    if let Some(terrain_persistence) =
+                                        guard._terrain_persistence.as_mut()
                                     {
                                         terrain_persistence.set_block(pos, new_block);
                                     }
@@ -173,10 +197,12 @@ impl Sys {
                             {
                                 // Take the rare writes lock as briefly as possible.
                                 let mut guard = rare_writes.lock();
-                                let _was_set = guard.block_changes.try_set(pos, new_block).is_some();
+                                let _was_set =
+                                    guard.block_changes.try_set(pos, new_block).is_some();
                                 #[cfg(feature = "persistent_world")]
                                 if _was_set {
-                                    if let Some(terrain_persistence) = guard._terrain_persistence.as_mut()
+                                    if let Some(terrain_persistence) =
+                                        guard._terrain_persistence.as_mut()
                                     {
                                         terrain_persistence.set_block(pos, new_block);
                                     }
@@ -188,12 +214,15 @@ impl Sys {
             },
             ClientGeneral::UnlockSkill(skill) => {
                 // FIXME: How do we want to handle the error?  Probably not by swallowing it.
-                let _ = skill_set.as_mut().map(|skill_set| {
-                    SkillSet::unlock_skill_cow(skill_set, skill, |skill_set| skill_set.to_mut())
-                }).transpose();
+                let _ = skill_set
+                    .as_mut()
+                    .map(|skill_set| {
+                        SkillSet::unlock_skill_cow(skill_set, skill, |skill_set| skill_set.to_mut())
+                    })
+                    .transpose();
             },
             ClientGeneral::RequestSiteInfo(id) => {
-                server_emitter.emit(ServerEvent::RequestSiteInfo { entity, id });
+                emitters.emit(event::RequestSiteInfoEvent { entity, id });
             },
             ClientGeneral::RequestPlayerPhysics {
                 server_authoritative,
@@ -208,10 +237,13 @@ impl Sys {
                 presence.lossy_terrain_compression = lossy_terrain_compression;
             },
             ClientGeneral::UpdateMapMarker(update) => {
-                server_emitter.emit(ServerEvent::UpdateMapMarker { entity, update });
+                emitters.emit(event::UpdateMapMarkerEvent { entity, update });
             },
             ClientGeneral::SpectatePosition(pos) => {
-                if let Some(admin) = maybe_admin && admin.0 >= AdminRole::Moderator && presence.kind == PresenceKind::Spectator {
+                if let Some(admin) = maybe_admin
+                    && admin.0 >= AdminRole::Moderator
+                    && presence.kind == PresenceKind::Spectator
+                {
                     if let Some(position) = position {
                         position.0 = pos;
                     }
@@ -227,9 +259,10 @@ impl Sys {
             | ClientGeneral::LodZoneRequest { .. }
             | ClientGeneral::ChatMsg(_)
             | ClientGeneral::Command(..)
-            | ClientGeneral::Terminate => {
+            | ClientGeneral::Terminate
+            | ClientGeneral::RequestPlugins(_) => {
                 debug!("Kicking possibly misbehaving client due to invalid client in game request");
-                server_emitter.emit(ServerEvent::ClientDisconnect(
+                emitters.emit(event::ClientDisconnectEvent(
                     entity,
                     common::comp::DisconnectReason::NetworkError,
                 ));
@@ -246,7 +279,7 @@ impl<'a> System<'a> for Sys {
     #[allow(clippy::type_complexity)]
     type SystemData = (
         Entities<'a>,
-        Read<'a, EventBus<ServerEvent>>,
+        Events<'a>,
         ReadExpect<'a, TerrainGrid>,
         ReadExpect<'a, SlowJobPool>,
         ReadStorage<'a, CanBuild>,
@@ -279,7 +312,7 @@ impl<'a> System<'a> for Sys {
         _job: &mut Job<Self>,
         (
             entities,
-            server_event_bus,
+            events,
             terrain,
             slow_jobs,
             can_build,
@@ -331,8 +364,8 @@ impl<'a> System<'a> for Sys {
             // NOTE: Required because Specs has very poor work splitting for sparse joins.
             .par_bridge()
             .map_init(
-                || server_event_bus.emitter(),
-                |server_emitter, (
+                || events.get_emitters(),
+                |emitters, (
                     entity,
                     client,
                     mut maybe_presence,
@@ -360,7 +393,7 @@ impl<'a> System<'a> for Sys {
                     let mut player_physics = None;
                     let _ = super::try_recv_all(client, 2, |client, msg| {
                         Self::handle_client_in_game_msg(
-                            server_emitter,
+                            emitters,
                             entity,
                             client,
                             &mut clearable_maybe_presence,

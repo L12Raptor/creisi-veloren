@@ -3,7 +3,7 @@ use crate::{
         AVG_FOLLOW_DIST, DEFAULT_ATTACK_RANGE, IDLE_HEALING_ITEM_THRESHOLD, MAX_PATROL_DIST,
         PARTIAL_PATH_DIST, SEPARATION_BIAS, SEPARATION_DIST, STD_AWARENESS_DECAY_RATE,
     },
-    data::{AgentData, AttackData, Path, ReadData, Tactic, TargetData},
+    data::{AgentData, AgentEmitters, AttackData, Path, ReadData, Tactic, TargetData},
     util::{
         aim_projectile, are_our_owners_hostile, entities_have_line_of_sight, get_attacker,
         get_entity_by_id, is_dead_or_invulnerable, is_dressed_as_cultist, is_invulnerable,
@@ -14,7 +14,7 @@ use common::{
     combat::perception_dist_multiplier_from_stealth,
     comp::{
         self,
-        ability::MAX_ABILITIES,
+        ability::BASE_ABILITY_LIMIT,
         agent::{Sound, SoundKind, Target},
         inventory::slot::EquipSlot,
         item::{
@@ -22,13 +22,14 @@ use common::{
             ConsumableKind, Effects, Item, ItemDesc, ItemKind,
         },
         item_drop,
-        projectile::ProjectileConstructor,
+        projectile::ProjectileConstructorKind,
         Agent, Alignment, Body, CharacterState, Content, ControlAction, ControlEvent, Controller,
         HealthChange, InputKind, InventoryAction, Pos, Scale, UnresolvedChatMsg, UtteranceKind,
     },
     consts::MAX_MOUNT_RANGE,
     effect::{BuffEffect, Effect},
-    event::{Emitter, ServerEvent},
+    event::{ChatEvent, EmitExt, SoundEvent},
+    mounting::VolumePos,
     path::TraversalConfig,
     rtsim::NpcActivity,
     states::basic_beam,
@@ -49,33 +50,34 @@ impl<'a> AgentData<'a> {
     ////////////////////////////////////////
     // Action Nodes
     ////////////////////////////////////////
-
-    pub fn glider_fall(&self, controller: &mut Controller, read_data: &ReadData) {
-        if read_data.is_riders.contains(*self.entity) {
-            controller.push_event(ControlEvent::Unmount);
-        }
-
+    pub fn glider_equip(&self, controller: &mut Controller, read_data: &ReadData) {
+        self.dismount(controller, read_data);
         controller.push_action(ControlAction::GlideWield);
+    }
 
-        let flight_direction =
-            Vec3::from(self.vel.0.xy().try_normalized().unwrap_or_else(Vec2::zero));
-        let flight_ori = Quaternion::from_scalar_and_vec3((1.0, flight_direction));
-
-        let ori = self.ori.look_vec();
-        let look_dir = if ori.z > 0.0 {
-            flight_ori.rotated_x(-0.1)
-        } else {
-            flight_ori.rotated_x(0.1)
+    // TODO: add the ability to follow the target?
+    pub fn glider_flight(&self, controller: &mut Controller, _read_data: &ReadData) {
+        let Some(fluid) = self.physics_state.in_fluid else {
+            return;
         };
 
-        let (_, look_dir) = look_dir.into_scalar_and_vec3();
+        let vel = self.vel;
+
+        let comp::Vel(rel_flow) = fluid.relative_flow(vel);
+
+        let is_wind_downwards = rel_flow.z.is_sign_negative();
+
+        let look_dir = if is_wind_downwards {
+            Vec3::from(-rel_flow.xy())
+        } else {
+            -rel_flow
+        };
+
         controller.inputs.look_dir = Dir::from_unnormalized(look_dir).unwrap_or_else(Dir::forward);
     }
 
     pub fn fly_upward(&self, controller: &mut Controller, read_data: &ReadData) {
-        if read_data.is_riders.contains(*self.entity) {
-            controller.push_event(ControlEvent::Unmount);
-        }
+        self.dismount(controller, read_data);
 
         controller.push_basic_input(InputKind::Fly);
         controller.inputs.move_z = 1.0;
@@ -96,9 +98,7 @@ impl<'a> AgentData<'a> {
         path: Path,
         speed_multiplier: Option<f32>,
     ) -> bool {
-        if read_data.is_riders.contains(*self.entity) {
-            controller.push_event(ControlEvent::Unmount);
-        }
+        self.dismount(controller, read_data);
 
         let partial_path_tgt_pos = |pos_difference: Vec3<f32>| {
             self.pos.0
@@ -165,7 +165,10 @@ impl<'a> AgentData<'a> {
         let climbing_out_of_water = self.physics_state.in_liquid().map_or(false, |h| h < 1.0)
             && bearing.z > 0.0
             && self.physics_state.on_wall.is_some();
-        self.jump_if(bearing.z > 1.5 || climbing_out_of_water, controller);
+        self.jump_if(
+            bearing.z > 1.5 || climbing_out_of_water || self.traversal_config.can_fly,
+            controller,
+        );
         controller.inputs.move_z = bearing.z;
         if bearing.z > 0.0 {
             controller.inputs.climb = Some(comp::Climb::Up);
@@ -185,7 +188,7 @@ impl<'a> AgentData<'a> {
         agent: &mut Agent,
         controller: &mut Controller,
         read_data: &ReadData,
-        event_emitter: &mut Emitter<ServerEvent>,
+        emitters: &mut AgentEmitters,
         rng: &mut impl Rng,
     ) {
         enum ActionTimers {
@@ -229,18 +232,27 @@ impl<'a> AgentData<'a> {
                 true
             };
             if attempt_heal && self.heal_self(agent, controller, true) {
-                agent.action_state.timers[ActionTimers::TimerIdle as usize] = 0.01;
+                agent.behavior_state.timers[ActionTimers::TimerIdle as usize] = 0.01;
                 return;
             }
         } else {
-            agent.action_state.timers[ActionTimers::TimerIdle as usize] = 0.01;
+            agent.behavior_state.timers[ActionTimers::TimerIdle as usize] = 0.01;
             return;
         }
 
-        agent.action_state.timers[ActionTimers::TimerIdle as usize] = 0.0;
+        agent.behavior_state.timers[ActionTimers::TimerIdle as usize] = 0.0;
+
         'activity: {
             match agent.rtsim_controller.activity {
                 Some(NpcActivity::Goto(travel_to, speed_factor)) => {
+                    if read_data
+                        .is_volume_riders
+                        .get(*self.entity)
+                        .map_or(false, |r| !r.is_steering_entity())
+                    {
+                        controller.push_event(ControlEvent::Unmount);
+                    }
+
                     // If it has an rtsim destination and can fly, then it should.
                     // If it is flying and bumps something above it, then it should move down.
                     if self.traversal_config.can_fly
@@ -265,6 +277,18 @@ impl<'a> AgentData<'a> {
                     .map(|pos| pos.as_())
                     .unwrap_or(travel_to);
 
+                    let in_loaded_chunk = |pos: Vec3<f32>| {
+                        read_data
+                            .terrain
+                            .contains_key(read_data.terrain.pos_key(pos.map(|e| e.floor() as i32)))
+                    };
+
+                    // If current position lies inside a loaded chunk, we need to plan routes using
+                    // voxel info. If target happens to be in an unloaded chunk,
+                    // we need to make our way to the current chunk border, and
+                    // then reroute if needed.
+                    let is_target_loaded = in_loaded_chunk(chase_tgt);
+
                     if let Some((bearing, speed)) = agent.chaser.chase(
                         &*read_data.terrain,
                         self.pos.0,
@@ -272,11 +296,11 @@ impl<'a> AgentData<'a> {
                         chase_tgt,
                         TraversalConfig {
                             min_tgt_dist: self.traversal_config.min_tgt_dist * 1.25,
+                            is_target_loaded,
                             ..self.traversal_config
                         },
                     ) {
                         self.traverse(controller, bearing, speed.min(speed_factor));
-                        self.jump_if(self.traversal_config.can_fly, controller);
 
                         let height_offset = bearing.z
                             + if self.traversal_config.can_fly {
@@ -371,8 +395,53 @@ impl<'a> AgentData<'a> {
                     controller.push_action(ControlAction::Dance);
                     break 'activity; // Don't fall through to idle wandering
                 },
-                Some(NpcActivity::Dance) => {
+                Some(NpcActivity::Dance(dir)) => {
+                    // Look at targets specified by rtsim
+                    if let Some(look_dir) = dir {
+                        controller.inputs.look_dir = look_dir;
+                        if self.ori.look_dir().dot(look_dir.to_vec()) < 0.95 {
+                            controller.inputs.move_dir = look_dir.to_vec().xy() * 0.01;
+                            break 'activity;
+                        } else {
+                            controller.inputs.move_dir = Vec2::zero();
+                        }
+                    }
                     controller.push_action(ControlAction::Dance);
+                    break 'activity; // Don't fall through to idle wandering
+                },
+                Some(NpcActivity::Cheer(dir)) => {
+                    if let Some(look_dir) = dir {
+                        controller.inputs.look_dir = look_dir;
+                        if self.ori.look_dir().dot(look_dir.to_vec()) < 0.95 {
+                            controller.inputs.move_dir = look_dir.to_vec().xy() * 0.01;
+                            break 'activity;
+                        } else {
+                            controller.inputs.move_dir = Vec2::zero();
+                        }
+                    }
+                    controller.push_action(ControlAction::Talk);
+                    break 'activity; // Don't fall through to idle wandering
+                },
+                Some(NpcActivity::Sit(dir, pos)) => {
+                    if let Some(pos) =
+                        pos.filter(|p| read_data.terrain.get(*p).is_ok_and(|b| b.is_mountable()))
+                    {
+                        if !read_data.is_volume_riders.contains(*self.entity) {
+                            controller
+                                .push_event(ControlEvent::MountVolume(VolumePos::terrain(pos)));
+                        }
+                    } else {
+                        if let Some(look_dir) = dir {
+                            controller.inputs.look_dir = look_dir;
+                            if self.ori.look_dir().dot(look_dir.to_vec()) < 0.95 {
+                                controller.inputs.move_dir = look_dir.to_vec().xy() * 0.01;
+                                break 'activity;
+                            } else {
+                                controller.inputs.move_dir = Vec2::zero();
+                            }
+                        }
+                        controller.push_action(ControlAction::Sit);
+                    }
                     break 'activity; // Don't fall through to idle wandering
                 },
                 Some(NpcActivity::HuntAnimals) => {
@@ -381,13 +450,35 @@ impl<'a> AgentData<'a> {
                             agent,
                             controller,
                             read_data,
-                            event_emitter,
+                            emitters,
                             AgentData::is_hunting_animal,
                         );
                     }
                 },
                 None => {},
             }
+
+            let owner_uid = self.alignment.and_then(|alignment| match alignment {
+                Alignment::Owned(owner_uid) => Some(owner_uid),
+                _ => None,
+            });
+
+            let owner = owner_uid.and_then(|owner_uid| get_entity_by_id(*owner_uid, read_data));
+
+            let is_being_pet = owner
+                .and_then(|owner| read_data.char_states.get(owner))
+                .map_or(false, |char_state| match char_state {
+                    CharacterState::Pet(petting_data) => {
+                        petting_data.static_data.target_uid == *self.uid
+                    },
+                    _ => false,
+                });
+
+            let is_in_range = owner
+                .and_then(|owner| read_data.positions.get(owner))
+                .map_or(false, |pos| {
+                    pos.0.distance_squared(self.pos.0) < MAX_MOUNT_RANGE.powi(2)
+                });
 
             // Idle NPCs should try to jump on the shoulders of their owner, sometimes.
             if read_data.is_riders.contains(*self.entity) {
@@ -396,10 +487,9 @@ impl<'a> AgentData<'a> {
                 } else {
                     break 'activity;
                 }
-            } else if let Some(Alignment::Owned(owner_uid)) = self.alignment
-                && let Some(owner) = get_entity_by_id(*owner_uid, read_data)
-                && let Some(pos) = read_data.positions.get(owner)
-                && pos.0.distance_squared(self.pos.0) < MAX_MOUNT_RANGE.powi(2)
+            } else if let Some(owner_uid) = owner_uid
+                && is_in_range
+                && !is_being_pet
                 && rng.gen_bool(0.01)
             {
                 controller.push_event(ControlEvent::Mount(*owner_uid));
@@ -544,7 +634,12 @@ impl<'a> AgentData<'a> {
         read_data: &ReadData,
         tgt_pos: &Pos,
     ) {
-        if read_data.is_riders.contains(*self.entity) {
+        if read_data.is_riders.contains(*self.entity)
+            || read_data
+                .is_volume_riders
+                .get(*self.entity)
+                .map_or(false, |r| !r.is_steering_entity())
+        {
             controller.push_event(ControlEvent::Unmount);
         }
 
@@ -600,7 +695,12 @@ impl<'a> AgentData<'a> {
         // Proportion of full speed
         const MAX_FLEE_SPEED: f32 = 0.65;
 
-        if read_data.is_riders.contains(*self.entity) {
+        if read_data.is_riders.contains(*self.entity)
+            || read_data
+                .is_volume_riders
+                .get(*self.entity)
+                .map_or(false, |r| !r.is_steering_entity())
+        {
             controller.push_event(ControlEvent::Unmount);
         }
 
@@ -654,7 +754,7 @@ impl<'a> AgentData<'a> {
                 },
                 Effect::Buff(BuffEffect { kind, data, .. }) => {
                     if let Some(duration) = data.duration {
-                        for effect in kind.effects(data, self.stats, self.health) {
+                        for effect in kind.effects(data, self.stats) {
                             match effect {
                                 comp::BuffEffect::HealthChangeOverTime { rate, kind, .. } => {
                                     let amount = match kind {
@@ -748,13 +848,13 @@ impl<'a> AgentData<'a> {
         agent: &mut Agent,
         controller: &mut Controller,
         read_data: &ReadData,
-        event_emitter: &mut Emitter<ServerEvent>,
+        emitters: &mut AgentEmitters,
         is_enemy: fn(&Self, EcsEntity, &ReadData) -> bool,
     ) {
         enum ActionStateTimers {
             TimerChooseTarget = 0,
         }
-        agent.action_state.timers[ActionStateTimers::TimerChooseTarget as usize] = 0.0;
+        agent.behavior_state.timers[ActionStateTimers::TimerChooseTarget as usize] = 0.0;
         let mut aggro_on = false;
 
         // Search the area.
@@ -797,7 +897,7 @@ impl<'a> AgentData<'a> {
                     self.chat_npc_if_allowed_to_speak(
                         Content::localized("npc-speech-ambush"),
                         agent,
-                        event_emitter,
+                        emitters,
                     );
                     aggro_on = true;
                     Some((entity, true))
@@ -822,10 +922,10 @@ impl<'a> AgentData<'a> {
         };
         let is_valid_target = |entity: EcsEntity| match read_data.bodies.get(entity) {
             Some(Body::ItemDrop(item)) => {
-                //If the agent is humanoid, it will pick up all kinds of item drops. If the
+                let is_humanoid = matches!(self.body, Some(Body::Humanoid(_)));
+                // If the agent is humanoid, it will pick up all kinds of item drops. If the
                 // agent isn't humanoid, it will pick up only consumable item drops.
-                let wants_pickup = matches!(self.body, Some(Body::Humanoid(_)))
-                    || matches!(item, item_drop::Body::Consumable);
+                let wants_pickup = is_humanoid || matches!(item, item_drop::Body::Consumable);
 
                 // The agent will attempt to pickup the item if it wants to pick it up and
                 // is allowed to
@@ -834,13 +934,20 @@ impl<'a> AgentData<'a> {
                         .loot_owners
                         .get(entity)
                         .map_or(true, |loot_owner| {
-                            loot_owner.can_pickup(
-                                *self.uid,
-                                read_data.groups.get(entity),
-                                self.alignment,
-                                self.body,
-                                None,
-                            )
+                            !(is_humanoid
+                                && loot_owner.is_soft()
+                                // If we are hostile towards the owner, ignore their wish to not pick up the loot
+                                && loot_owner
+                                    .uid()
+                                    .and_then(|uid| read_data.id_maps.uid_entity(uid))
+                                    .map_or(true, |entity| !is_enemy(self, entity, read_data)))
+                                && loot_owner.can_pickup(
+                                    *self.uid,
+                                    read_data.groups.get(entity),
+                                    self.alignment,
+                                    self.body,
+                                    None,
+                                )
                         });
 
                 if attempt_pickup {
@@ -887,14 +994,15 @@ impl<'a> AgentData<'a> {
                 controller.push_utterance(UtteranceKind::Surprised);
             }
         }
-
-        agent.target = target.map(|(entity, attack_target)| Target {
-            target: entity,
-            hostile: attack_target,
-            selected_at: read_data.time.0,
-            aggro_on,
-            last_known_pos: get_pos(entity).map(|pos| pos.0),
-        })
+        if agent.psyche.should_stop_pursuing || target.is_some() {
+            agent.target = target.map(|(entity, attack_target)| Target {
+                target: entity,
+                hostile: attack_target,
+                selected_at: read_data.time.0,
+                aggro_on,
+                last_known_pos: get_pos(entity).map(|pos| pos.0),
+            })
+        }
     }
 
     pub fn attack(
@@ -949,9 +1057,7 @@ impl<'a> AgentData<'a> {
         #[cfg(feature = "be-dyn-lib")]
         let rng = &mut thread_rng();
 
-        if read_data.is_riders.contains(*self.entity) {
-            controller.push_event(ControlEvent::Unmount);
-        }
+        self.dismount(controller, read_data);
 
         let tool_tactic = |tool_kind| match tool_kind {
             ToolKind::Bow => Tactic::Bow,
@@ -971,22 +1077,28 @@ impl<'a> AgentData<'a> {
                 if let Some(ability_spec) = item.ability_spec() {
                     match &*ability_spec {
                         AbilitySpec::Custom(spec) => match spec.as_str() {
-                            "Oni" | "Sword Simple" => Tactic::SwordSimple,
-                            "Staff Simple" => Tactic::Staff,
+                            "Oni" | "Sword Simple" | "BipedLargeCultistSword" => {
+                                Tactic::SwordSimple
+                            },
+                            "Staff Simple" | "BipedLargeCultistStaff" => Tactic::Staff,
+                            "BipedLargeCultistHammer" => Tactic::Hammer,
                             "Simple Flying Melee" => Tactic::SimpleFlyingMelee,
-                            "Bow Simple" | "Boreal Bow" => Tactic::Bow,
+                            "Bow Simple" | "Boreal Bow" | "BipedLargeCultistBow" => Tactic::Bow,
                             "Stone Golem" | "Coral Golem" => Tactic::StoneGolem,
+                            "Iron Golem" => Tactic::IronGolem,
                             "Quad Med Quick" => Tactic::CircleCharge {
                                 radius: 3,
                                 circle_time: 2,
                             },
-                            "Quad Med Jump" => Tactic::QuadMedJump,
+                            "Quad Med Jump" | "Darkhound" => Tactic::QuadMedJump,
                             "Quad Med Charge" => Tactic::CircleCharge {
                                 radius: 6,
                                 circle_time: 1,
                             },
                             "Quad Med Basic" => Tactic::QuadMedBasic,
                             "Quad Med Hoof" => Tactic::QuadMedHoof,
+                            "ClaySteed" => Tactic::ClaySteed,
+                            "Rocksnapper" => Tactic::Rocksnapper,
                             "Roshwalr" => Tactic::Roshwalr,
                             "Asp" | "Maneater" => Tactic::QuadLowRanged,
                             "Quad Low Breathe" | "Quad Low Beam" | "Basilisk" => {
@@ -1002,7 +1114,7 @@ impl<'a> AgentData<'a> {
                             // Arthropods
                             "Antlion" => Tactic::ArthropodMelee,
                             "Tarantula" | "Horn Beetle" => Tactic::ArthropodAmbush,
-                            "Weevil" | "Black Widow" => Tactic::ArthropodRanged,
+                            "Weevil" | "Black Widow" | "Crawler" => Tactic::ArthropodRanged,
                             "Theropod Charge" => Tactic::CircleCharge {
                                 radius: 6,
                                 circle_time: 1,
@@ -1019,24 +1131,37 @@ impl<'a> AgentData<'a> {
                             "Bushly" | "Irrwurz" | "Driggle" | "Mossy Snail" => {
                                 Tactic::SimpleDouble
                             },
+                            "Clay Golem" => Tactic::ClayGolem,
+                            "Ancient Effigy" => Tactic::AncientEffigy,
+                            "TerracottaStatue" | "Mogwai" => Tactic::TerracottaStatue,
+                            "TerracottaBesieger" => Tactic::Bow,
+                            "TerracottaDemolisher" => Tactic::SimpleDouble,
+                            "TerracottaPunisher" => Tactic::SimpleMelee,
+                            "TerracottaPursuer" => Tactic::SwordSimple,
+                            "Cursekeeper" => Tactic::Cursekeeper,
+                            "CursekeeperFake" => Tactic::CursekeeperFake,
+                            "ShamanicSpirit" => Tactic::ShamanicSpirit,
+                            "Jiangshi" => Tactic::Jiangshi,
                             "Mindflayer" => Tactic::Mindflayer,
                             "Flamekeeper" => Tactic::Flamekeeper,
+                            "Forgemaster" => Tactic::Forgemaster,
                             "Minotaur" => Tactic::Minotaur,
                             "Cyclops" => Tactic::Cyclops,
                             "Dullahan" => Tactic::Dullahan,
-                            "Clay Golem" => Tactic::ClayGolem,
+                            "Grave Warden" => Tactic::GraveWarden,
                             "Tidal Warrior" => Tactic::TidalWarrior,
                             "Tidal Totem"
                             | "Tornado"
                             | "Gnarling Totem Red"
                             | "Gnarling Totem Green"
                             | "Gnarling Totem White" => Tactic::RadialTurret,
+                            "FieryTornado" => Tactic::FieryTornado,
                             "Yeti" => Tactic::Yeti,
                             "Harvester" => Tactic::Harvester,
                             "Cardinal" => Tactic::Cardinal,
                             "Sea Bishop" => Tactic::SeaBishop,
                             "Dagon" => Tactic::Dagon,
-                            "HermitAlligator" => Tactic::HermitAlligator,
+                            "Snaretongue" => Tactic::Snaretongue,
                             "Dagonite" => Tactic::ArthropodAmbush,
                             "Gnarling Dagger" => Tactic::SimpleBackstab,
                             "Gnarling Blowgun" => Tactic::ElevatedRanged,
@@ -1053,7 +1178,7 @@ impl<'a> AgentData<'a> {
                             "Frostfang" => Tactic::RandomAbilities {
                                 primary: 1,
                                 secondary: 3,
-                                abilities: [0; MAX_ABILITIES],
+                                abilities: [0; BASE_ABILITY_LIMIT],
                             },
                             "Tursus Claws" => Tactic::RandomAbilities {
                                 primary: 2,
@@ -1061,6 +1186,9 @@ impl<'a> AgentData<'a> {
                                 abilities: [4, 0, 0, 0, 0],
                             },
                             "Adlet Elder" => Tactic::AdletElder,
+                            "Haniwa Soldier" => Tactic::HaniwaSoldier,
+                            "Haniwa Guard" => Tactic::HaniwaGuard,
+                            "Haniwa Archer" => Tactic::HaniwaArcher,
                             _ => Tactic::SimpleMelee,
                         },
                         AbilitySpec::Tool(tool_kind) => tool_tactic(*tool_kind),
@@ -1144,14 +1272,11 @@ impl<'a> AgentData<'a> {
                 )
             },
             CharacterState::BasicRanged(c) => {
-                let offset_z = match c.static_data.projectile {
-                    // Aim fireballs at feet instead of eyes for splash damage
-                    ProjectileConstructor::Fireball {
-                        damage: _,
-                        radius: _,
-                        energy_regen: _,
-                        min_falloff: _,
-                    } => 0.0,
+                let offset_z = match c.static_data.projectile.kind {
+                    // Aim explosives and hazards at feet instead of eyes for splash damage
+                    ProjectileConstructorKind::Explosive { .. }
+                    | ProjectileConstructorKind::ExplosiveHazard { .. }
+                    | ProjectileConstructorKind::Hazard { .. } => 0.0,
                     _ => tgt_eye_offset,
                 };
                 let projectile_speed = c.static_data.projectile_speed;
@@ -1279,6 +1404,9 @@ impl<'a> AgentData<'a> {
             Tactic::StoneGolem => {
                 self.handle_stone_golem_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
+            Tactic::IronGolem => {
+                self.handle_iron_golem_attack(agent, controller, &attack_data, tgt_data, read_data)
+            },
             Tactic::CircleCharge {
                 radius,
                 circle_time,
@@ -1344,6 +1472,9 @@ impl<'a> AgentData<'a> {
                 tgt_data,
                 read_data,
             ),
+            Tactic::Rocksnapper => {
+                self.handle_rocksnapper_attack(agent, controller, &attack_data, tgt_data, read_data)
+            },
             Tactic::Roshwalr => {
                 self.handle_roshwalr_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
@@ -1399,6 +1530,9 @@ impl<'a> AgentData<'a> {
             Tactic::Flamekeeper => {
                 self.handle_flamekeeper_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
+            Tactic::Forgemaster => {
+                self.handle_forgemaster_attack(agent, controller, &attack_data, tgt_data, read_data)
+            },
             Tactic::BirdLargeFire => self.handle_birdlarge_fire_attack(
                 agent,
                 controller,
@@ -1436,6 +1570,25 @@ impl<'a> AgentData<'a> {
                 tgt_data,
                 read_data,
             ),
+            Tactic::Jiangshi => {
+                self.handle_jiangshi_attack(agent, controller, &attack_data, tgt_data, read_data)
+            },
+            Tactic::ClayGolem => {
+                self.handle_clay_golem_attack(agent, controller, &attack_data, tgt_data, read_data)
+            },
+            Tactic::ClaySteed => {
+                self.handle_clay_steed_attack(agent, controller, &attack_data, tgt_data, read_data)
+            },
+            Tactic::AncientEffigy => self.handle_ancient_effigy_attack(
+                agent,
+                controller,
+                &attack_data,
+                tgt_data,
+                read_data,
+            ),
+            Tactic::TerracottaStatue => {
+                self.handle_terracotta_statue_attack(agent, controller, &attack_data)
+            },
             Tactic::Minotaur => {
                 self.handle_minotaur_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
@@ -1445,9 +1598,13 @@ impl<'a> AgentData<'a> {
             Tactic::Dullahan => {
                 self.handle_dullahan_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
-            Tactic::ClayGolem => {
-                self.handle_clay_golem_attack(agent, controller, &attack_data, tgt_data, read_data)
-            },
+            Tactic::GraveWarden => self.handle_grave_warden_attack(
+                agent,
+                controller,
+                &attack_data,
+                tgt_data,
+                read_data,
+            ),
             Tactic::TidalWarrior => self.handle_tidal_warrior_attack(
                 agent,
                 controller,
@@ -1456,6 +1613,7 @@ impl<'a> AgentData<'a> {
                 read_data,
             ),
             Tactic::RadialTurret => self.handle_radial_turret_attack(controller),
+            Tactic::FieryTornado => self.handle_fiery_tornado_attack(agent, controller),
             Tactic::Yeti => {
                 self.handle_yeti_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
@@ -1478,11 +1636,29 @@ impl<'a> AgentData<'a> {
                 read_data,
                 rng,
             ),
+            Tactic::Cursekeeper => self.handle_cursekeeper_attack(
+                agent,
+                controller,
+                &attack_data,
+                tgt_data,
+                read_data,
+                rng,
+            ),
+            Tactic::CursekeeperFake => {
+                self.handle_cursekeeper_fake_attack(controller, &attack_data)
+            },
+            Tactic::ShamanicSpirit => self.handle_shamanic_spirit_attack(
+                agent,
+                controller,
+                &attack_data,
+                tgt_data,
+                read_data,
+            ),
             Tactic::Dagon => {
                 self.handle_dagon_attack(agent, controller, &attack_data, tgt_data, read_data)
             },
-            Tactic::HermitAlligator => {
-                self.handle_hermit_alligator_attack(agent, controller, &attack_data, read_data)
+            Tactic::Snaretongue => {
+                self.handle_snaretongue_attack(agent, controller, &attack_data, read_data)
             },
             Tactic::SimpleBackstab => {
                 self.handle_simple_backstab(agent, controller, &attack_data, tgt_data, read_data)
@@ -1507,9 +1683,14 @@ impl<'a> AgentData<'a> {
                 read_data,
                 rng,
             ),
-            Tactic::FrostGigas => {
-                self.handle_frostgigas_attack(agent, controller, &attack_data, tgt_data, read_data)
-            },
+            Tactic::FrostGigas => self.handle_frostgigas_attack(
+                agent,
+                controller,
+                &attack_data,
+                tgt_data,
+                read_data,
+                rng,
+            ),
             Tactic::BorealHammer => self.handle_boreal_hammer_attack(
                 agent,
                 controller,
@@ -1555,6 +1736,15 @@ impl<'a> AgentData<'a> {
             Tactic::AdletElder => {
                 self.handle_adlet_elder(agent, controller, &attack_data, tgt_data, read_data, rng)
             },
+            Tactic::HaniwaSoldier => {
+                self.handle_haniwa_soldier(agent, controller, &attack_data, tgt_data, read_data)
+            },
+            Tactic::HaniwaGuard => {
+                self.handle_haniwa_guard(agent, controller, &attack_data, tgt_data, read_data, rng)
+            },
+            Tactic::HaniwaArcher => {
+                self.handle_haniwa_archer(agent, controller, &attack_data, tgt_data, read_data)
+            },
         }
     }
 
@@ -1563,13 +1753,13 @@ impl<'a> AgentData<'a> {
         agent: &mut Agent,
         controller: &mut Controller,
         read_data: &ReadData,
-        event_emitter: &mut Emitter<ServerEvent>,
+        emitters: &mut AgentEmitters,
         rng: &mut impl Rng,
     ) {
         agent.forget_old_sounds(read_data.time.0);
 
         if is_invulnerable(*self.entity, read_data) {
-            self.idle(agent, controller, read_data, event_emitter, rng);
+            self.idle(agent, controller, read_data, emitters, rng);
             return;
         }
 
@@ -1602,13 +1792,13 @@ impl<'a> AgentData<'a> {
                 } else if self.below_flee_health(agent) || !follows_threatening_sounds {
                     self.flee(agent, controller, read_data, &sound_pos);
                 } else {
-                    self.idle(agent, controller, read_data, event_emitter, rng);
+                    self.idle(agent, controller, read_data, emitters, rng);
                 }
             } else {
-                self.idle(agent, controller, read_data, event_emitter, rng);
+                self.idle(agent, controller, read_data, emitters, rng);
             }
         } else {
-            self.idle(agent, controller, read_data, event_emitter, rng);
+            self.idle(agent, controller, read_data, emitters, rng);
         }
     }
 
@@ -1617,7 +1807,7 @@ impl<'a> AgentData<'a> {
         agent: &mut Agent,
         read_data: &ReadData,
         controller: &mut Controller,
-        event_emitter: &mut Emitter<ServerEvent>,
+        emitters: &mut AgentEmitters,
         rng: &mut impl Rng,
     ) {
         if let Some(Target { target, .. }) = agent.target {
@@ -1647,7 +1837,7 @@ impl<'a> AgentData<'a> {
                                     Some(tgt_pos.0),
                                 ));
 
-                                self.idle(agent, controller, read_data, event_emitter, rng);
+                                self.idle(agent, controller, read_data, emitters, rng);
                             } else {
                                 let target_data = TargetData::new(tgt_pos, target, read_data);
                                 // TODO: Reimplement this in rtsim
@@ -1671,25 +1861,23 @@ impl<'a> AgentData<'a> {
         &self,
         msg: Content,
         agent: &Agent,
-        event_emitter: &mut Emitter<'_, ServerEvent>,
+        emitters: &mut AgentEmitters,
     ) -> bool {
         if agent.allowed_to_speak() {
-            self.chat_npc(msg, event_emitter);
+            self.chat_npc(msg, emitters);
             true
         } else {
             false
         }
     }
 
-    pub fn chat_npc(&self, content: Content, event_emitter: &mut Emitter<'_, ServerEvent>) {
-        event_emitter.emit(ServerEvent::Chat(UnresolvedChatMsg::npc(
-            *self.uid, content,
-        )));
+    pub fn chat_npc(&self, content: Content, emitters: &mut AgentEmitters) {
+        emitters.emit(ChatEvent(UnresolvedChatMsg::npc(*self.uid, content)));
     }
 
-    fn emit_scream(&self, time: f64, event_emitter: &mut Emitter<'_, ServerEvent>) {
+    fn emit_scream(&self, time: f64, emitters: &mut AgentEmitters) {
         if let Some(body) = self.body {
-            event_emitter.emit(ServerEvent::Sound {
+            emitters.emit(SoundEvent {
                 sound: Sound::new(
                     SoundKind::Utterance(UtteranceKind::Scream, *body),
                     self.pos.0,
@@ -1700,12 +1888,7 @@ impl<'a> AgentData<'a> {
         }
     }
 
-    pub fn cry_out(
-        &self,
-        agent: &Agent,
-        event_emitter: &mut Emitter<'_, ServerEvent>,
-        read_data: &ReadData,
-    ) {
+    pub fn cry_out(&self, agent: &Agent, emitters: &mut AgentEmitters, read_data: &ReadData) {
         let has_enemy_alignment = matches!(self.alignment, Some(Alignment::Enemy));
 
         if has_enemy_alignment {
@@ -1714,28 +1897,24 @@ impl<'a> AgentData<'a> {
             self.chat_npc_if_allowed_to_speak(
                 Content::localized("npc-speech-cultist_low_health_fleeing"),
                 agent,
-                event_emitter,
+                emitters,
             );
         } else if is_villager(self.alignment) {
             self.chat_npc_if_allowed_to_speak(
                 Content::localized("npc-speech-villager_under_attack"),
                 agent,
-                event_emitter,
+                emitters,
             );
-            self.emit_scream(read_data.time.0, event_emitter);
+            self.emit_scream(read_data.time.0, emitters);
         }
     }
 
-    pub fn exclaim_relief_about_enemy_dead(
-        &self,
-        agent: &Agent,
-        event_emitter: &mut Emitter<'_, ServerEvent>,
-    ) {
+    pub fn exclaim_relief_about_enemy_dead(&self, agent: &Agent, emitters: &mut AgentEmitters) {
         if is_villager(self.alignment) {
             self.chat_npc_if_allowed_to_speak(
                 Content::localized("npc-speech-villager_enemy_killed"),
                 agent,
-                event_emitter,
+                emitters,
             );
         }
     }
@@ -1899,7 +2078,7 @@ impl<'a> AgentData<'a> {
         controller: &mut Controller,
         target: EcsEntity,
         read_data: &ReadData,
-        event_emitter: &mut Emitter<ServerEvent>,
+        emitters: &mut AgentEmitters,
         rng: &mut impl Rng,
         remembers_fight_with_target: bool,
     ) {
@@ -1908,7 +2087,7 @@ impl<'a> AgentData<'a> {
         let move_dir_mag = move_dir.magnitude();
         let small_chance = rng.gen::<f32>() < read_data.dt.0 * 0.25;
         let mut chat = |content: Content| {
-            self.chat_npc_if_allowed_to_speak(content, agent, event_emitter);
+            self.chat_npc_if_allowed_to_speak(content, agent, emitters);
         };
         let mut chat_villager_remembers_fighting = || {
             let tgt_name = read_data.stats.get(target).map(|stats| stats.name.clone());
@@ -1946,6 +2125,17 @@ impl<'a> AgentData<'a> {
             } else {
                 chat(Content::localized("npc-speech-menacing"));
             }
+        }
+    }
+
+    pub fn dismount(&self, controller: &mut Controller, read_data: &ReadData) {
+        if read_data.is_riders.contains(*self.entity)
+            || read_data
+                .is_volume_riders
+                .get(*self.entity)
+                .map_or(false, |r| !r.is_steering_entity())
+        {
+            controller.push_event(ControlEvent::Unmount);
         }
     }
 }

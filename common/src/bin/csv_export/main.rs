@@ -1,4 +1,5 @@
 #![deny(clippy::clone_on_ref_ptr)]
+#![allow(deprecated)] // since item i18n
 
 use clap::Parser;
 use std::{
@@ -73,7 +74,7 @@ fn armor_stats() -> Result<(), Box<dyn Error>> {
                 };
                 let max_energy = armor_stats.energy_max.unwrap_or(0.0).to_string();
                 let energy_reward = armor_stats.energy_reward.unwrap_or(0.0).to_string();
-                let crit_power = armor_stats.crit_power.unwrap_or(0.0).to_string();
+                let precision_power = armor_stats.precision_power.unwrap_or(0.0).to_string();
                 let stealth = armor_stats.stealth.unwrap_or(0.0).to_string();
 
                 wtr.write_record([
@@ -87,7 +88,7 @@ fn armor_stats() -> Result<(), Box<dyn Error>> {
                     &poise_resilience,
                     &max_energy,
                     &energy_reward,
-                    &crit_power,
+                    &precision_power,
                     &stealth,
                     item.description(),
                 ])?;
@@ -111,7 +112,6 @@ fn weapon_stats() -> Result<(), Box<dyn Error>> {
         "Power",
         "Effect Power",
         "Speed",
-        "Crit Chance",
         "Range",
         "Energy Efficiency",
         "Buff Strength",
@@ -132,7 +132,6 @@ fn weapon_stats() -> Result<(), Box<dyn Error>> {
             let power = tool_stats.power.to_string();
             let effect_power = tool_stats.effect_power.to_string();
             let speed = tool_stats.speed.to_string();
-            let crit_chance = tool_stats.crit_chance.to_string();
             let range = tool_stats.range.to_string();
             let energy_efficiency = tool_stats.energy_efficiency.to_string();
             let buff_strength = tool_stats.buff_strength.to_string();
@@ -151,7 +150,6 @@ fn weapon_stats() -> Result<(), Box<dyn Error>> {
                 &power,
                 &effect_power,
                 &speed,
-                &crit_chance,
                 &range,
                 &energy_efficiency,
                 &buff_strength,
@@ -203,6 +201,7 @@ fn get_armor_kind(kind: &ArmorKind) -> String {
         ArmorKind::Pants => "Pants".to_string(),
         ArmorKind::Foot => "Foot".to_string(),
         ArmorKind::Back => "Back".to_string(),
+        ArmorKind::Backpack => "Backpack".to_string(),
         ArmorKind::Ring => "Ring".to_string(),
         ArmorKind::Neck => "Neck".to_string(),
         ArmorKind::Head => "Head".to_string(),
@@ -302,6 +301,11 @@ fn loot_table(loot_table: &str) -> Result<(), Box<dyn Error>> {
                         write_loot_spec(wtr, spec, chance)?;
                     }
                 },
+                LootSpec::Lottery(lottery) => {
+                    for (_weight, spec) in lottery {
+                        write_loot_spec(wtr, spec, "")?;
+                    }
+                },
             }
             Ok(())
         }
@@ -328,8 +332,11 @@ fn entity_drops(entity_config: &str) -> Result<(), Box<dyn Error>> {
         asset_path: &str,
     ) -> Result<(), Box<dyn Error>> {
         let entity_config = EntityConfig::load_expect(asset_path).read();
-        let entity_info = EntityInfo::at(Vec3::new(0.0, 0.0, 0.0))
-            .with_asset_expect(asset_path, &mut rand::thread_rng());
+        let entity_info = EntityInfo::at(Vec3::new(0.0, 0.0, 0.0)).with_asset_expect(
+            asset_path,
+            &mut rand::thread_rng(),
+            None,
+        );
         let name = entity_info.name.unwrap_or_default();
 
         // Create initial entry in drop table
@@ -478,6 +485,7 @@ fn entity_drops(entity_config: &str) -> Result<(), Box<dyn Error>> {
                     }
                 },
                 LootSpec::LootTable(_) => unreachable!(),
+                LootSpec::Lottery(_) => todo!(),
                 LootSpec::MultiDrop(_, _, _) => todo!(),
                 LootSpec::All(_) => todo!(),
             }
@@ -487,10 +495,10 @@ fn entity_drops(entity_config: &str) -> Result<(), Box<dyn Error>> {
     }
 
     if entity_config.eq_ignore_ascii_case("all") {
-        let configs = assets::load_dir::<EntityConfig>("common.entity", true)
+        let configs = assets::load_rec_dir::<EntityConfig>("common.entity")
             .expect("Entity files moved somewhere else maybe?")
-            .ids();
-        for config in configs {
+            .read();
+        for config in configs.ids() {
             write_entity_loot(&mut wtr, config)?;
         }
     } else {

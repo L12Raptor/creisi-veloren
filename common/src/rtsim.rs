@@ -3,10 +3,8 @@
 // `Agent`). When possible, this should be moved to the `rtsim`
 // module in `server`.
 
-use crate::{
-    character::CharacterId,
-    comp::{dialogue::Subject, Content},
-};
+use crate::{character::CharacterId, comp::dialogue::Subject, util::Dir};
+use common_i18n::Content;
 use rand::{seq::IteratorRandom, Rng};
 use serde::{Deserialize, Serialize};
 use specs::Component;
@@ -15,8 +13,6 @@ use strum::{EnumIter, IntoEnumIterator};
 use vek::*;
 
 slotmap::new_key_type! { pub struct NpcId; }
-
-slotmap::new_key_type! { pub struct VehicleId; }
 
 slotmap::new_key_type! { pub struct SiteId; }
 
@@ -31,7 +27,7 @@ impl Component for RtSimEntity {
     type Storage = specs::VecStorage<Self>;
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Actor {
     Npc(NpcId),
     Character(CharacterId),
@@ -46,11 +42,12 @@ impl Actor {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct RtSimVehicle(pub VehicleId);
+impl From<NpcId> for Actor {
+    fn from(value: NpcId) -> Self { Actor::Npc(value) }
+}
 
-impl Component for RtSimVehicle {
-    type Storage = specs::VecStorage<Self>;
+impl From<CharacterId> for Actor {
+    fn from(value: CharacterId) -> Self { Actor::Character(value) }
 }
 
 #[derive(EnumIter, Clone, Copy)]
@@ -230,6 +227,8 @@ pub struct RtSimController {
     pub actions: VecDeque<NpcAction>,
     pub personality: Personality,
     pub heading_to: Option<String>,
+    // TODO: Maybe this should allow for looking at a specific entity target?
+    pub look_dir: Option<Dir>,
 }
 
 impl RtSimController {
@@ -248,7 +247,9 @@ pub enum NpcActivity {
     Gather(&'static [ChunkResource]),
     // TODO: Generalise to other entities? What kinds of animals?
     HuntAnimals,
-    Dance,
+    Dance(Option<Dir>),
+    Cheer(Option<Dir>),
+    Sit(Option<Dir>, Option<Vec3<i32>>),
 }
 
 /// Represents event-like actions that rtsim NPCs can perform to interact with
@@ -308,6 +309,8 @@ pub enum Role {
     Wild,
     #[serde(rename = "2")]
     Monster,
+    #[serde(rename = "2")]
+    Vehicle,
 }
 
 // Note: the `serde(name = "...")` is to minimise the length of field

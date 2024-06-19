@@ -48,9 +48,12 @@ make_case_elim!(
         Boreal = 11,
         Bushly = 12,
         Irrwurz = 13,
-        Clockwork = 14,
+        IronDwarf = 14,
         Flamekeeper = 15,
-        Lemoncio = 16,
+        ShamanicSpirit = 16,
+        Jiangshi = 17,
+        TreasureEgg = 18,
+        Lemoncio = 19,
     }
 );
 
@@ -73,8 +76,11 @@ pub struct AllSpecies<SpeciesMeta> {
     pub boreal: SpeciesMeta,
     pub bushly: SpeciesMeta,
     pub irrwurz: SpeciesMeta,
-    pub clockwork: SpeciesMeta,
+    pub iron_dwarf: SpeciesMeta,
     pub flamekeeper: SpeciesMeta,
+    pub shamanic_spirit: SpeciesMeta,
+    pub jiangshi: SpeciesMeta,
+    pub treasure_egg: SpeciesMeta,
     pub lemoncio: SpeciesMeta,
 }
 
@@ -98,14 +104,17 @@ impl<'a, SpeciesMeta> core::ops::Index<&'a Species> for AllSpecies<SpeciesMeta> 
             Species::Boreal => &self.boreal,
             Species::Bushly => &self.bushly,
             Species::Irrwurz => &self.irrwurz,
-            Species::Clockwork => &self.clockwork,
+            Species::IronDwarf => &self.iron_dwarf,
             Species::Flamekeeper => &self.flamekeeper,
+            Species::ShamanicSpirit => &self.shamanic_spirit,
+            Species::Jiangshi => &self.jiangshi,
+            Species::TreasureEgg => &self.treasure_egg,
             Species::Lemoncio => &self.lemoncio,
         }
     }
 }
 
-pub const ALL_SPECIES: [Species; 17] = [
+pub const ALL_SPECIES: [Species; 20] = [
     Species::Gnome,
     Species::Sahagin,
     Species::Adlet,
@@ -120,8 +129,11 @@ pub const ALL_SPECIES: [Species; 17] = [
     Species::Boreal,
     Species::Bushly,
     Species::Irrwurz,
-    Species::Clockwork,
+    Species::IronDwarf,
     Species::Flamekeeper,
+    Species::ShamanicSpirit,
+    Species::Jiangshi,
+    Species::TreasureEgg,
     Species::Lemoncio,
 ];
 

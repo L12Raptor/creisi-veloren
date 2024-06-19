@@ -339,7 +339,7 @@ impl Protocols {
                         // a reverse DNS lookup
                         let connect_addr = ConnectAddr::Quic(
                             addr,
-                            quinn::ClientConfig::with_native_roots(),
+                            quinn::ClientConfig::with_platform_verifier(),
                             "TODO_remote_hostname".to_string(),
                         );
                         let _ = c2s_protocol_s.send((quic, connect_addr, cid));
@@ -500,7 +500,7 @@ pub enum ProtocolsError {
 }
 
 ///////////////////////////////////////
-//// TCP
+// TCP
 #[derive(Debug)]
 pub struct TcpDrain {
     half: OwnedWriteHalf,
@@ -546,7 +546,7 @@ impl UnreliableSink for TcpSink {
 }
 
 ///////////////////////////////////////
-//// MPSC
+// MPSC
 #[derive(Debug)]
 pub struct MpscDrain {
     sender: mpsc::Sender<MpscMsg>,
@@ -584,7 +584,7 @@ impl UnreliableSink for MpscSink {
 }
 
 ///////////////////////////////////////
-//// QUIC
+// QUIC
 #[cfg(feature = "quic")]
 type QuicStream = (
     BytesMut,

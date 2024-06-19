@@ -121,6 +121,48 @@ impl Animation for SummonAnimation {
                 next.control.orientation = Quaternion::rotation_x(-0.2 + move1 * 1.0)
                     * Quaternion::rotation_y(-0.1 + move2 * -0.8);
             },
+            Some(ToolKind::Sceptre) => {
+                next.shoulder_l.position = Vec3::new(
+                    -s_a.shoulder.0,
+                    s_a.shoulder.1,
+                    s_a.shoulder.2 - foothorir * 1.0,
+                );
+                next.shoulder_l.orientation = Quaternion::rotation_x(
+                    move1 * 0.8 + 0.6 * speednorm + (footrotr * -0.2) * speednorm,
+                );
+
+                next.shoulder_r.position = Vec3::new(
+                    s_a.shoulder.0,
+                    s_a.shoulder.1,
+                    s_a.shoulder.2 - foothoril * 1.0,
+                );
+                next.shoulder_r.orientation = Quaternion::rotation_x(
+                    move1 * 0.8 + 0.6 * speednorm + (footrotl * -0.2) * speednorm,
+                );
+                next.head.orientation = Quaternion::rotation_x(0.0);
+                next.control_l.position = Vec3::new(-1.0, 3.0, 12.0);
+                next.control_r.position = Vec3::new(
+                    1.0 + move1 * 3.0 + move2 * 20.0,
+                    2.0 + move1 * -5.0 + move2 * 5.0,
+                    2.0 + move1 * 15.0 + move2 * 0.0,
+                );
+
+                next.control.position = Vec3::new(
+                    -3.0 + move2 * 9.0,
+                    3.0 + s_a.grip.0 / 1.2 + move1 * 8.0 + move2 * 2.0,
+                    -11.0 + -s_a.grip.0 / 2.0 + move1 * 8.0 + move2 * -12.0,
+                );
+
+                next.control_l.orientation = Quaternion::rotation_x(PI / 2.0 - move1 * 0.2)
+                    * Quaternion::rotation_y(-0.5 + move2 * -0.4)
+                    * Quaternion::rotation_z(move1 * 0.0);
+                next.control_r.orientation = Quaternion::rotation_x(PI / 2.5 + move1 * 0.2)
+                    * Quaternion::rotation_y(0.5 + move1 * 0.5 + move2 * 0.0)
+                    * Quaternion::rotation_z(move1 * 0.5 + move2 * 0.8);
+
+                next.control.orientation = Quaternion::rotation_x(-0.2 + move1 * 1.0)
+                    * Quaternion::rotation_y(-0.1 + move2 * -0.8);
+            },
             Some(ToolKind::Natural) => match ability_id {
                 Some("common.abilities.custom.tidalwarrior.totem") => {
                     let (move1base, move2base, move3) = match stage_section {
@@ -208,6 +250,36 @@ impl Animation for SummonAnimation {
                     next.main.position = Vec3::new(14.0, 2.0, -4.0);
                     next.main.orientation =
                         Quaternion::rotation_x(PI / 3.0) * Quaternion::rotation_z(0.35);
+                },
+                _ => {},
+            },
+            Some(ToolKind::Hammer) => match ability_id {
+                Some("common.abilities.custom.dwarves.forgemaster.summon_iron_dwarf") => {
+                    next.main.position = Vec3::new(-10.0, -8.0, 12.0);
+                    next.main.orientation =
+                        Quaternion::rotation_y(2.5) * Quaternion::rotation_z(PI / 2.0);
+                    next.hand_l.position = Vec3::new(
+                        -s_a.hand.0 - 3.0 * move1,
+                        s_a.hand.1 + 4.0,
+                        s_a.hand.2 + 6.0 * move1,
+                    );
+                    next.hand_r.position = Vec3::new(
+                        s_a.hand.0 + 3.0 * move1,
+                        s_a.hand.1 + 4.0,
+                        s_a.hand.2 + 6.0 * move1,
+                    );
+                    next.shoulder_l.orientation =
+                        Quaternion::rotation_x(move1 * 1.4) * Quaternion::rotation_y(move1 * 0.5);
+                    next.shoulder_r.orientation =
+                        Quaternion::rotation_x(move1 * 1.4) * Quaternion::rotation_y(move1 * -0.5);
+                    next.head.orientation = Quaternion::rotation_x(move1 * 0.25 + move2 * -0.25)
+                        * Quaternion::rotation_z(move1 * 0.25);
+                    next.hand_l.orientation =
+                        Quaternion::rotation_x(move1 * 1.0) * Quaternion::rotation_y(move1 * 1.4);
+                    next.hand_r.orientation =
+                        Quaternion::rotation_x(move1 * 1.0) * Quaternion::rotation_y(move1 * -1.4);
+                    next.foot_l.orientation = Quaternion::rotation_x(move1 * 0.3 + move2 * -0.3);
+                    next.foot_r.orientation = Quaternion::rotation_x(move1 * 0.3 + move2 * -0.3);
                 },
                 _ => {},
             },

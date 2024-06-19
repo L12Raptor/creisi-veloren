@@ -1,37 +1,5 @@
 npc-speech-villager =
-    .a0 = ¿A que hace un buen día?
-    .a1 = ¿Cómo estás hoy?
-    .a2 = ¡Que tengas un buen día!
-    .a3 = Me pregunto qué piensa el catoblepas cuando come hierba.
-    .a4 = ¿Qué piensas de este tiempo?
-    .a5 = De solo pensar en esas mazmorras me asusto. Espero que alguien pueda poner algo de orden ahí dentro.
-    .a6 = Me gustaría hacer espeleología en una cueva cuando sea más fuerte.
-    .a7 = ¿Has visto a mi gato?
-    .a8 = ¿Has oído hablar de los feroces tiburones de tierra? He oído que viven en los desiertos.
-    .a9 = Dicen que en las cuevas se pueden encontrar gemas brillantes de todo tipo.
-    .a10 = ¡Sólo me interesan las galletas con queso!
-    .a11 = ¿No vas a entrar? ¡Estábamos a punto de comer queso!
-    .a12 = Dicen que las setas son buenas para tu salud. Yo nunca las he probado.
-    .a13 = ¡No te olvides de las galletas!
-    .a14 = Adoro el queso enano. Me encantaría aprender a hacerlo.
-    .a15 = Me pregunto qué habrá al otro lado de las montañas.
-    .a16 = Espero poder hacer mi propia paravela algún día.
-    .a17 = ¿Te gustaría ver mi jardín? Bueno, tal vez en otro momento.
-    .a18 = ¡Hoy hace un día precioso para pasear por el bosque!
-    .a19 = ¿Ser o no ser? ¡Pues yo quiero ser granjero!
-    .a20 = ¿No crees que nuestra aldea es la mejor?
-    .a21 = ¿Qué crees que hace brillar a los Restos Luminosos?
-    .a22 = ¡Ya va siendo hora del segundo desayuno!
-    .a23 = ¿Has cogido alguna vez una luciérnaga?
-    .a24 = No puedo entender de dónde vienen esos Sauroks.
-    .a25 = Me gustaría que alguien mantuviera a los lobos alejados de la aldea.
-    .a26 = Anoche tuve un sueño maravilloso sobre el queso. Me pregunto qué significará.
-    .a27 = He dejado algo de queso con mi hermano. Ahora no sé si existe o no. Es el queso de Schrödinger.
-    .a28 = He dejado algo de queso con mi hermana. Ahora no sé si existe o no. Es el queso de Schrödinger.
-    .a29 = Alguien debería de hacer algo con esos cultistas. Preferiblemente alguien que no sea yo.
-    .a30 = Espero que llueva pronto. Sería bueno para los cultivos.
-    .a31 = ¡Me encanta la miel! Y odio las abejas...
-    .a32 = ¡Quiero ver el mundo algún día! Tiene que haber algo más en esta vida que esta aldea.
+    .a0 = Me encanta el queso.
 npc-speech-villager_decline_trade =
     .a0 = Lo siento, no tengo nada para comerciar.
     .a1 = ¿Comerciar contigo? Como si tuviera algo que pudiera interesarte.
@@ -39,14 +7,11 @@ npc-speech-villager_decline_trade =
 npc-speech-merchant_advertisement =
     .a0 = ¿Te interesaría comerciar conmigo?
     .a1 = ¿Querrías comerciar conmigo?
-    .a2 = Tengo un montón de artículos. ¿Te gustaría echar un ojo?
+    .a2 = Tengo un montón de artículos. ¿Te gustaría echarles un ojo?
 npc-speech-merchant_busy =
-    .a0 = Hey, espera tu turno.
-    .a1 = Ten paciencia, solo soy una persona.
-    .a2 = ¿No ves que estoy comerciando con alguien?
-    .a3 = Un momento, déjame acabar.
-    .a4 = Nada de colarse.
-    .a5 = Estoy ocupado, vuelve más tarde.
+    .a0 = Ten paciencia, solo soy una persona.
+    .a1 = Un momento, déjame acabar.
+    .a2 = Estoy ocupado, vuelve más tarde.
 npc-speech-merchant_trade_successful =
     .a0 = ¡Gracias por comerciar conmigo!
     .a1 = ¡Gracias!
@@ -54,24 +19,24 @@ npc-speech-merchant_trade_declined =
     .a0 = Quizás en otra ocasión, ¡ten un buen día!
     .a1 = Vaya, ¡supongo que en otra ocasión!
 npc-speech-villager_cultist_alarm =
-    .a0 = ¡Cuidado! ¡Hay cultistas sueltos!
-    .a1 = ¡A las armas! ¡Los cultistas nos atacan!
-    .a2 = ¡¿Cómo se atreven los cultistas a atacar esta aldea?!
-    .a3 = ¡Muerte a los cultistas!
-    .a4 = ¡Aquí no toleramos a los cultistas!
-    .a5 = ¡Cultista, asesino!
-    .a6 = ¡Prueba el filo de mi espada, sucio cultista!
-    .a7 = ¡Nada podrá limpiar la sangre de tus manos, cultista!
-    .a8 = ¡Por las barbas del Minotauro! ¡Un cultista entre nosotros!
-    .a9 = ¡Esos malvados cultistas serán aniquilados!
-    .a10 = ¡Este cultista es mío!
-    .a11 = ¡Prepárate para conocer a tu creador, sucio cultista!
-    .a12 = ¡Veo un cultista! ¡Atrapadlo!
-    .a13 = ¡Veo un cultista! ¡Atacadlo!
-    .a14 = ¡Veo un cultista! ¡No dejéis que escape!
-    .a15 = ¿Le gustaría al más honorable de los cultistas un poco de MUERTE?
-    .a16 = ¡Nunca perdonamos! ¡Nunca olvidamos! ¡Muere, cultista!
-    .a17 = ¡Muere, cultista!
+    .a0 = ¡Cuidado! ¡Hay sectarios sueltos!
+    .a1 = ¡A las armas! ¡Los sectarios nos atacan!
+    .a2 = ¡¿Cómo se atreven los sectarios a atacar esta aldea?!
+    .a3 = ¡Muerte a los sectarios!
+    .a4 = ¡Aquí no toleramos a los sectarios!
+    .a5 = ¡Sectario asesino!
+    .a6 = ¡Prueba el filo de mi espada, sucio sectario!
+    .a7 = ¡Nada podrá limpiar la sangre de tus manos, sectario!
+    .a8 = ¡Por las barbas del Minotauro! ¡Un sectario entre nosotros!
+    .a9 = ¡Esos malvados sectarios serán aniquilados!
+    .a10 = ¡Este sectario es mío!
+    .a11 = ¡Prepárate para conocer a tu creador, sucio sectario!
+    .a12 = ¡Veo un sectario! ¡Atrapadlo!
+    .a13 = ¡Veo un sectario! ¡Atacadlo!
+    .a14 = ¡Veo un sectario! ¡No dejéis que escape!
+    .a15 = ¿Le gustaría al más honorable de los sectarios un poco de MUERTE?
+    .a16 = ¡Nunca perdonamos! ¡Nunca olvidamos! ¡Muere, sectario!
+    .a17 = ¡Muere, sectario!
     .a18 = ¡Tu reinado de terror llegará a su fin!
     .a19 = ¡Pagarás por todo lo que has hecho!
     .a20 = Por aquí no tratamos con amabilidad a los de tu especie.
@@ -189,7 +154,6 @@ npc-speech-villager_adventurous =
     .a1 = Me gustaría ir a explorar una cueva cuando me haya hecho más fuerte.
 npc-speech-villager_closed =
     .a0 = No eres de por aquí, ¿verdad?
-    .a1 = ¿No te parece que nuestra aldea es la mejor?
     .a2 = Dicen que las setas son beneficiosas para tu salud. Yo nunca me las como.
     .a3 = ¿Qué ser o no ser? Creo que me voy a hacer granjero.
 npc-speech-villager_conscientious =
@@ -272,7 +236,7 @@ npc-speech-day_time =
 npc-speech-start_hunting =
     .a0 = ¡Ha llegado el momento de ir de caza!
 npc-speech-guard_thought =
-    .a0 = Mi hermano está ahí fuera luchando contra orcos, ¿y a mí que me han asignado? De guardia...
+    .a0 = Mi hermano está ahí fuera luchando contra ogros, ¿y a mí que me han asignado? De guardia...
     .a1 = Me queda por hacer una última patrulla antes que pueda volver a casa.
     .a2 = No se me va a escapar ningún bandido.
 npc-speech-merchant_sell_undirected =
@@ -285,9 +249,10 @@ npc-speech-merchant_sell_directed =
     .a1 = ¿Tienes hambre? Aquí tengo algo de queso que puedes comprar.
     .a2 = ¡Tienes pinta de necesitar una nueva armadura!
 npc-speech-tell_site =
-    .a0 = ¿Has visitado { $site } alguna vez? Está al { $dir } de aquí!
-    .a1 = Te recomiendo que visites { $site } si alguna vez te viene bien.
+    .a0 = { $site } está hacia el { $dir }. ¿Lo has visitado alguna vez?
+    .a1 = Te recomiendo que alguna vez visites { $site }.
     .a2 = Si te diriges hacia el { $dir } de aquí, puedes llegar a { $site }.
+    .a3 = Hacia el { $dir } te encontrarás con { $site }.
 npc-speech-witness_murder =
     .a0 = ¡Asesino!
     .a1 = ¿Cómo pudiste?
@@ -308,3 +273,42 @@ npc-speech-dir_south = sur
 npc-speech-dir_south_west = suroeste
 npc-speech-dir_west = oeste
 npc-speech-dir_north_west = noroeste
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_very_far = muy lejos
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_far = lejos
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_ahead = algo lejos
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_near = por aquí cerca
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_near_to = muy cerca
+# NPC proposals
+npc-speech-arena = ¡Vamos a sentarnos allí!
+# NPC reactions
+npc-speech-welcome-aboard =
+    .a0 = ¡Bienvenido a bordo!
+    .a1 = Puedo ver tu ticket... ¡era broma! Es gratis.
+    .a2 = ¡Que tenga un buen viaje!
+# NPC monster hints
+# Available variables:
+# - $dir references npc-speech-dir-* variables below
+# - $dist references npc-speech-dist-* variables below
+# - $body references body-npc-speech-* variables in `body` component
+npc-speech-tell_monster =
+    .a0 = Dicen que hay { $body } hacia el { $dir }, { $dist }...
+    .a1 = ¿Te crees una persona dura de pelar? Hay { $body } hacia el { $dir }.
+# NPC site hints
+# Available variables:
+# - $dir references npc-speech-dir-* variables below
+# - $dist references npc-speech-dist-* variables below
+# - $site represents hard-coded site in the world
+npc-speech-site =
+    .a0 = ¿No te parece que nuestra aldea es la mejor?
+    .a1 = ¡Bienvenido a { $site }!
+    .a2 = { $site } es una buena aldea en la que vivir.
+# NPC reactions
+npc-speech-night =
+    .a0 = ¡Las linternas son útiles para viajar cuando es de noche!
+    .a1 = Espero que estemos solos en esta oscuridad...
+    .a2 = ¡Bu!

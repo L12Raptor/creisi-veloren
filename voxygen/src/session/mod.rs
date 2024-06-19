@@ -7,7 +7,7 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, result::Result, time::Dur
 #[cfg(not(target_os = "macos"))]
 use mumble_link::SharedLink;
 use ordered_float::OrderedFloat;
-use specs::{Join, WorldExt};
+use specs::{Join, LendJoin, WorldExt};
 use tracing::{error, info};
 use vek::*;
 
@@ -19,15 +19,16 @@ use common::{
         inventory::slot::{EquipSlot, Slot},
         invite::InviteKind,
         item::{tool::ToolKind, ItemDesc},
-        CharacterActivity, ChatType, Content, InputKind, InventoryUpdateEvent, Pos, PresenceKind,
-        Stats, UtteranceKind, Vel,
+        CharacterActivity, ChatType, Content, Fluid, InputKind, InventoryUpdateEvent, Pos,
+        PresenceKind, Stats, UtteranceKind, Vel,
     },
     consts::MAX_MOUNT_RANGE,
     event::UpdateCharacterMetadata,
     link::Is,
     mounting::{Mount, VolumePos},
     outcome::Outcome,
-    recipe,
+    recipe::{self, RecipeBookManifest},
+    states::utils::can_perform_pet,
     terrain::{Block, BlockKind},
     trade::TradeResult,
     util::{Dir, Plane},
@@ -50,6 +51,7 @@ use crate::{
     menu::char_selection::CharSelectionState,
     render::{Drawer, GlobalsBindGroup},
     scene::{camera, CameraMode, DebugShapeId, Scene, SceneData},
+    session::target::ray_entities,
     settings::Settings,
     window::{AnalogGameInput, Event},
     Direction, GlobalState, PlayState, PlayStateResult,
@@ -88,9 +90,17 @@ enum TickAction {
     Disconnect,
 }
 
+#[derive(Default)]
+pub struct PlayerDebugLines {
+    pub chunk_normal: Option<DebugShapeId>,
+    pub wind: Option<DebugShapeId>,
+    pub fluid_vel: Option<DebugShapeId>,
+    pub vel: Option<DebugShapeId>,
+}
+
 pub struct SessionState {
     scene: Scene,
-    client: Rc<RefCell<Client>>,
+    pub(crate) client: Rc<RefCell<Client>>,
     metadata: UpdateCharacterMetadata,
     hud: Hud,
     key_state: KeyState,
@@ -101,16 +111,18 @@ pub struct SessionState {
     walk_right_dir: Vec2<f32>,
     free_look: bool,
     auto_walk: bool,
+    walking_speed: bool,
     camera_clamp: bool,
     zoom_lock: bool,
     is_aiming: bool,
-    target_entity: Option<specs::Entity>,
-    selected_entity: Option<(specs::Entity, std::time::Instant)>,
-    viewpoint_entity: Option<specs::Entity>,
+    pub(crate) target_entity: Option<specs::Entity>,
+    pub(crate) selected_entity: Option<(specs::Entity, std::time::Instant)>,
+    pub(crate) viewpoint_entity: Option<specs::Entity>,
     interactable: Option<Interactable>,
     #[cfg(not(target_os = "macos"))]
     mumble_link: SharedLink,
     hitboxes: HashMap<specs::Entity, DebugShapeId>,
+    lines: PlayerDebugLines,
     tracks: HashMap<Vec2<i32>, Vec<DebugShapeId>>,
 }
 
@@ -171,6 +183,7 @@ impl SessionState {
             walk_right_dir,
             free_look: false,
             auto_walk: false,
+            walking_speed: false,
             camera_clamp: false,
             zoom_lock: false,
             is_aiming: false,
@@ -183,6 +196,7 @@ impl SessionState {
             hitboxes: HashMap::new(),
             metadata,
             tracks: HashMap::new(),
+            lines: Default::default(),
         }
     }
 
@@ -234,6 +248,7 @@ impl SessionState {
             &mut self.hitboxes,
             &mut self.tracks,
         );
+        self.scene.maintain_debug_vectors(&client, &mut self.lines);
 
         // All this camera code is just to determine if it's underwater for the sfx
         // filter
@@ -270,16 +285,16 @@ impl SessionState {
             self.mumble_link.update(player_pos, player_pos);
         }
 
-        for event in client.tick(self.inputs.clone(), dt, crate::ecs::sys::add_local_systems)? {
+        for event in client.tick(self.inputs.clone(), dt)? {
             match event {
                 client::Event::Chat(m) => {
                     self.hud.new_message(m);
                 },
-                client::Event::GroupInventoryUpdate(item, taker, uid) => {
+                client::Event::GroupInventoryUpdate(item, uid) => {
                     self.hud.new_loot_message(LootMessage {
                         amount: item.amount(),
                         item,
-                        taken_by: client.personalize_alias(uid, taker),
+                        taken_by: uid,
                     });
                 },
                 client::Event::InviteComplete {
@@ -377,7 +392,7 @@ impl SessionState {
                                 self.hud.new_loot_message(LootMessage {
                                     amount: item.amount(),
                                     item,
-                                    taken_by: "You".to_string(),
+                                    taken_by: client.uid().expect("Client doesn't have a Uid!!!"),
                                 });
                             },
                             _ => {},
@@ -410,7 +425,7 @@ impl SessionState {
                 client::Event::CharacterCreated(_) => {},
                 client::Event::CharacterEdited(_) => {},
                 client::Event::CharacterError(_) => {},
-                client::Event::CharacterJoined(_) => {},
+                client::Event::CharacterJoined(_) => self.scene.music_mgr.reset_track(),
                 client::Event::MapMarker(event) => {
                     self.hud.show.update_map_markers(event);
                 },
@@ -432,6 +447,9 @@ impl SessionState {
                 },
                 client::Event::SpectatePosition(pos) => {
                     self.scene.camera_mut().force_focus_pos(pos);
+                },
+                client::Event::PluginDataReceived(data) => {
+                    tracing::warn!("Received plugin data at wrong time {}", data.len());
                 },
             }
         }
@@ -579,7 +597,7 @@ impl PlayState for SessionState {
                     .state()
                     .read_storage::<comp::CharacterState>()
                     .get(player_entity)
-                    .map(|cs| cs.is_aimed())
+                    .map(|cs| cs.is_wield())
                     .unwrap_or(false);
 
                 (
@@ -599,15 +617,16 @@ impl PlayState for SessionState {
                 .get(player_entity)
                 .map_or_else(|| false, |cb| cb.enabled);
 
-            let is_mining = client
-                .inventories()
-                .get(player_entity)
-                .and_then(|inv| inv.equipped(EquipSlot::ActiveMainhand))
-                .and_then(|item| item.tool_info())
-                .map_or(false, |tool_kind| {
-                    matches!(tool_kind, ToolKind::Pick | ToolKind::Shovel)
-                })
-                && client.is_wielding() == Some(true);
+            let active_mine_tool: Option<ToolKind> = if client.is_wielding() == Some(true) {
+                client
+                    .inventories()
+                    .get(player_entity)
+                    .and_then(|inv| inv.equipped(EquipSlot::ActiveMainhand))
+                    .and_then(|item| item.tool_info())
+                    .filter(|tool_kind| matches!(tool_kind, ToolKind::Pick | ToolKind::Shovel))
+            } else {
+                None
+            };
 
             // Check to see whether we're aiming at anything
             let (build_target, collect_target, entity_target, mine_target, terrain_target) =
@@ -616,7 +635,7 @@ impl PlayState for SessionState {
                     cam_pos,
                     cam_dir,
                     can_build,
-                    is_mining,
+                    active_mine_tool,
                     self.viewpoint_entity().0,
                 );
 
@@ -649,17 +668,21 @@ impl PlayState for SessionState {
 
             // Nearest block to consider with GameInput primary or secondary key.
             let nearest_block_dist = find_shortest_distance(&[
-                mine_target.filter(|_| is_mining).map(|t| t.distance),
+                mine_target
+                    .filter(|_| active_mine_tool.is_some())
+                    .map(|t| t.distance),
                 build_target.filter(|_| can_build).map(|t| t.distance),
             ]);
             // Nearest block to be highlighted in the scene (self.scene.set_select_pos).
             let nearest_scene_dist = find_shortest_distance(&[
                 nearest_block_dist,
-                collect_target.filter(|_| !is_mining).map(|t| t.distance),
+                collect_target
+                    .filter(|_| active_mine_tool.is_none())
+                    .map(|t| t.distance),
             ]);
             // Set break_block_pos only if mining is closest.
-            self.inputs.break_block_pos = if let Some(mt) =
-                mine_target.filter(|mt| is_mining && nearest_scene_dist == Some(mt.distance))
+            self.inputs.break_block_pos = if let Some(mt) = mine_target
+                .filter(|mt| active_mine_tool.is_some() && nearest_scene_dist == Some(mt.distance))
             {
                 self.scene.set_select_pos(Some(mt.position_int()));
                 Some(mt.position)
@@ -710,6 +733,7 @@ impl PlayState for SessionState {
                         }
                         match input {
                             GameInput::Primary => {
+                                self.walking_speed = false;
                                 let mut client = self.client.borrow_mut();
                                 // Mine and build targets can be the same block. make building
                                 // take precedence.
@@ -728,6 +752,7 @@ impl PlayState for SessionState {
                                 }
                             },
                             GameInput::Secondary => {
+                                self.walking_speed = false;
                                 let mut client = self.client.borrow_mut();
                                 if let Some(build_target) = build_target.filter(|bt| {
                                     state && can_build && nearest_block_dist == Some(bt.distance)
@@ -747,6 +772,7 @@ impl PlayState for SessionState {
                                 }
                             },
                             GameInput::Block => {
+                                self.walking_speed = false;
                                 self.client.borrow_mut().handle_input(
                                     InputKind::Block,
                                     state,
@@ -755,6 +781,7 @@ impl PlayState for SessionState {
                                 );
                             },
                             GameInput::Roll => {
+                                self.walking_speed = false;
                                 let mut client = self.client.borrow_mut();
                                 if can_build {
                                     if state {
@@ -779,12 +806,14 @@ impl PlayState for SessionState {
                                 }
                             },
                             GameInput::Respawn => {
+                                self.walking_speed = false;
                                 self.stop_auto_walk();
                                 if state {
                                     self.client.borrow_mut().respawn();
                                 }
                             },
                             GameInput::Jump => {
+                                self.walking_speed = false;
                                 self.client.borrow_mut().handle_input(
                                     InputKind::Jump,
                                     state,
@@ -847,6 +876,7 @@ impl PlayState for SessionState {
                                 self.key_state.right = state
                             },
                             GameInput::Glide => {
+                                self.walking_speed = false;
                                 let is_trading = self.client.borrow().is_trading();
                                 if state && !is_trading {
                                     if global_state.settings.gameplay.stop_auto_walk_on_input {
@@ -877,7 +907,11 @@ impl PlayState for SessionState {
                             },
                             GameInput::ToggleWield => {
                                 if state {
-                                    self.client.borrow_mut().toggle_wield();
+                                    let mut client = self.client.borrow_mut();
+                                    if client.is_wielding().is_some_and(|b| !b) {
+                                        self.walking_speed = false;
+                                    }
+                                    client.toggle_wield();
                                 }
                             },
                             GameInput::SwapLoadout => {
@@ -971,8 +1005,15 @@ impl PlayState for SessionState {
                                             ))
                                         });
                                 }
-                                if let Some(pet_entity) = close_pet && client.state().read_storage::<Is<Mount>>().get(pet_entity).is_none() {
-                                    let is_staying = client.state()
+                                if let Some(pet_entity) = close_pet
+                                    && client
+                                        .state()
+                                        .read_storage::<Is<Mount>>()
+                                        .get(pet_entity)
+                                        .is_none()
+                                {
+                                    let is_staying = client
+                                        .state()
                                         .read_component_copied::<CharacterActivity>(pet_entity)
                                         .map_or(false, |activity| activity.is_pet_staying);
                                     client.set_pet_stay(pet_entity, !is_staying);
@@ -1024,6 +1065,9 @@ impl PlayState for SessionState {
                                                         // currently supported
                                                         common::mounting::Volume::Entity(_) => {},
                                                     },
+                                                    BlockInteraction::LightToggle(enable) => {
+                                                        client.toggle_sprite_light(*pos, *enable);
+                                                    },
                                                 }
                                             },
                                             Interactable::Entity(entity) => {
@@ -1031,10 +1075,26 @@ impl PlayState for SessionState {
                                                     .state()
                                                     .read_component_cloned::<comp::Body>(*entity);
 
+                                                let pettable = client
+                                                    .state()
+                                                    .read_component_cloned::<comp::Pos>(*entity)
+                                                    .zip(client.state().read_component_cloned::<comp::Alignment>(*entity))
+                                                    .zip(client.state().read_component_cloned::<comp::Pos>(client.entity()))
+                                                    .map_or(
+                                                        false,
+                                                        |((target_position, target_alignment), client_position)| {
+                                                            can_perform_pet(
+                                                                client_position,
+                                                                target_position,
+                                                                target_alignment,
+                                                            )
+                                                        },
+                                                    );
+
                                                 if client
                                                     .state()
                                                     .ecs()
-                                                    .read_storage::<comp::Item>()
+                                                    .read_storage::<comp::PickupItem>()
                                                     .get(*entity)
                                                     .is_some()
                                                 {
@@ -1054,6 +1114,8 @@ impl PlayState for SessionState {
                                                     .flatten()
                                                 {
                                                     client.activate_portal(portal_uid);
+                                                } else if pettable {
+                                                    client.do_pet(*entity);
                                                 } else {
                                                     client.npc_interact(*entity, Subject::Regular);
                                                 }
@@ -1195,6 +1257,11 @@ impl PlayState for SessionState {
                                 if self.viewpoint_entity.is_some() {
                                     self.viewpoint_entity = None;
                                     self.scene.camera_mut().set_mode(CameraMode::Freefly);
+                                    let mut ori = self.scene.camera().get_orientation();
+                                    // Remove any roll that could have possibly been set to the
+                                    // camera as a result of spectating.
+                                    ori.z = 0.0;
+                                    self.scene.camera_mut().set_orientation(ori);
                                 } else if let Some(interactable) = &self.interactable {
                                     if self.scene.camera().get_mode() == CameraMode::Freefly {
                                         match interactable {
@@ -1208,6 +1275,13 @@ impl PlayState for SessionState {
                                         }
                                     }
                                 }
+                            },
+                            GameInput::ToggleWalk if state => {
+                                global_state
+                                    .settings
+                                    .gameplay
+                                    .walking_speed_behavior
+                                    .update(state, &mut self.walking_speed, |_| {});
                             },
                             _ => {},
                         }
@@ -1279,33 +1353,12 @@ impl PlayState for SessionState {
                             .read_storage::<comp::PhysicsState>()
                             .get(entity)?
                             .in_fluid?;
-                        ecs.read_storage::<Vel>()
-                            .get(entity)
-                            .map(|vel| fluid.relative_flow(vel).0)
-                            .map(|rel_flow| {
-                                let is_wind_downwards =
-                                    rel_flow.dot(Vec3::unit_z()).is_sign_negative();
-                                if !self.free_look {
-                                    if is_wind_downwards {
-                                        self.scene.camera().forward_xy().into()
-                                    } else {
-                                        let windwards = rel_flow
-                                            * self
-                                                .scene
-                                                .camera()
-                                                .forward_xy()
-                                                .dot(rel_flow.xy())
-                                                .signum();
-                                        Plane::from(Dir::new(self.scene.camera().right()))
-                                            .projection(windwards)
-                                    }
-                                } else if is_wind_downwards {
-                                    Vec3::from(-rel_flow.xy())
-                                } else {
-                                    -rel_flow
-                                }
-                            })
-                            .and_then(Dir::from_unnormalized)
+                        let vel = *ecs.read_storage::<Vel>().get(entity)?;
+                        let free_look = self.free_look;
+                        let dir_forward_xy = self.scene.camera().forward_xy();
+                        let dir_right = self.scene.camera().right();
+
+                        auto_glide(fluid, vel, free_look, dir_forward_xy, dir_right)
                     })
                 {
                     self.key_state.auto_walk = false;
@@ -1316,8 +1369,88 @@ impl PlayState for SessionState {
                     if !self.free_look {
                         self.walk_forward_dir = self.scene.camera().forward_xy();
                         self.walk_right_dir = self.scene.camera().right_xy();
-                        self.inputs.look_dir =
-                            Dir::from_unnormalized(cam_dir + aim_dir_offset).unwrap();
+
+                        let client = self.client.borrow();
+
+                        let holding_ranged = client
+                            .inventories()
+                            .get(player_entity)
+                            .and_then(|inv| inv.equipped(EquipSlot::ActiveMainhand))
+                            .and_then(|item| item.tool_info())
+                            .is_some_and(|tool_kind| {
+                                matches!(
+                                    tool_kind,
+                                    ToolKind::Bow | ToolKind::Staff | ToolKind::Sceptre
+                                )
+                            });
+
+                        let dir = if is_aiming
+                            && holding_ranged
+                            && self.scene.camera().get_mode() == CameraMode::ThirdPerson
+                        {
+                            // Shoot ray from camera focus forwards and get the point it hits an
+                            // entity or terrain. The ray starts from the camera focus point
+                            // so that the player won't aim at things behind them, in front of the
+                            // camera.
+                            let ray_start = self.scene.camera().get_focus_pos();
+                            let entity_ray_end = ray_start + cam_dir * 1000.0;
+                            let terrain_ray_end = ray_start + cam_dir * 1000.0;
+
+                            let aim_point = {
+                                // Get the distance to nearest entity and terrain
+                                let entity_dist =
+                                    ray_entities(&client, ray_start, entity_ray_end, 1000.0).0;
+                                let terrain_ray_distance = client
+                                    .state()
+                                    .terrain()
+                                    .ray(ray_start, terrain_ray_end)
+                                    .max_iter(1000)
+                                    .until(Block::is_solid)
+                                    .cast()
+                                    .0;
+
+                                // Return the hit point of whichever was smaller
+                                ray_start + cam_dir * entity_dist.min(terrain_ray_distance)
+                            };
+
+                            // Get player orientation
+                            let ori = client
+                                .state()
+                                .read_storage::<comp::Ori>()
+                                .get(player_entity)
+                                .copied()
+                                .unwrap();
+                            // Get player scale
+                            let scale = client
+                                .state()
+                                .read_storage::<comp::Scale>()
+                                .get(player_entity)
+                                .copied()
+                                .unwrap_or(comp::Scale(1.0));
+                            // Get player body offsets
+                            let body = client
+                                .state()
+                                .read_storage::<comp::Body>()
+                                .get(player_entity)
+                                .copied()
+                                .unwrap();
+                            let body_offsets = body.projectile_offsets(ori.look_vec(), scale.0);
+
+                            // Get direction from player character to aim point
+                            let player_pos = client
+                                .state()
+                                .read_storage::<Pos>()
+                                .get(player_entity)
+                                .copied()
+                                .unwrap();
+
+                            drop(client);
+                            aim_point - (player_pos.0 + body_offsets)
+                        } else {
+                            cam_dir + aim_dir_offset
+                        };
+
+                        self.inputs.look_dir = Dir::from_unnormalized(dir).unwrap();
                     }
                 }
                 self.inputs.strafing = matches!(
@@ -1418,6 +1551,12 @@ impl PlayState for SessionState {
                 }
             }
 
+            if self.walking_speed {
+                self.key_state.speed_mul = global_state.settings.gameplay.walking_speed;
+            } else {
+                self.key_state.speed_mul = 1.0;
+            }
+
             // Recompute dependents just in case some input modified the camera
             self.scene
                 .camera_mut()
@@ -1429,18 +1568,30 @@ impl PlayState for SessionState {
             let debug_info = global_state.settings.interface.toggle_debug.then(|| {
                 let client = self.client.borrow();
                 let ecs = client.state().ecs();
-                let entity = client.entity();
-                let coordinates = ecs.read_storage::<Pos>().get(entity).cloned();
-                let velocity = ecs.read_storage::<Vel>().get(entity).cloned();
-                let ori = ecs.read_storage::<comp::Ori>().get(entity).cloned();
-                let look_dir = self.inputs.look_dir;
+                let client_entity = client.entity();
+                let coordinates = ecs.read_storage::<Pos>().get(viewpoint_entity).cloned();
+                let velocity = ecs.read_storage::<Vel>().get(viewpoint_entity).cloned();
+                let ori = ecs
+                    .read_storage::<comp::Ori>()
+                    .get(viewpoint_entity)
+                    .cloned();
+                // NOTE: at the time of writing, it will always output default
+                // look_dir in Specate mode, because Controller isn't synced
+                let look_dir = if viewpoint_entity == client_entity {
+                    self.inputs.look_dir
+                } else {
+                    ecs.read_storage::<comp::Controller>()
+                        .get(viewpoint_entity)
+                        .map(|c| c.inputs.look_dir)
+                        .unwrap_or_default()
+                };
                 let in_fluid = ecs
                     .read_storage::<comp::PhysicsState>()
-                    .get(entity)
+                    .get(viewpoint_entity)
                     .and_then(|state| state.in_fluid);
                 let character_state = ecs
                     .read_storage::<comp::CharacterState>()
-                    .get(entity)
+                    .get(viewpoint_entity)
                     .cloned();
 
                 DebugInfo {
@@ -1462,8 +1613,8 @@ impl PlayState for SessionState {
                     num_particles: self.scene.particle_mgr().particle_count() as u32,
                     num_particles_visible: self.scene.particle_mgr().particle_count_visible()
                         as u32,
-                    current_track: self.scene.music_mgr().current_track.clone(),
-                    current_artist: self.scene.music_mgr().current_artist.clone(),
+                    current_track: self.scene.music_mgr().current_track(),
+                    current_artist: self.scene.music_mgr().current_artist(),
                 }
             });
 
@@ -1476,7 +1627,7 @@ impl PlayState for SessionState {
                 global_state.clock.get_stable_dt(),
                 HudInfo {
                     is_aiming,
-                    is_mining,
+                    active_mine_tool,
                     is_first_person: matches!(
                         self.scene.camera().get_mode(),
                         camera::CameraMode::FirstPerson
@@ -1525,8 +1676,7 @@ impl PlayState for SessionState {
                         self.client.borrow_mut().send_chat(msg);
                     },
                     HudEvent::SendCommand(name, args) => {
-                        match run_command(&mut self.client.borrow_mut(), global_state, &name, args)
-                        {
+                        match run_command(self, global_state, &name, args) {
                             Ok(Some(info)) => {
                                 // TODO: Localise
                                 self.hud
@@ -1586,12 +1736,14 @@ impl PlayState for SessionState {
                                         let slot_deficit = inventory.free_after_equip(inv_slot);
                                         if slot_deficit < 0 {
                                             self.hud.set_prompt_dialog(PromptDialogSettings::new(
-                                                format!(
-                                                    "Equipping this item will result in \
-                                                     insufficient inventory space to hold the \
-                                                     items in your inventory and {} items will \
-                                                     drop on the floor. Do you wish to continue?",
-                                                    slot_deficit.abs()
+                                                global_state.i18n.read().get_content(
+                                                    &Content::localized_with_args(
+                                                        "hud-bag-use_slot_equip_drop_items",
+                                                        [(
+                                                            "slot_deficit",
+                                                            slot_deficit.unsigned_abs() as u64,
+                                                        )],
+                                                    ),
                                                 ),
                                                 HudEvent::UseSlot {
                                                     slot,
@@ -1611,29 +1763,30 @@ impl PlayState for SessionState {
                                             let slot_deficit =
                                                 inventory.free_after_unequip(equip_slot);
                                             if slot_deficit < 0 {
-                                                self.hud.set_prompt_dialog(
-                                                    PromptDialogSettings::new(
-                                                        format!(
-                                                            "Unequipping this item  will result \
-                                                             in insufficient inventory space to \
-                                                             hold the items in your inventory and \
-                                                             {} items will drop on the floor. Do \
-                                                             you wish to continue?",
-                                                            slot_deficit.abs()
+                                                self.hud
+                                                    .set_prompt_dialog(PromptDialogSettings::new(
+                                                    global_state.i18n.read().get_content(
+                                                        &Content::localized_with_args(
+                                                            "hud-bag-use_slot_unequip_drop_items",
+                                                            [(
+                                                                "slot_deficit",
+                                                                slot_deficit.unsigned_abs() as u64,
+                                                            )],
                                                         ),
-                                                        HudEvent::UseSlot {
-                                                            slot,
-                                                            bypass_dialog: true,
-                                                        },
-                                                        None,
                                                     ),
-                                                );
+                                                    HudEvent::UseSlot {
+                                                        slot,
+                                                        bypass_dialog: true,
+                                                    },
+                                                    None,
+                                                ));
                                                 move_allowed = false;
                                             }
                                         } else {
                                             move_allowed = false;
                                         }
                                     },
+                                    Slot::Overflow(_) => {},
                                 }
                             };
                         }
@@ -1671,10 +1824,15 @@ impl PlayState for SessionState {
                                             if slot_deficit < 0 {
                                                 self.hud.set_prompt_dialog(
                                                     PromptDialogSettings::new(
-                                                        format!(
-                                                            "This will result in dropping {} \
-                                                             item(s) on the ground. Are you sure?",
-                                                            slot_deficit.abs()
+                                                        global_state.i18n.read().get_content(
+                                                            &Content::localized_with_args(
+                                                                "hud-bag-swap_slots_drop_items",
+                                                                [(
+                                                                    "slot_deficit",
+                                                                    slot_deficit.unsigned_abs()
+                                                                        as u64,
+                                                                )],
+                                                            ),
                                                         ),
                                                         HudEvent::SwapSlots {
                                                             slot_a,
@@ -1723,21 +1881,24 @@ impl PlayState for SessionState {
                                             let slot_deficit =
                                                 inventory.free_after_swap(equip_slot, inv_slot);
                                             if slot_deficit < 0 {
-                                                self.hud.set_prompt_dialog(
-                                                    PromptDialogSettings::new(
-                                                        format!(
-                                                            "This will result in dropping {} \
-                                                             item(s) on the ground. Are you sure?",
-                                                            slot_deficit.abs()
+                                                self.hud
+                                                    .set_prompt_dialog(PromptDialogSettings::new(
+                                                    global_state.i18n.read().get_content(
+                                                        &Content::localized_with_args(
+                                                            "hud-bag-split_swap_slots_drop_items",
+                                                            [(
+                                                                "slot_deficit",
+                                                                slot_deficit.unsigned_abs() as u64,
+                                                            )],
                                                         ),
-                                                        HudEvent::SwapSlots {
-                                                            slot_a,
-                                                            slot_b,
-                                                            bypass_dialog: true,
-                                                        },
-                                                        None,
                                                     ),
-                                                );
+                                                    HudEvent::SwapSlots {
+                                                        slot_a,
+                                                        slot_b,
+                                                        bypass_dialog: true,
+                                                    },
+                                                    None,
+                                                ));
                                                 move_allowed = false;
                                             }
                                         }
@@ -1817,13 +1978,24 @@ impl PlayState for SessionState {
                     } => {
                         let slots = {
                             let client = self.client.borrow();
-                            if let Some(recipe) = client.recipe_book().get(&recipe) {
-                                client.inventories().get(client.entity()).and_then(|inv| {
-                                    recipe.inventory_contains_ingredients(inv, 1).ok()
-                                })
+
+                            let s = if let Some(inventory) = client
+                                .state()
+                                .ecs()
+                                .read_storage::<comp::Inventory>()
+                                .get(client.entity())
+                            {
+                                let rbm =
+                                    client.state().ecs().read_resource::<RecipeBookManifest>();
+                                if let Some(recipe) = inventory.get_recipe(&recipe, &rbm) {
+                                    recipe.inventory_contains_ingredients(inventory, 1).ok()
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
-                            }
+                            };
+                            s
                         };
                         if let Some(slots) = slots {
                             self.client.borrow_mut().craft_recipe(
@@ -1902,6 +2074,7 @@ impl PlayState for SessionState {
                                     let item = match item {
                                         Slot::Equip(slot) => inventory.equipped(slot),
                                         Slot::Inventory(slot) => inventory.get(slot),
+                                        Slot::Overflow(_) => None,
                                     }?;
                                     let repair_recipe =
                                         client.repair_recipe_book().repair_recipe(item)?;
@@ -2002,6 +2175,7 @@ impl PlayState for SessionState {
                         &mut global_state.audio,
                         &scene_data,
                         &client,
+                        &global_state.settings,
                     );
 
                     // Process outcomes from client
@@ -2124,4 +2298,32 @@ fn find_shortest_distance(arr: &[Option<f32>]) -> Option<f32> {
     arr.iter()
         .filter_map(|x| *x)
         .min_by(|d1, d2| OrderedFloat(*d1).cmp(&OrderedFloat(*d2)))
+}
+
+// TODO: Can probably be exported in some way for AI, somehow
+fn auto_glide(
+    fluid: Fluid,
+    vel: Vel,
+    free_look: bool,
+    dir_forward_xy: Vec2<f32>,
+    dir_right: Vec3<f32>,
+) -> Option<Dir> {
+    let Vel(rel_flow) = fluid.relative_flow(&vel);
+
+    let is_wind_downwards = rel_flow.z.is_sign_negative();
+
+    let dir = if free_look {
+        if is_wind_downwards {
+            Vec3::from(-rel_flow.xy())
+        } else {
+            -rel_flow
+        }
+    } else if is_wind_downwards {
+        dir_forward_xy.into()
+    } else {
+        let windwards = rel_flow * dir_forward_xy.dot(rel_flow.xy()).signum();
+        Plane::from(Dir::new(dir_right)).projection(windwards)
+    };
+
+    Dir::from_unnormalized(dir)
 }

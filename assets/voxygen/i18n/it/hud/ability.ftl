@@ -1,14 +1,19 @@
+## Debug abilities
+
 common-abilities-debug-possess = Freccia di controllo
     .desc = Scocca una freccia velenosa. Ti permette di controllare il tuo obiettivo.
-common-abilities-hammer-leap = Colpo del destino
-    .desc = Un attacco ad area con contraccolpo. Salta alla posizione del cursore.
+common-abilities-debug-evolve = Evolvi
+    .desc = Diventa la versione migliore di te stesso.
+common-abilities-debug-glide_boost = Vroom
+    .desc = Ti dà la spinta per raggiungere il cielo
+common-abilities-debug-glide_speeder = Vroom
+    .desc = Ti dà la spinta per arrivare ovunque arrivi il tuo sguardo
 common-abilities-bow-shotgun = Raffica
     .desc = Spara una serie di frecce
 common-abilities-staff-fireshockwave = Anello di fuoco
     .desc = Infiamma il terreno con un'onda di fuoco.
 common-abilities-sceptre-wardingaura = Aura protettiva
     .desc = Proteggi i tuoi alleati dagli attacchi nemici.
-
 # Sword abilities
 veloren-core-pseudo_abilities-sword-heavy_stance = Posizione possente
     .desc = Gli attacchi in questa posizione possono stordire i nemici e infliggere più danni ai nemici storditi ma sono più lenti
@@ -50,7 +55,7 @@ common-abilities-sword-crippling_deep_rend = Fenditura profonda devastante
     .desc = Un colpo mirato a una ferita già aperta infligge maggiori danni ai nemici feriti
 common-abilities-sword-cleaving_spiral_slash = Taglio a spirale
     .desc = Rotea completamente la tua spada intorno a te per colpire chiunque sia nelle vicinanze
-common-abilities-sword-cleaving_dual_spiral_slash =  Taglio a spirale
+common-abilities-sword-cleaving_dual_spiral_slash = Taglio a spirale
     .desc = Rotea completamente entrambe le spade intorno a te per colpire chiunque sia nelle vicinanze
 veloren-core-pseudo_abilities-sword-crescent_slash = Taglio a mezzaluna
     .desc =
@@ -102,8 +107,8 @@ common-abilities-sword-cleaving_skewer = Pugnalata fendente
     .desc = Una pugnalata che può squarciare gli avversari
 veloren-core-pseudo_abilities-sword-cascade = Cascata
     .desc =
-    Una fendente dall'alto
-    Viene modificata a seconda della postura
+        Una fendente dall'alto
+        Viene modificata a seconda della postura
 common-abilities-sword-basic_cascade = Colpo dall'alto base
     .desc = Un semplice colpo di spada dall'alto
 common-abilities-sword-heavy_cascade = Cascata potente
@@ -264,27 +269,19 @@ common-abilities-sword-cleaving_sky_splitter = Spaccacieli
     .desc =
         Un potente colpo che potrebbe persino spaccare il cielo, ma spaccherà i nemici
         Richiede una posizione di taglio
-
-
 # Axe abilities
 common-abilities-axe-triple_chop = Triplo colpo
-    .desc =
-        Tre colpi rapidi
+    .desc = Tre colpi rapidi
 common-abilities-axe-cleave = Fendente
-    .desc =
-        Un colpo discendente che può costruire combo multiple
+    .desc = Un colpo discendente che può costruire combo multiple
 common-abilities-axe-brutal_swing = Colpo brutale
-    .desc =
-        Uno squarcio rotante attorno a te
+    .desc = Uno squarcio rotante attorno a te
 common-abilities-axe-berserk = Furia
-    .desc =
-        Aumenta la tua forza rendendoti più vulnerabile
-common-abilities-axe-rising_tide =  Flusso crescente
-    .desc =
-        Un colpo ascendente che aumenta notevolmente la combo
+    .desc = Aumenta la tua forza rendendoti più vulnerabile
+common-abilities-axe-rising_tide = Flusso crescente
+    .desc = Un colpo ascendente che aumenta notevolmente la combo
 common-abilities-axe-savage_sense = Senso selvaggio
-    .desc =
-        Individua un punto vitale sul tuo bersaglio assicurando un danno critico al prossimo colpo
+    .desc = Individua un punto vitale sul tuo bersaglio assicurando un danno critico al prossimo colpo
 common-abilities-axe-adrenaline_rush = Scatto di adrenalina
     .desc =
         Consuma tutta la tua combo per ripristinare la tua stamina
@@ -299,20 +296,15 @@ common-abilities-axe-maelstrom = Vortice
         Colpisci tutto nelle tue vicinanze con un colpo rotante devastante
         Si trasforma automaticamente da Esecuzione a 50 combo
 common-abilities-axe-rake = Raschiamento
-    .desc =
-        Trascina la tua ascia sul tuo nemico causando sanguinamento
+    .desc = Trascina la tua ascia sul tuo nemico causando sanguinamento
 common-abilities-axe-bloodfeast = Festa di sangue
-    .desc =
-        La tua ascia ha sete del sangue dei tuoi nemici, rigenerandoti con ogni colpo inflitto a un nemico sanguinante
+    .desc = La tua ascia ha sete del sangue dei tuoi nemici, rigenerandoti con ogni colpo inflitto a un nemico sanguinante
 common-abilities-axe-fierce_raze = Taglio feroce
-    .desc =
-        Un rapido scroscio di colpi sul tuo nemico
+    .desc = Un rapido scroscio di colpi sul tuo nemico
 common-abilities-axe-dual_fierce_raze = Doppio taglio feroce
-    .desc =
-        Un rapido scroscio di colpi sul tuo nemico usando entrambe le tue asce
+    .desc = Un rapido scroscio di colpi sul tuo nemico usando entrambe le tue asce
 common-abilities-axe-furor = Furia
-    .desc =
-        Man mano che la tua furia aumenta i tuoi colpi generano più combo
+    .desc = Man mano che la tua furia aumenta i tuoi colpi generano più combo
 common-abilities-axe-fracture = Frattura
     .desc =
         Un colpo invalidante che ostacola il movimento del tuo nemico
@@ -327,17 +319,13 @@ common-abilities-axe-riptide = Marea
         Sfregare tutto nelle vicinanze separandoli dal loro sangue
         Si trasforma automaticamente in Lacerazione a 50 combo
 common-abilities-axe-skull_bash = Colpo di testa
-    .desc =
-        Un colpo con il lato piatto della tua ascia che può stordire
+    .desc = Un colpo con il lato piatto della tua ascia che può stordire
 common-abilities-axe-sunder = Smantellare
-    .desc =
-        Cambiando la tua presa diventi in grado di aggirare l'armatura del tuo nemico mentre ripristini la tua energia in modo più efficace
+    .desc = Cambiando la tua presa diventi in grado di aggirare l'armatura del tuo nemico mentre ripristini la tua energia in modo più efficace
 common-abilities-axe-plunder = Saccheggio
-    .desc =
-        Avanza velocemente verso il tuo nemico, privandolo del suo equilibrio con un colpo
+    .desc = Avanza velocemente verso il tuo nemico, privandolo del suo equilibrio con un colpo
 common-abilities-axe-defiance = Sfida
-    .desc =
-        Fissa la morte negli occhi più a lungo e ti rendi più resistente sia agli stordimenti che alla morte
+    .desc = Fissa la morte negli occhi più a lungo e ti rendi più resistente sia agli stordimenti che alla morte
 common-abilities-axe-keelhaul = Gancio
     .desc =
         Aggancia il tuo avversario per tirarlo più vicino a te
@@ -351,3 +339,68 @@ common-abilities-axe-capsize = Capovolgimento
     .desc =
         Stordisci tutto nelle vicinanze con un colpo rotante pesante
         Si trasforma automaticamente in Murata a 50 combo
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-heavy_stance = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-agile_stance = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-defensive_stance = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-crippling_stance = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-cleaving_stance = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-basic_state = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-heavy_state = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-agile_state = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-defensive_state = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-crippling_state = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-cleaving_state = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-double_slash = ""
+# Internal terms, currently only used in zh-Hans.
+# If we remove them here, they also get auto-removed in zh-Hans,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-modified_depending_stance = ""

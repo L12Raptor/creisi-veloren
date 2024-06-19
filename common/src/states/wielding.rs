@@ -9,6 +9,7 @@ use crate::{
         behavior::{CharacterBehavior, JoinData},
         idle,
     },
+    uid::Uid,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,7 @@ impl CharacterBehavior for Data {
         handle_climb(data, &mut update);
         attempt_input(data, output_events, &mut update);
         handle_jump(data, output_events, &mut update, 1.0);
+        handle_wallrun(data, &mut update);
 
         if self.is_sneaking
             && (data.physics.on_ground.is_none() || data.physics.in_liquid().is_some())
@@ -100,6 +102,12 @@ impl CharacterBehavior for Data {
     fn dance(&self, data: &JoinData, _: &mut OutputEvents) -> StateUpdate {
         let mut update = StateUpdate::from(data);
         attempt_dance(data, &mut update);
+        update
+    }
+
+    fn pet(&self, data: &JoinData, _: &mut OutputEvents, target_uid: Uid) -> StateUpdate {
+        let mut update = StateUpdate::from(data);
+        attempt_pet(data, &mut update, target_uid);
         update
     }
 

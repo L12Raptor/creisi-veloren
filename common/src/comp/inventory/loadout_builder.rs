@@ -1,5 +1,6 @@
 use crate::{
     assets::{self, AssetExt},
+    calendar::{Calendar, CalendarEvent},
     comp::{
         arthropod, biped_large, biped_small, bird_large, bird_medium, golem,
         inventory::{
@@ -9,7 +10,7 @@ use crate::{
         item::{self, Item},
         object, quadruped_low, quadruped_medium, quadruped_small, theropod, Body,
     },
-    resources::Time,
+    resources::{Time, TimeOfDay},
     trade::SiteInformation,
 };
 use rand::{self, distributions::WeightedError, seq::SliceRandom, Rng};
@@ -48,10 +49,15 @@ enum ItemSpec {
         hands: Option<item::tool::Hands>,
     },
     Choice(Vec<(Weight, Option<ItemSpec>)>),
+    Seasonal(Vec<(Option<CalendarEvent>, ItemSpec)>),
 }
 
 impl ItemSpec {
-    fn try_to_item(&self, rng: &mut impl Rng) -> Result<Option<Item>, SpecError> {
+    fn try_to_item(
+        &self,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Result<Option<Item>, SpecError> {
         match self {
             ItemSpec::Item(item_asset) => {
                 let item = Item::new_from_asset(item_asset).map_err(SpecError::ItemAssetError)?;
@@ -63,7 +69,7 @@ impl ItemSpec {
                     .map_err(SpecError::ItemChoiceError)?;
 
                 let item = if let Some(item_spec) = item_spec {
-                    item_spec.try_to_item(rng)?
+                    item_spec.try_to_item(rng, time)?
                 } else {
                     None
                 };
@@ -76,6 +82,20 @@ impl ItemSpec {
             } => item::modular::random_weapon(*tool, *material, *hands, rng)
                 .map(Some)
                 .map_err(SpecError::ModularWeaponCreationError),
+            ItemSpec::Seasonal(specs) => specs
+                .iter()
+                .find_map(|(season, spec)| match (season, time) {
+                    (Some(season), Some((_time, calendar))) => {
+                        if calendar.is_event(*season) {
+                            Some(spec.try_to_item(rng, time))
+                        } else {
+                            None
+                        }
+                    },
+                    (Some(_season), None) => None,
+                    (None, _) => Some(spec.try_to_item(rng, time)),
+                })
+                .unwrap_or(Ok(None)),
         }
     }
 
@@ -103,6 +123,9 @@ impl ItemSpec {
             } => item::modular::random_weapon(*tool, *material, *hands, &mut rng)
                 .map(drop)
                 .map_err(ValidationError::ModularWeaponCreationError),
+            ItemSpec::Seasonal(specs) => {
+                specs.iter().try_for_each(|(_season, spec)| spec.validate())
+            },
         }
     }
 }
@@ -116,21 +139,17 @@ enum Hands {
 }
 
 impl Hands {
-    fn try_to_pair(&self, rng: &mut impl Rng) -> Result<(Option<Item>, Option<Item>), SpecError> {
+    fn try_to_pair(
+        &self,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Result<(Option<Item>, Option<Item>), SpecError> {
         match self {
             Hands::InHands((mainhand, offhand)) => {
-                let mut from_spec = |i: &ItemSpec| i.try_to_item(rng);
+                let mut from_spec = |i: &ItemSpec| i.try_to_item(rng, time);
 
-                let mainhand = mainhand
-                    .as_ref()
-                    .map(|i| from_spec(i))
-                    .transpose()?
-                    .flatten();
-                let offhand = offhand
-                    .as_ref()
-                    .map(|i| from_spec(i))
-                    .transpose()?
-                    .flatten();
+                let mainhand = mainhand.as_ref().map(&mut from_spec).transpose()?.flatten();
+                let offhand = offhand.as_ref().map(&mut from_spec).transpose()?.flatten();
                 Ok((mainhand, offhand))
             },
             Hands::Choice(pairs) => {
@@ -138,7 +157,7 @@ impl Hands {
                     .choose_weighted(rng, |(weight, _)| *weight)
                     .map_err(SpecError::ItemChoiceError)?;
 
-                pair_spec.try_to_pair(rng)
+                pair_spec.try_to_pair(rng, time)
             },
         }
     }
@@ -529,54 +548,93 @@ fn default_main_tool(body: &Body) -> Item {
             golem::Species::ClayGolem => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.clay_golem_fist",
             )),
+            golem::Species::Gravewarden => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.gravewarden_fist",
+            )),
             golem::Species::WoodGolem => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.wood_golem_fist",
             )),
             golem::Species::CoralGolem => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.coral_golem_fist",
             )),
+            golem::Species::AncientEffigy => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.ancient_effigy_eyes",
+            )),
+            golem::Species::Mogwai => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.mogwai",
+            )),
+            golem::Species::IronGolem => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.iron_golem_fist",
+            )),
             _ => None,
         },
         Body::QuadrupedMedium(quadruped_medium) => match quadruped_medium.species {
-            quadruped_medium::Species::Wolf | quadruped_medium::Species::Grolgar => Some(
-                Item::new_from_asset_expect("common.items.npc_weapons.unique.quadmedquick"),
-            ),
-            quadruped_medium::Species::Donkey
-            | quadruped_medium::Species::Horse
-            | quadruped_medium::Species::Zebra
-            | quadruped_medium::Species::Kelpie
-            | quadruped_medium::Species::Hirdrasil
-            | quadruped_medium::Species::Deer
-            | quadruped_medium::Species::Antelope
-            | quadruped_medium::Species::Llama
-            | quadruped_medium::Species::Alpaca => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.quadmedhoof",
+            quadruped_medium::Species::Wolf => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_medium.wolf",
+            )),
+            // Below uniques still follow quadmedhoof just with stat alterations
+            quadruped_medium::Species::Alpaca | quadruped_medium::Species::Llama => {
+                Some(Item::new_from_asset_expect(
+                    "common.items.npc_weapons.unique.quadruped_medium.alpaca",
+                ))
+            },
+            quadruped_medium::Species::Antelope | quadruped_medium::Species::Deer => {
+                Some(Item::new_from_asset_expect(
+                    "common.items.npc_weapons.unique.quadruped_medium.antelope",
+                ))
+            },
+            quadruped_medium::Species::Donkey | quadruped_medium::Species::Zebra => {
+                Some(Item::new_from_asset_expect(
+                    "common.items.npc_weapons.unique.quadruped_medium.donkey",
+                ))
+            },
+            // Provide Kelpie with unique water-centered abilities
+            quadruped_medium::Species::Horse | quadruped_medium::Species::Kelpie => {
+                Some(Item::new_from_asset_expect(
+                    "common.items.npc_weapons.unique.quadruped_medium.horse",
+                ))
+            },
+            quadruped_medium::Species::ClaySteed => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.claysteed",
             )),
             quadruped_medium::Species::Saber
             | quadruped_medium::Species::Bonerattler
-            | quadruped_medium::Species::Darkhound
             | quadruped_medium::Species::Lion
             | quadruped_medium::Species::Snowleopard => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.quadmedjump",
             )),
-            quadruped_medium::Species::Tuskram
-            | quadruped_medium::Species::Moose
+            quadruped_medium::Species::Darkhound => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.darkhound",
+            )),
+            // Below uniques still follow quadmedcharge just with stat alterations
+            quadruped_medium::Species::Moose | quadruped_medium::Species::Tuskram => {
+                Some(Item::new_from_asset_expect(
+                    "common.items.npc_weapons.unique.quadruped_medium.moose",
+                ))
+            },
+            quadruped_medium::Species::Mouflon => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_medium.mouflon",
+            )),
+            quadruped_medium::Species::Akhlut
             | quadruped_medium::Species::Dreadhorn
             | quadruped_medium::Species::Mammoth
             | quadruped_medium::Species::Ngoubou => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.quadmedcharge",
             )),
+            quadruped_medium::Species::Grolgar => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_medium.grolgar",
+            )),
             quadruped_medium::Species::Roshwalr => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.roshwalr",
             )),
-            quadruped_medium::Species::Highland
-            | quadruped_medium::Species::Cattle
-            | quadruped_medium::Species::Yak => Some(Item::new_from_asset_expect(
+            quadruped_medium::Species::Cattle => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.quadmedbasicgentle",
             )),
-            quadruped_medium::Species::Akhlut => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.akhlut",
-            )),
+            quadruped_medium::Species::Highland | quadruped_medium::Species::Yak => {
+                Some(Item::new_from_asset_expect(
+                    "common.items.npc_weapons.unique.quadruped_medium.highland",
+                ))
+            },
             quadruped_medium::Species::Frostfang => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.frostfang",
             )),
@@ -586,16 +644,16 @@ fn default_main_tool(body: &Body) -> Item {
         },
         Body::QuadrupedLow(quadruped_low) => match quadruped_low.species {
             quadruped_low::Species::Maneater => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.maneater",
+                "common.items.npc_weapons.unique.quadruped_low.maneater",
             )),
             quadruped_low::Species::Asp => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.asp",
+                "common.items.npc_weapons.unique.quadruped_low.asp",
             )),
             quadruped_low::Species::Dagon => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.dagon",
             )),
-            quadruped_low::Species::HermitAlligator => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.hermit_alligator",
+            quadruped_low::Species::Snaretongue => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.snaretongue",
             )),
             quadruped_low::Species::Crocodile
             | quadruped_low::Species::SeaCrocodile
@@ -609,19 +667,28 @@ fn default_main_tool(body: &Body) -> Item {
                 Item::new_from_asset_expect("common.items.npc_weapons.unique.quadlowquick"),
             ),
             quadruped_low::Species::Lavadrake => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.quadlowbreathe",
+                "common.items.npc_weapons.unique.quadruped_low.lavadrake",
             )),
             quadruped_low::Species::Deadwood => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.deadwood",
+                "common.items.npc_weapons.unique.quadruped_low.deadwood",
             )),
             quadruped_low::Species::Basilisk => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.basilisk",
+                "common.items.npc_weapons.unique.quadruped_low.basilisk",
             )),
             quadruped_low::Species::Icedrake => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.icedrake",
+                "common.items.npc_weapons.unique.quadruped_low.icedrake",
+            )),
+            quadruped_low::Species::Hakulaq => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_low.hakulaq",
+            )),
+            quadruped_low::Species::Tortoise => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_low.tortoise",
             )),
             quadruped_low::Species::Driggle => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.driggle",
+            )),
+            quadruped_low::Species::Rocksnapper => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.rocksnapper",
             )),
             _ => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.quadlowbasic",
@@ -634,19 +701,37 @@ fn default_main_tool(body: &Body) -> Item {
             quadruped_small::Species::MossySnail => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.mossysnail",
             )),
-            _ => Some(Item::new_from_asset_expect(
+            quadruped_small::Species::Boar | quadruped_small::Species::Truffler => Some(
+                Item::new_from_asset_expect("common.items.npc_weapons.unique.quadruped_small.boar"),
+            ),
+            quadruped_small::Species::Hyena => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_small.hyena",
+            )),
+            quadruped_small::Species::Beaver
+            | quadruped_small::Species::Dog
+            | quadruped_small::Species::Cat
+            | quadruped_small::Species::Goat
+            | quadruped_small::Species::Holladon
+            | quadruped_small::Species::Sheep
+            | quadruped_small::Species::Seal => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.quadsmallbasic",
+            )),
+            _ => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.quadruped_small.rodent",
             )),
         },
         Body::Theropod(theropod) => match theropod.species {
             theropod::Species::Sandraptor
             | theropod::Species::Snowraptor
             | theropod::Species::Woodraptor
-            | theropod::Species::Axebeak => Some(Item::new_from_asset_expect(
+            | theropod::Species::Axebeak
+            | theropod::Species::Sunlizard => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.theropodbird",
             )),
-            theropod::Species::Yale
-            | theropod::Species::Carnotaurus => Some(Item::new_from_asset_expect(
+            theropod::Species::Yale => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.theropod.yale",
+            )),
+            theropod::Species::Carnotaurus => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.theropodcharge",
             )),
             theropod::Species::Dodarock => Some(Item::new_from_asset_expect(
@@ -673,9 +758,12 @@ fn default_main_tool(body: &Body) -> Item {
                     "common.items.npc_weapons.unique.arthropods.mosscrawler",
                 ))
             },
-            arthropod::Species::Moltencrawler | arthropod::Species::Weevil => Some(
-                Item::new_from_asset_expect("common.items.npc_weapons.unique.arthropods.weevil"),
-            ),
+            arthropod::Species::Moltencrawler => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.arthropods.moltencrawler",
+            )),
+            arthropod::Species::Weevil => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.arthropods.weevil",
+            )),
             arthropod::Species::Blackwidow => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.arthropods.blackwidow",
             )),
@@ -688,7 +776,7 @@ fn default_main_tool(body: &Body) -> Item {
             arthropod::Species::Dagonite => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.arthropods.dagonite",
             )),
-            _ => Some(Item::new_from_asset_expect(
+            arthropod::Species::Leafbeetle => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.arthropods.leafbeetle",
             )),
         },
@@ -770,16 +858,40 @@ fn default_main_tool(body: &Body) -> Item {
             (biped_large::Species::SeaBishop, _) => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.sea_bishop_sceptre",
             )),
+            (biped_large::Species::HaniwaGeneral, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.sword.haniwa_general_sword",
+            )),
+            (biped_large::Species::TerracottaBesieger, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.bow.terracotta_besieger_bow",
+            )),
+            (biped_large::Species::TerracottaDemolisher, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.terracotta_demolisher_fist",
+            )),
+            (biped_large::Species::TerracottaPunisher, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.hammer.terracotta_punisher_club",
+            )),
+            (biped_large::Species::TerracottaPursuer, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.sword.terracotta_pursuer_sword",
+            )),
+            (biped_large::Species::Cursekeeper, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.cursekeeper_sceptre",
+            )),
+            (biped_large::Species::Forgemaster, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.hammer.forgemaster_hammer",
+            )),
         },
         Body::Object(body) => match body {
             object::Body::Crossbow => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.turret",
             )),
-            object::Body::Flamethrower => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.flamethrower",
-            )),
+            object::Body::Flamethrower | object::Body::Lavathrower => Some(
+                Item::new_from_asset_expect("common.items.npc_weapons.unique.flamethrower"),
+            ),
             object::Body::BarrelOrgan => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.organ",
+            )),
+            object::Body::TerracottaStatue => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.terracotta_statue",
             )),
             object::Body::HaniwaSentry => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.haniwa_sentry",
@@ -789,6 +901,9 @@ fn default_main_tool(body: &Body) -> Item {
             )),
             object::Body::Tornado => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.tornado",
+            )),
+            object::Body::FieryTornado => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.fiery_tornado",
             )),
             object::Body::GnarlingTotemRed => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.biped_small.gnarling.redtotem",
@@ -817,8 +932,14 @@ fn default_main_tool(body: &Body) -> Item {
             (biped_small::Species::Flamekeeper, _) => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.unique.flamekeeper_staff",
             )),
-            (biped_small::Species::Clockwork, _) => Some(Item::new_from_asset_expect(
-                "common.items.npc_weapons.unique.clockwork",
+            (biped_small::Species::IronDwarf, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.iron_dwarf",
+            )),
+            (biped_small::Species::ShamanicSpirit, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.shamanic_spirit",
+            )),
+            (biped_small::Species::Jiangshi, _) => Some(Item::new_from_asset_expect(
+                "common.items.npc_weapons.unique.jiangshi",
             )),
             _ => Some(Item::new_from_asset_expect(
                 "common.items.npc_weapons.biped_small.adlet.hunter",
@@ -862,6 +983,10 @@ fn default_main_tool(body: &Body) -> Item {
                 "common.items.npc_weapons.unique.birdmediumbasic",
             )),
         },
+        Body::Crustacean(_) => Some(Item::new_from_asset_expect(
+            "common.items.npc_weapons.unique.crab_pincer",
+        )),
+
         _ => None,
     };
 
@@ -890,7 +1015,9 @@ pub struct LoadoutBuilder(Loadout);
 pub enum Preset {
     HuskSummon,
     BorealSummon,
-    ClockworkSummon,
+    IronDwarfSummon,
+    ShamanicSpiritSummon,
+    JiangshiSummon,
 }
 
 impl LoadoutBuilder {
@@ -900,14 +1027,22 @@ impl LoadoutBuilder {
     #[must_use]
     /// Construct new `LoadoutBuilder` from `asset_specifier`
     /// Will panic if asset is broken
-    pub fn from_asset_expect(asset_specifier: &str, rng: &mut impl Rng) -> Self {
-        Self::from_asset(asset_specifier, rng).expect("failed to load loadut config")
+    pub fn from_asset_expect(
+        asset_specifier: &str,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Self {
+        Self::from_asset(asset_specifier, rng, time).expect("failed to load loadut config")
     }
 
     /// Construct new `LoadoutBuilder` from `asset_specifier`
-    pub fn from_asset(asset_specifier: &str, rng: &mut impl Rng) -> Result<Self, SpecError> {
+    pub fn from_asset(
+        asset_specifier: &str,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Result<Self, SpecError> {
         let loadout = Self::empty();
-        loadout.with_asset(asset_specifier, rng)
+        loadout.with_asset(asset_specifier, rng, time)
     }
 
     #[must_use]
@@ -926,17 +1061,22 @@ impl LoadoutBuilder {
     pub fn from_loadout_spec(
         loadout_spec: LoadoutSpec,
         rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
     ) -> Result<Self, SpecError> {
         let loadout = Self::empty();
-        loadout.with_loadout_spec(loadout_spec, rng)
+        loadout.with_loadout_spec(loadout_spec, rng, time)
     }
 
     #[must_use]
     /// Construct new `LoadoutBuilder` from `asset_specifier`
     ///
     /// Will panic if asset is broken
-    pub fn from_loadout_spec_expect(loadout_spec: LoadoutSpec, rng: &mut impl Rng) -> Self {
-        Self::from_loadout_spec(loadout_spec, rng).expect("failed to load loadout spec")
+    pub fn from_loadout_spec_expect(
+        loadout_spec: LoadoutSpec,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Self {
+        Self::from_loadout_spec(loadout_spec, rng, time).expect("failed to load loadout spec")
     }
 
     #[must_use = "Method consumes builder and returns updated builder."]
@@ -967,6 +1107,8 @@ impl LoadoutBuilder {
                 | biped_large::Species::Blueoni
                 | biped_large::Species::Redoni
                 | biped_large::Species::Cavetroll
+                | biped_large::Species::Mountaintroll
+                | biped_large::Species::Swamptroll
                 | biped_large::Species::Wendigo => {
                     Some("common.items.npc_armor.biped_large.generic")
                 },
@@ -984,6 +1126,19 @@ impl LoadoutBuilder {
                 biped_large::Species::Gigasfrost => {
                     Some("common.items.npc_armor.biped_large.gigas_frost")
                 },
+                biped_large::Species::HaniwaGeneral => {
+                    Some("common.items.npc_armor.biped_large.haniwageneral")
+                },
+                biped_large::Species::TerracottaBesieger
+                | biped_large::Species::TerracottaDemolisher
+                | biped_large::Species::TerracottaPunisher
+                | biped_large::Species::TerracottaPursuer
+                | biped_large::Species::Cursekeeper => {
+                    Some("common.items.npc_armor.biped_large.terracotta")
+                },
+                biped_large::Species::Forgemaster => {
+                    Some("common.items.npc_armor.biped_large.forgemaster")
+                },
                 _ => None,
             },
             Body::BirdLarge(body) => match body.species {
@@ -994,50 +1149,68 @@ impl LoadoutBuilder {
                 | bird_large::Species::WealdWyvern => {
                     Some("common.items.npc_armor.bird_large.wyvern")
                 },
+                bird_large::Species::Phoenix => Some("common.items.npc_armor.bird_large.phoenix"),
                 _ => None,
             },
             Body::Golem(body) => match body.species {
                 golem::Species::ClayGolem => Some("common.items.npc_armor.golem.claygolem"),
+                golem::Species::Gravewarden => Some("common.items.npc_armor.golem.gravewarden"),
                 golem::Species::WoodGolem => Some("common.items.npc_armor.golem.woodgolem"),
+                golem::Species::AncientEffigy => Some("common.items.npc_armor.golem.ancienteffigy"),
+                golem::Species::Mogwai => Some("common.items.npc_armor.golem.mogwai"),
+                golem::Species::IronGolem => Some("common.items.npc_armor.golem.irongolem"),
                 _ => None,
             },
             Body::QuadrupedLow(body) => match body.species {
-                quadruped_low::Species::Basilisk
-                | quadruped_low::Species::Asp
+                quadruped_low::Species::Sandshark
+                | quadruped_low::Species::Alligator
+                | quadruped_low::Species::Crocodile
+                | quadruped_low::Species::SeaCrocodile
+                | quadruped_low::Species::Icedrake
                 | quadruped_low::Species::Lavadrake
-                | quadruped_low::Species::Maneater
+                | quadruped_low::Species::Mossdrake => Some("common.items.npc_armor.generic"),
+                quadruped_low::Species::Reefsnapper
                 | quadruped_low::Species::Rocksnapper
                 | quadruped_low::Species::Rootsnapper
-                | quadruped_low::Species::Reefsnapper
-                | quadruped_low::Species::Sandshark
-                | quadruped_low::Species::Icedrake
-                | quadruped_low::Species::Rigusaurus => {
-                    Some("common.items.npc_armor.quadruped_low.generic")
-                },
+                | quadruped_low::Species::Tortoise
+                | quadruped_low::Species::Basilisk
+                | quadruped_low::Species::Rigusaurus => Some("common.items.npc_armor.generic_high"),
                 quadruped_low::Species::Dagon => Some("common.items.npc_armor.quadruped_low.dagon"),
-                quadruped_low::Species::Tortoise => {
-                    Some("common.items.npc_armor.quadruped_low.shell")
-                },
                 _ => None,
             },
             Body::QuadrupedMedium(body) => match body.species {
-                quadruped_medium::Species::Frostfang => {
-                    Some("common.items.npc_armor.quadruped_medium.frostfang")
-                },
-                quadruped_medium::Species::Roshwalr => {
-                    Some("common.items.npc_armor.quadruped_medium.roshwalr")
+                quadruped_medium::Species::Bonerattler => Some("common.items.npc_armor.generic"),
+                quadruped_medium::Species::Tarasque => Some("common.items.npc_armor.generic_high"),
+                quadruped_medium::Species::ClaySteed => {
+                    Some("common.items.npc_armor.quadruped_medium.claysteed")
                 },
                 _ => None,
             },
             Body::Theropod(body) => match body.species {
                 theropod::Species::Archaeos
-                | theropod::Species::Yale
                 | theropod::Species::Ntouka
-                | theropod::Species::Odonto
-                | theropod::Species::Carnotaurus => Some("common.items.npc_armor.theropod.rugged"),
+                | theropod::Species::Carnotaurus => Some("common.items.npc_armor.generic"),
+                theropod::Species::Dodarock => Some("common.items.npc_armor.generic_high"),
                 _ => None,
             },
-            Body::Arthropod(_) => Some("common.items.npc_armor.arthropod.generic"),
+            // TODO: Check over
+            Body::Arthropod(body) => match body.species {
+                arthropod::Species::Blackwidow
+                | arthropod::Species::Cavespider
+                | arthropod::Species::Emberfly
+                | arthropod::Species::Moltencrawler
+                | arthropod::Species::Mosscrawler
+                | arthropod::Species::Sandcrawler
+                | arthropod::Species::Tarantula => None,
+                _ => Some("common.items.npc_armor.generic"),
+            },
+            Body::QuadrupedSmall(body) => match body.species {
+                quadruped_small::Species::Turtle
+                | quadruped_small::Species::Holladon
+                | quadruped_small::Species::TreantSapling
+                | quadruped_small::Species::MossySnail => Some("common.items.npc_armor.generic"),
+                _ => None,
+            },
             _ => None,
         };
 
@@ -1053,14 +1226,29 @@ impl LoadoutBuilder {
         let rng = &mut rand::thread_rng();
         match preset {
             Preset::HuskSummon => {
-                self = self.with_asset_expect("common.loadout.dungeon.cultist.husk", rng);
+                self = self.with_asset_expect("common.loadout.dungeon.cultist.husk", rng, None);
             },
             Preset::BorealSummon => {
-                self = self.with_asset_expect("common.loadout.world.boreal.boreal_warrior", rng);
-            },
-            Preset::ClockworkSummon => {
                 self =
-                    self.with_asset_expect("common.loadout.dungeon.dwarven_quarry.clockwork", rng);
+                    self.with_asset_expect("common.loadout.world.boreal.boreal_warrior", rng, None);
+            },
+            Preset::IronDwarfSummon => {
+                self = self.with_asset_expect(
+                    "common.loadout.dungeon.dwarven_quarry.iron_dwarf",
+                    rng,
+                    None,
+                );
+            },
+            Preset::ShamanicSpiritSummon => {
+                self = self.with_asset_expect(
+                    "common.loadout.dungeon.terracotta.shamanic_spirit",
+                    rng,
+                    None,
+                );
+            },
+            Preset::JiangshiSummon => {
+                self =
+                    self.with_asset_expect("common.loadout.dungeon.terracotta.jiangshi", rng, None);
             },
         }
 
@@ -1070,10 +1258,15 @@ impl LoadoutBuilder {
     #[must_use = "Method consumes builder and returns updated builder."]
     pub fn with_creator(
         mut self,
-        creator: fn(LoadoutBuilder, Option<&SiteInformation>) -> LoadoutBuilder,
+        creator: fn(
+            LoadoutBuilder,
+            Option<&SiteInformation>,
+            time: Option<&(TimeOfDay, Calendar)>,
+        ) -> LoadoutBuilder,
         economy: Option<&SiteInformation>,
+        time: Option<&(TimeOfDay, Calendar)>,
     ) -> LoadoutBuilder {
-        self = creator(self, economy);
+        self = creator(self, economy, time);
 
         self
     }
@@ -1083,6 +1276,7 @@ impl LoadoutBuilder {
         mut self,
         spec: LoadoutSpec,
         rng: &mut R,
+        time: Option<&(TimeOfDay, Calendar)>,
     ) -> Result<Self, SpecError> {
         // Include any inheritance
         let spec = spec.eval(rng)?;
@@ -1090,7 +1284,7 @@ impl LoadoutBuilder {
         // Utility function to unwrap our itemspec
         let mut to_item = |maybe_item: Option<ItemSpec>| {
             if let Some(item) = maybe_item {
-                item.try_to_item(rng)
+                item.try_to_item(rng, time)
             } else {
                 Ok(None)
             }
@@ -1098,7 +1292,7 @@ impl LoadoutBuilder {
 
         let to_pair = |maybe_hands: Option<Hands>, rng: &mut R| {
             if let Some(hands) = maybe_hands {
-                hands.try_to_pair(rng)
+                hands.try_to_pair(rng, time)
             } else {
                 Ok((None, None))
             }
@@ -1178,10 +1372,15 @@ impl LoadoutBuilder {
     }
 
     #[must_use = "Method consumes builder and returns updated builder."]
-    pub fn with_asset(self, asset_specifier: &str, rng: &mut impl Rng) -> Result<Self, SpecError> {
+    pub fn with_asset(
+        self,
+        asset_specifier: &str,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Result<Self, SpecError> {
         let spec =
             LoadoutSpec::load_cloned(asset_specifier).map_err(SpecError::LoadoutAssetError)?;
-        self.with_loadout_spec(spec, rng)
+        self.with_loadout_spec(spec, rng, time)
     }
 
     /// # Usage
@@ -1192,8 +1391,13 @@ impl LoadoutBuilder {
     /// 1) Will panic if there is no asset with such `asset_specifier`
     /// 2) Will panic if path to item specified in loadout file doesn't exist
     #[must_use = "Method consumes builder and returns updated builder."]
-    pub fn with_asset_expect(self, asset_specifier: &str, rng: &mut impl Rng) -> Self {
-        self.with_asset(asset_specifier, rng)
+    pub fn with_asset_expect(
+        self,
+        asset_specifier: &str,
+        rng: &mut impl Rng,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Self {
+        self.with_asset(asset_specifier, rng, time)
             .expect("failed loading loadout config")
     }
 
@@ -1202,7 +1406,7 @@ impl LoadoutBuilder {
     #[must_use = "Method consumes builder and returns updated builder."]
     pub fn defaults(self) -> Self {
         let rng = &mut rand::thread_rng();
-        self.with_asset_expect("common.loadout.default", rng)
+        self.with_asset_expect("common.loadout.default", rng, None)
     }
 
     #[must_use = "Method consumes builder and returns updated builder."]
@@ -1381,9 +1585,9 @@ mod tests {
     // One for asset itself and second if it serves as a base for other asset.
     #[test]
     fn validate_all_loadout_assets() {
-        let loadouts = assets::load_dir::<LoadoutSpec>("common.loadout", true)
+        let loadouts = assets::load_rec_dir::<LoadoutSpec>("common.loadout")
             .expect("failed to load loadout directory");
-        for loadout_id in loadouts.ids() {
+        for loadout_id in loadouts.read().ids() {
             let loadout =
                 LoadoutSpec::load_cloned(loadout_id).expect("failed to load loadout asset");
             loadout
@@ -1395,10 +1599,10 @@ mod tests {
     // Basically test that our validation tests don't have false-positives
     #[test]
     fn test_valid_assets() {
-        let loadouts = assets::load_dir::<LoadoutSpec>("test.loadout.ok", true)
+        let loadouts = assets::load_rec_dir::<LoadoutSpec>("test.loadout.ok")
             .expect("failed to load loadout directory");
 
-        for loadout_id in loadouts.ids() {
+        for loadout_id in loadouts.read().ids() {
             let loadout =
                 LoadoutSpec::load_cloned(loadout_id).expect("failed to load loadout asset");
             loadout

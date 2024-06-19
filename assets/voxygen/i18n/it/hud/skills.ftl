@@ -1,14 +1,13 @@
 hud-rank_up = Nuovo punto abilità
-hud-skill-sp_available = { $number } PA disponibili
+hud-skill-sp_available =
+    { $number ->
+        [0] Nessun punto abilità disponibile
+        [1] { $number } punto abilità disponibile
+       *[other] { $number } punti abilità disponibili
+    }
 hud-skill-not_unlocked = Non ancora sbloccato
-hud-skill-req_sp ={"\u000A"}
-
-    Richiede { $number } PA
-hud-skill-set_as_exp_bar = Imposta nella barra dell'esperienza
-hud-skill-inc_health_title = Aumenta la salute
-hud-skill-inc_health = Incrementa la salute massima di { $boost }{ $SP }
-hud-skill-inc_energy_title = Aumenta l'energia
-hud-skill-inc_energy = Incrementa l'energia massima di { $boost }{ $SP }
+hud-skill-req_sp = { "\u000A" }Richiede { $number } PA
+hud-skill-set_as_exp_bar = Segna i progressi sulla barra dell'esperienza
 hud-skill-unlck_sword_title = Sblocca spada
 hud-skill-unlck_sword = Sblocca l'albero di abilità per la spada{ $SP }
 hud-skill-unlck_axe_title = Sblocca ascia
@@ -21,14 +20,6 @@ hud-skill-unlck_staff_title = Sblocca bastone
 hud-skill-unlck_staff = Sblocca l'albero di abilità per il bastone{ $SP }
 hud-skill-unlck_sceptre_title = Sblocca scettro
 hud-skill-unlck_sceptre = Sblocca l'albero di abilità per lo scettro{ $SP }
-hud-skill-dodge_title = Schivata
-hud-skill-dodge = Le rotolate per schivare vengono attivate col click del tasto centrale del mouse, e concede immunità temporanea ad attacchi ravvicinati mentre stai rotolando.
-hud-skill-roll_energy_title = Costo di energia rotolata
-hud-skill-roll_energy = Rotolare usa il { $boost }% in meno di energia{ $SP }
-hud-skill-roll_speed_title = Velocità rotolata
-hud-skill-roll_speed = Rotola il { $boost }% più velocemente{ $SP }
-hud-skill-roll_dur_title = Durata rotolata
-hud-skill-roll_dur = Rotola per il { $boost }% di tempo in più{ $SP }
 hud-skill-climbing_title = Arrampicata
 hud-skill-climbing = Sali più in alto
 hud-skill-climbing_cost_title = Costo arrampicata
@@ -129,38 +120,6 @@ hud-skill-bow_shotgun_arrow_count_title = Frecce colpo multiplo
 hud-skill-bow_shotgun_arrow_count = Incrementa il numero di frecce nel colpo del { $boost }{ $SP }
 hud-skill-bow_shotgun_spread_title = Propagazione colpo multiplo
 hud-skill-bow_shotgun_spread = Diminuisce la propagazione delle frecce del { $boost }%{ $SP }
-hud-skill-hmr_leap_radius_title = Portata balzo
-hud-skill-hmr_leap_radius = Incrementa la portata di attacco dello schianto di { $boost } metro{ $SP }
-hud-skill-hmr_leap_distance_title = Distanza balzo
-hud-skill-hmr_leap_distance = Incrementa la distanza del balzo del { $boost }%{ $SP }
-hud-skill-hmr_leap_cost_title = Costo balzo
-hud-skill-hmr_leap_cost = Diminuisce il costo del balzo del { $boost }%{ $SP }
-hud-skill-hmr_leap_knockback_title = Contraccolpo balzo
-hud-skill-hmr_leap_knockback = Incrementa il contraccolpo dal balzo del { $boost }%{ $SP }
-hud-skill-hmr_leap_damage_title = Danno balzo
-hud-skill-hmr_leap_damage = Incrementa il danno del balzo del { $boost }%{ $SP }
-hud-skill-hmr_unlock_leap_title = Sblocca balzo
-hud-skill-hmr_unlock_leap = Sblocca uno sbalzo{ $SP }
-hud-skill-hmr_charged_melee_title = Attacco ravvicinato caricato
-hud-skill-hmr_charged_melee = Attacco ravvicinato ma con carica
-hud-skill-hmr_charged_rate_title = Velocità carica
-hud-skill-hmr_charged_rate = Incrementa la velocità a cui carichi il colpo del { $boost }%{ $SP }
-hud-skill-hmr_charged_melee_nrg_drain_title = Drenaggio energia dell'attacco ravvicinato caricato
-hud-skill-hmr_charged_melee_nrg_drain = Diminuisce la velocità a cui l'energia viene drenata durante il caricamento del { $boost }%{ $SP }
-hud-skill-hmr_charged_melee_damage_title = Danno dell'attacco ravvicinato caricato
-hud-skill-hmr_charged_melee_damage = Incrementa il danno del colpo caricato del { $boost }%{ $SP }
-hud-skill-hmr_charged_melee_knockback_title = Contraccolpo dell'attacco ravvicinato caricato
-hud-skill-hmr_charged_melee_knockback = Incrementa enormemente il potenziale di lancio del colpo del { $boost }%{ $SP }
-hud-skill-hmr_single_strike_title = Colpo singolo
-hud-skill-hmr_single_strike = Proprio come te
-hud-skill-hmr_single_strike_regen_title = Rigenerazione colpo singolo
-hud-skill-hmr_single_strike_regen = Incrementa il guadagno di energia per ogni colpo in successione{ $SP }
-hud-skill-hmr_single_strike_speed_title = Velocità colpo singolo
-hud-skill-hmr_single_strike_speed = Incrementa la velocità d'attacco per ogni colpo in successione{ $SP }
-hud-skill-hmr_single_strike_damage_title = Danno colpo singolo
-hud-skill-hmr_single_strike_damage = Incrementa il danno per ogni colpo in successione{ $SP }
-hud-skill-hmr_single_strike_knockback_title = Contraccolpo colpo singolo
-hud-skill-hmr_single_strike_knockback = Incrementa il potenziale di lancio dei colpi del { $boost }%{ $SP }
 hud-skill-mining_title = Estrazione mineraria
 hud-skill-pick_strike_title = Picconata
 hud-skill-pick_strike = Colpisci rocce col piccone per ottenere materiale grezzo, gemme ed esperienza
@@ -170,3 +129,18 @@ hud-skill-pick_strike_oregain_title = Resa materiali grezzi picconata
 hud-skill-pick_strike_oregain = Possibilità di ottenere materiale grezzo extra del ({ $boost }% per livello){ $SP }
 hud-skill-pick_strike_gemgain_title = Resa gemme picconata
 hud-skill-pick_strike_gemgain = Possibilità di ottenere gemme extra del ({ $boost }% per livello){ $SP }
+# Internal terms, currently only used in es
+# If we remove them here, they also get auto-removed in es,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-hud-skill-sc_wardaura_title = ""
+# Internal terms, currently only used in es
+# If we remove them here, they also get auto-removed in es,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-hud-skill-bow_shotgun_title = ""
+# Internal terms, currently only used in es
+# If we remove them here, they also get auto-removed in es,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-hud-skill-st_shockwave_title = ""

@@ -5,13 +5,18 @@ use crate::{
 };
 use common_base::span;
 use hashbrown::hash_map::DefaultHashBuilder;
-#[cfg(rrt_pathfinding)] use hashbrown::HashMap;
-#[cfg(rrt_pathfinding)]
-use kiddo::{distance::squared_euclidean, KdTree}; // For RRT paths (disabled for now)
-#[cfg(rrt_pathfinding)]
-use rand::distributions::Uniform;
+#[cfg(feature = "rrt_pathfinding")]
+use hashbrown::HashMap;
+#[cfg(feature = "rrt_pathfinding")]
+use kiddo::{float::kdtree::KdTree, nearest_neighbour::NearestNeighbour, SquaredEuclidean}; /* For RRT paths (disabled for now) */
+#[cfg(feature = "rrt_pathfinding")]
+use rand::{
+    distributions::{Distribution, Uniform},
+    prelude::IteratorRandom,
+};
 use rand::{thread_rng, Rng};
-#[cfg(rrt_pathfinding)] use std::f32::consts::PI;
+#[cfg(feature = "rrt_pathfinding")]
+use std::f32::consts::PI;
 use std::iter::FromIterator;
 use vek::*;
 
@@ -87,6 +92,8 @@ pub struct TraversalConfig {
     pub can_climb: bool,
     /// Whether the agent can fly.
     pub can_fly: bool,
+    /// Whether chunk containing target position is currently loaded
+    pub is_target_loaded: bool,
 }
 
 const DIAGONALS: [Vec2<i32>; 8] = [
@@ -125,17 +132,30 @@ impl Route {
             let next1 = self.next(1).unwrap_or(next0);
 
             // Stop using obstructed paths
-            if !walkable(vol, next1) {
+            if !walkable(vol, next0) || !walkable(vol, next1) {
                 return None;
             }
 
-            let be_precise = DIAGONALS.iter().any(|pos| {
+            // If, in any direction, there is a column of open air of several blocks
+            let open_space_nearby = DIAGONALS.iter().any(|pos| {
                 (-1..2).all(|z| {
                     vol.get(next0 + Vec3::new(pos.x, pos.y, z))
                         .map(|b| !b.is_solid())
                         .unwrap_or(false)
                 })
             });
+
+            // If, in any direction, there is a solid wall
+            let wall_nearby = DIAGONALS.iter().any(|pos| {
+                (0..2).all(|z| {
+                    vol.get(next0 + Vec3::new(pos.x, pos.y, z))
+                        .map(|b| b.is_solid())
+                        .unwrap_or(true)
+                })
+            });
+
+            // Unwalkable obstacles, such as walls or open space can affect path-finding
+            let be_precise = open_space_nearby | wall_nearby;
 
             // Map position of node to middle of block
             let next_tgt = next0.map(|e| e as f32) + Vec3::new(0.5, 0.5, 0.0);
@@ -387,9 +407,9 @@ impl Chaser {
             // theory this shouldn't happen, but in practice the world is full
             // of unpredictable obstacles that are more than willing to mess up
             // our day. TODO: Come up with a better heuristic for this
-            if end_to_tgt > pos_to_tgt * 0.3 + 5.0 && complete {
+            if end_to_tgt > pos_to_tgt * 0.3 + 5.0 && complete && traversal_cfg.is_target_loaded {
                 None
-            } else if thread_rng().gen::<f32>() < 0.001 {
+            } else if thread_rng().gen::<f32>() < 0.01 {
                 self.route = None;
                 None
             } else {
@@ -420,11 +440,12 @@ impl Chaser {
                 .unwrap_or(true)
                 || self.astar.is_some()
                 || self.route.is_none()
+                || !traversal_cfg.is_target_loaded
             {
                 self.last_search_tgt = Some(tgt);
 
                 // NOTE: Enable air paths when air braking has been figured out
-                let (path, complete) = /*if cfg!(rrt_pathfinding) && traversal_cfg.can_fly {
+                let (path, complete) = /*if cfg!(feature = "rrt_pathfinding") && traversal_cfg.can_fly {
                     find_air_path(vol, pos, tgt, &traversal_cfg)
                 } else */{
                     find_path(&mut self.astar, vol, pos, tgt, &traversal_cfg)
@@ -460,7 +481,7 @@ impl Chaser {
                 // has been determined, so we start sampling terrain.
                 // Check for falling off walls and try moving straight
                 // towards the target if falling is not a danger
-                let walking_towards_edge = (-3..2).all(|z| {
+                let walking_towards_edge = (-8..2).all(|z| {
                     vol.get(
                         (pos + Vec3::<f32>::from(tgt_dir) * 2.5).map(|e| e as i32)
                             + Vec3::unit_z() * z,
@@ -540,6 +561,12 @@ where
         get_walkable_z(endf.map(|e| e.floor() as i32)),
     ) {
         (Some(start), Some(end)) => (start, end),
+
+        // Special case for partially loaded path finding
+        (Some(start), None) if !traversal_cfg.is_target_loaded => {
+            (start, endf.map(|e| e.floor() as i32))
+        },
+
         _ => return (None, false),
     };
 
@@ -608,7 +635,7 @@ where
                     .filter(|_| {
                         vol.get(pos - Vec3::unit_z())
                             .map(|b| !b.is_liquid())
-                            .unwrap_or(true)
+                            .unwrap_or(traversal_cfg.is_target_loaded)
                             || traversal_cfg.can_climb
                             || traversal_cfg.can_fly
                     })
@@ -622,17 +649,17 @@ where
                         || vol
                             .get(pos + Vec3::unit_z() * 2)
                             .map(|b| !b.is_solid())
-                            .unwrap_or(true))
+                            .unwrap_or(traversal_cfg.is_target_loaded))
                         && (dir.z < 2
                             || vol
                                 .get(pos + Vec3::unit_z() * 3)
                                 .map(|b| !b.is_solid())
-                                .unwrap_or(true))
+                                .unwrap_or(traversal_cfg.is_target_loaded))
                         && (dir.z >= 0
                             || vol
                                 .get(pos + *dir + Vec3::unit_z() * 2)
                                 .map(|b| !b.is_solid())
-                                .unwrap_or(true)))
+                                .unwrap_or(traversal_cfg.is_target_loaded)))
             })
             .map(|(pos, dir)| {
                 let destination = pos + dir;
@@ -651,33 +678,39 @@ where
     let satisfied = |pos: &Vec3<i32>| pos == &end;
 
     let mut new_astar = match astar.take() {
-        None => Astar::new(25_000, start, DefaultHashBuilder::default()),
+        None => Astar::new(
+            if traversal_cfg.is_target_loaded {
+                // Normal mode
+                25_000
+            } else {
+                // Most of the times we would need to plot within current chunk,
+                // so half of intra-site limit should be enough in most cases
+                500
+            },
+            start,
+            DefaultHashBuilder::default(),
+        ),
         Some(astar) => astar,
     };
 
     let path_result = new_astar.poll(100, heuristic, neighbors, satisfied);
 
-    *astar = Some(new_astar);
-
     match path_result {
-        PathResult::Path(path, _cost) => {
-            *astar = None;
-            (Some(path), true)
+        PathResult::Path(path, _cost) => (Some(path), true),
+        PathResult::None(path) => (Some(path), false),
+        PathResult::Exhausted(path) => (Some(path), false),
+
+        PathResult::Pending => {
+            // Keep astar for the next iteration
+            *astar = Some(new_astar);
+
+            (None, false)
         },
-        PathResult::None(path) => {
-            *astar = None;
-            (Some(path), false)
-        },
-        PathResult::Exhausted(path) => {
-            *astar = None;
-            (Some(path), false)
-        },
-        PathResult::Pending => (None, false),
     }
 }
 
 // Enable when airbraking/sensible flight is a thing
-#[cfg(rrt_pathfinding)]
+#[cfg(feature = "rrt_pathfinding")]
 fn find_air_path<V>(
     vol: &V,
     startf: Vec3<f32>,
@@ -688,7 +721,6 @@ where
     V: BaseVol<Vox = Block> + ReadVol,
 {
     let radius = traversal_cfg.node_tolerance;
-    let mut connect = false;
     let total_dist_sqrd = startf.distance_squared(endf);
     // First check if a straight line path works
     if vol
@@ -701,7 +733,7 @@ where
     {
         let mut path = Vec::new();
         path.push(endf.map(|e| e.floor() as i32));
-        connect = true;
+        let connect = true;
         (Some(path.into_iter().collect()), connect)
     // Else use RRTs
     } else {
@@ -715,7 +747,7 @@ where
             //vol.get(*pos).ok().copied().unwrap_or_else(Block::empty).
             // is_fluid();
         };
-        informed_rrt_connect(start, end, is_traversable)
+        informed_rrt_connect(vol, startf, endf, is_traversable, radius)
     }
 }
 
@@ -729,12 +761,18 @@ where
 /// with wider gaps, such as flying through a forest than for terrain
 /// with narrow gaps, such as navigating a maze.
 /// Returns a path and whether that path is complete or not.
-#[cfg(rrt_pathfinding)]
-fn informed_rrt_connect(
-    start: Vec3<f32>,
-    end: Vec3<f32>,
+#[cfg(feature = "rrt_pathfinding")]
+fn informed_rrt_connect<V>(
+    vol: &V,
+    startf: Vec3<f32>,
+    endf: Vec3<f32>,
     is_valid_edge: impl Fn(&Vec3<f32>, &Vec3<f32>) -> bool,
-) -> (Option<Path<Vec3<i32>>>, bool) {
+    radius: f32,
+) -> (Option<Path<Vec3<i32>>>, bool)
+where
+    V: BaseVol<Vox = Block> + ReadVol,
+{
+    const MAX_POINTS: usize = 7000;
     let mut path = Vec::new();
 
     // Each tree has a vector of nodes
@@ -754,20 +792,16 @@ fn informed_rrt_connect(
     let mut path2 = Vec::new();
 
     // K-d trees are used to find the closest nodes rapidly
-    let mut kdtree1 = KdTree::new();
-    let mut kdtree2 = KdTree::new();
+    let mut kdtree1: KdTree<f32, usize, 3, 32, u32> = KdTree::with_capacity(MAX_POINTS);
+    let mut kdtree2: KdTree<f32, usize, 3, 32, u32> = KdTree::with_capacity(MAX_POINTS);
 
     // Add the start as the first node of the first k-d tree
-    kdtree1
-        .add(&[startf.x, startf.y, startf.z], node_index1)
-        .unwrap_or_default();
+    kdtree1.add(&[startf.x, startf.y, startf.z], node_index1);
     nodes1.push(startf);
     node_index1 += 1;
 
     // Add the end as the first node of the second k-d tree
-    kdtree2
-        .add(&[endf.x, endf.y, endf.z], node_index2)
-        .unwrap_or_default();
+    kdtree2.add(&[endf.x, endf.y, endf.z], node_index2);
     nodes2.push(endf);
     node_index2 += 1;
 
@@ -780,8 +814,8 @@ fn informed_rrt_connect(
     // sample spheroid volume. This increases in value until a path is found.
     let mut search_parameter = 0.01;
 
-    // Maximum of 7000 iterations
-    for _i in 0..7000 {
+    // Maximum of MAX_POINTS iterations
+    for _i in 0..MAX_POINTS {
         if connect {
             break;
         }
@@ -794,17 +828,19 @@ fn informed_rrt_connect(
 
         // Find the nearest nodes to the the sampled point
         let nearest_index1 = kdtree1
-            .nearest_one(
-                &[sampled_point1.x, sampled_point1.y, sampled_point1.z],
-                &squared_euclidean,
-            )
-            .map_or(0, |n| *n.1);
+            .nearest_one::<SquaredEuclidean>(&[
+                sampled_point1.x,
+                sampled_point1.y,
+                sampled_point1.z,
+            ])
+            .item;
         let nearest_index2 = kdtree2
-            .nearest_one(
-                &[sampled_point2.x, sampled_point2.y, sampled_point2.z],
-                &squared_euclidean,
-            )
-            .map_or(0, |n| *n.1);
+            .nearest_one::<SquaredEuclidean>(&[
+                sampled_point2.x,
+                sampled_point2.y,
+                sampled_point2.z,
+            ])
+            .item;
         let nearest1 = nodes1[nearest_index1];
         let nearest2 = nodes2[nearest_index2];
 
@@ -814,49 +850,51 @@ fn informed_rrt_connect(
 
         // Ensure the new nodes are valid/traversable
         if is_valid_edge(&nearest1, &new_point1) {
-            kdtree1
-                .add(&[new_point1.x, new_point1.y, new_point1.z], node_index1)
-                .unwrap_or_default();
+            kdtree1.add(&[new_point1.x, new_point1.y, new_point1.z], node_index1);
             nodes1.push(new_point1);
             parents1.insert(node_index1, nearest_index1);
             node_index1 += 1;
             // Check if the trees connect
-            if let Ok((check, index)) = kdtree2.nearest_one(
-                &[new_point1.x, new_point1.y, new_point1.z],
-                &squared_euclidean,
-            ) {
-                if check < radius {
-                    let connection = nodes2[*index];
-                    connection2_idx = *index;
-                    nodes1.push(connection);
-                    connection1_idx = nodes1.len() - 1;
-                    parents1.insert(node_index1, node_index1 - 1);
-                    connect = true;
-                }
+            let NearestNeighbour {
+                distance: check,
+                item: index,
+            } = kdtree2.nearest_one::<SquaredEuclidean>(&[
+                new_point1.x,
+                new_point1.y,
+                new_point1.z,
+            ]);
+            if check < radius {
+                let connection = nodes2[index];
+                connection2_idx = index;
+                nodes1.push(connection);
+                connection1_idx = nodes1.len() - 1;
+                parents1.insert(node_index1, node_index1 - 1);
+                connect = true;
             }
         }
 
         // Repeat the validity check for the second tree
         if is_valid_edge(&nearest2, &new_point2) {
-            kdtree2
-                .add(&[new_point2.x, new_point2.y, new_point1.z], node_index2)
-                .unwrap_or_default();
+            kdtree2.add(&[new_point2.x, new_point2.y, new_point1.z], node_index2);
             nodes2.push(new_point2);
             parents2.insert(node_index2, nearest_index2);
             node_index2 += 1;
             // Again check for a connection
-            if let Ok((check, index)) = kdtree1.nearest_one(
-                &[new_point2.x, new_point2.y, new_point1.z],
-                &squared_euclidean,
-            ) {
-                if check < radius {
-                    let connection = nodes1[*index];
-                    connection1_idx = *index;
-                    nodes2.push(connection);
-                    connection2_idx = nodes2.len() - 1;
-                    parents2.insert(node_index2, node_index2 - 1);
-                    connect = true;
-                }
+            let NearestNeighbour {
+                distance: check,
+                item: index,
+            } = kdtree1.nearest_one::<SquaredEuclidean>(&[
+                new_point2.x,
+                new_point2.y,
+                new_point1.z,
+            ]);
+            if check < radius {
+                let connection = nodes1[index];
+                connection1_idx = index;
+                nodes2.push(connection);
+                connection2_idx = nodes2.len() - 1;
+                parents2.insert(node_index2, node_index2 - 1);
+                connect = true;
             }
         }
         // Increase the search parameter to widen the sample volume
@@ -885,14 +923,14 @@ fn informed_rrt_connect(
         // If the trees did not connect, construct a path from the start to
         // the closest node to the end
         let mut current_node_index1 = kdtree1
-            .nearest_one(&[endf.x, endf.y, endf.z], &squared_euclidean)
-            .map_or(0, |c| *c.1);
+            .nearest_one::<SquaredEuclidean>(&[endf.x, endf.y, endf.z])
+            .item;
         // Attempt to pick a node other than the start node
         for _i in 0..3 {
             if current_node_index1 == 0
                 || nodes1[current_node_index1].distance_squared(startf) < 4.0
             {
-                if let Some(index) = parents1.values().choose(&mut thread_rng()) {
+                if let Some(index) = parents1.values().into_iter().choose(&mut thread_rng()) {
                     current_node_index1 = *index;
                 } else {
                     break;
@@ -943,6 +981,7 @@ fn informed_rrt_connect(
         node = path[node_idx];
     }
     path = new_path;
+    (Some(path.into_iter().collect()), connect)
 }
 
 /// Returns a random point within a radially symmetrical ellipsoid with given
@@ -955,7 +994,7 @@ fn informed_rrt_connect(
 /// along the axis between the foci. The value of the search parameter must be
 /// greater than zero. In order to increase the sample area, the
 /// search_parameter should be increased linearly as the search continues.
-#[cfg(rrt_pathfinding)]
+#[cfg(feature = "rrt_pathfinding")]
 pub fn point_on_prolate_spheroid(
     focus1: Vec3<f32>,
     focus2: Vec3<f32>,

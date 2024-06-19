@@ -1,10 +1,8 @@
 use crate::{
-    combat::{DamageContributor, DamageSource},
+    combat::{compute_poise_resilience, DamageContributor, DamageSource},
     comp::{
-        self,
-        ability::Capability,
-        inventory::item::{armor::Protection, ItemKind, MaterialStatManifest},
-        CharacterState, Inventory, Stats,
+        self, ability::Capability, inventory::item::MaterialStatManifest, CharacterState,
+        Inventory, Stats,
     },
     resources::Time,
     states,
@@ -88,25 +86,21 @@ impl PoiseState {
         let (charstate_parameters, impulse) = match self {
             PoiseState::Normal => (None, None),
             PoiseState::Interrupted => (
-                Some((Duration::from_millis(250), Duration::from_millis(250), 0.8)),
+                Some((Duration::from_millis(200), Duration::from_millis(200), 0.8)),
                 None,
             ),
             PoiseState::Stunned => (
-                Some((Duration::from_millis(750), Duration::from_millis(750), 0.5)),
+                Some((Duration::from_millis(350), Duration::from_millis(350), 0.5)),
                 None,
             ),
             PoiseState::Dazed => (
-                Some((
-                    Duration::from_millis(1000),
-                    Duration::from_millis(1000),
-                    0.2,
-                )),
+                Some((Duration::from_millis(750), Duration::from_millis(750), 0.2)),
                 None,
             ),
             PoiseState::KnockedDown => (
                 Some((
-                    Duration::from_millis(2000),
-                    Duration::from_millis(2000),
+                    Duration::from_millis(1500),
+                    Duration::from_millis(1500),
                     0.0,
                 )),
                 Some(10.0),
@@ -134,7 +128,7 @@ impl PoiseState {
     }
 
     /// Returns the multiplier on poise damage to health damage for when the
-    /// target is in a poise state
+    /// target is in a poise state, also is used for precision
     pub fn damage_multiplier(&self) -> f32 {
         match self {
             Self::Interrupted => 0.1,
@@ -266,23 +260,7 @@ impl Poise {
         char_state: Option<&CharacterState>,
         stats: Option<&Stats>,
     ) -> f32 {
-        let protection = inventory.map_or(Some(0.0), |inv| {
-            inv.equipped_items()
-                .filter_map(|item| {
-                    if let ItemKind::Armor(armor) = &*item.kind() {
-                        armor
-                            .stats(msm, item.stats_durability_multiplier())
-                            .poise_resilience
-                    } else {
-                        None
-                    }
-                })
-                .map(|protection| match protection {
-                    Protection::Normal(protection) => Some(protection),
-                    Protection::Invincible => None,
-                })
-                .sum::<Option<f32>>()
-        });
+        let protection = compute_poise_resilience(inventory, msm);
         let from_inventory = match protection {
             Some(dr) => dr / (60.0 + dr.abs()),
             None => 1.0,
@@ -297,7 +275,7 @@ impl Poise {
             if resistant { 0.5 } else { 0.0 }
         };
         let from_stats = if let Some(stats) = stats {
-            stats.poise_reduction
+            stats.poise_reduction.modifier()
         } else {
             0.0
         };

@@ -1,10 +1,11 @@
 use crate::{
-    combat::CombatEffect,
+    combat::{self, CombatEffect},
     comp::{
-        character_state::OutputEvents, object::Body::LaserBeam, Body, CharacterState, LightEmitter,
-        Pos, ProjectileConstructor, StateUpdate,
+        character_state::OutputEvents,
+        object::Body::{GrenadeClay, LaserBeam, LaserBeamSmall},
+        Body, CharacterState, LightEmitter, Pos, ProjectileConstructor, StateUpdate,
     },
-    event::{LocalEvent, ServerEvent},
+    event::{LocalEvent, ShootEvent},
     outcome::Outcome,
     states::{
         behavior::{CharacterBehavior, JoinData},
@@ -67,13 +68,34 @@ impl CharacterBehavior for Data {
                         timer: tick_attack_or_default(data, self.timer, None),
                         ..*self
                     });
-                    if self.static_data.projectile_body == Body::Object(LaserBeam) {
-                        // Send local event used for frontend shenanigans
-                        output_events.emit_local(LocalEvent::CreateOutcome(
-                            Outcome::CyclopsCharge {
-                                pos: data.pos.0 + *data.ori.look_dir() * (data.body.max_radius()),
-                            },
-                        ));
+                    match self.static_data.projectile_body {
+                        Body::Object(LaserBeam) => {
+                            // Send local event used for frontend shenanigans
+                            output_events.emit_local(LocalEvent::CreateOutcome(
+                                Outcome::CyclopsCharge {
+                                    pos: data.pos.0
+                                        + *data.ori.look_dir() * (data.body.max_radius()),
+                                },
+                            ));
+                        },
+                        Body::Object(GrenadeClay) => {
+                            // Send local event used for frontend shenanigans
+                            output_events.emit_local(LocalEvent::CreateOutcome(
+                                Outcome::FuseCharge {
+                                    pos: data.pos.0
+                                        + *data.ori.look_dir() * (2.5 * data.body.max_radius()),
+                                },
+                            ));
+                        },
+                        Body::Object(LaserBeamSmall) => {
+                            output_events.emit_local(LocalEvent::CreateOutcome(
+                                Outcome::TerracottaStatueCharge {
+                                    pos: data.pos.0
+                                        + *data.ori.look_dir() * (data.body.max_radius()),
+                                },
+                            ));
+                        },
+                        _ => {},
                     }
                 } else {
                     // Transitions to recover section of stage
@@ -87,14 +109,10 @@ impl CharacterBehavior for Data {
             StageSection::Recover => {
                 if !self.exhausted {
                     // Fire
-                    let (crit_chance, crit_mult) =
-                        get_crit_data(data, self.static_data.ability_info);
-                    let tool_stats = get_tool_stats(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     let projectile = self.static_data.projectile.create_projectile(
                         Some(*data.uid),
-                        crit_chance,
-                        crit_mult,
-                        tool_stats,
+                        precision_mult,
                         self.static_data.damage_effect,
                     );
                     // Shoots all projectiles simultaneously
@@ -115,7 +133,7 @@ impl CharacterBehavior for Data {
                         }))
                         .unwrap_or(data.inputs.look_dir);
                         // Tells server to create and shoot the projectile
-                        output_events.emit_server(ServerEvent::Shoot {
+                        output_events.emit_server(ShootEvent {
                             entity: data.entity,
                             pos,
                             dir,
@@ -134,7 +152,11 @@ impl CharacterBehavior for Data {
                 } else if self.timer < self.static_data.recover_duration {
                     // Recovers
                     update.character = CharacterState::BasicRanged(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {

@@ -38,7 +38,7 @@ impl Vertex {
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32];
         wgpu::VertexBufferLayout {
             array_stride: Self::STRIDE,
-            step_mode: wgpu::InputStepMode::Vertex,
+            step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &ATTRIBUTES,
         }
     }
@@ -98,6 +98,22 @@ pub enum ParticleMode {
     SnowStorm = 44,
     PortalFizz = 45,
     Ink = 46,
+    Whirlwind = 47,
+    FieryBurst = 48,
+    FieryBurstVortex = 49,
+    FieryBurstSparks = 50,
+    FieryBurstAsh = 51,
+    FieryTornado = 52,
+    PhoenixCloud = 53,
+    FieryDropletTrace = 54,
+    EnergyPhoenix = 55,
+    PhoenixBeam = 56,
+    PhoenixBuildUpAim = 57,
+    ClayShrapnel = 58,
+    Airflow = 59,
+    Spore = 60,
+    SurpriseEgg = 61,
+    FlameTornado = 62,
 }
 
 impl ParticleMode {
@@ -147,7 +163,7 @@ impl Instance {
     ) -> Self {
         use rand::Rng;
         Self {
-            inst_time: inst_time as f32,
+            inst_time: (inst_time % super::TIME_OVERFLOW) as f32,
             inst_lifespan: lifespan,
             inst_entropy: rand::thread_rng().gen(),
             inst_mode: inst_mode as i32,
@@ -165,7 +181,7 @@ impl Instance {
     ) -> Self {
         use rand::Rng;
         Self {
-            inst_time: inst_time as f32,
+            inst_time: (inst_time % super::TIME_OVERFLOW) as f32,
             inst_lifespan: lifespan,
             inst_entropy: rand::thread_rng().gen(),
             inst_mode: inst_mode as i32,
@@ -178,7 +194,7 @@ impl Instance {
         const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![2 => Float32, 3 => Float32, 4 => Float32, 5 => Sint32, 6 => Float32x3, 7 => Float32x3];
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::InputStepMode::Instance,
+            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTRIBUTES,
         }
     }
@@ -199,6 +215,7 @@ impl ParticlePipeline {
         fs_module: &wgpu::ShaderModule,
         global_layout: &GlobalsLayouts,
         aa_mode: AaMode,
+        format: wgpu::TextureFormat,
     ) -> Self {
         common_base::span!(_guard, "ParticlePipeline::new");
         let render_pipeline_layout =
@@ -223,7 +240,7 @@ impl ParticlePipeline {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
-                clamp_depth: false,
+                unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
@@ -235,7 +252,7 @@ impl ParticlePipeline {
                     front: wgpu::StencilFaceState::IGNORE,
                     back: wgpu::StencilFaceState::IGNORE,
                     read_mask: !0,
-                    write_mask: !0,
+                    write_mask: 0,
                 },
                 bias: wgpu::DepthBiasState {
                     constant: 0,
@@ -252,9 +269,8 @@ impl ParticlePipeline {
                 module: fs_module,
                 entry_point: "main",
                 targets: &[
-                    wgpu::ColorTargetState {
-                        // TODO: use a constant and/or pass in this format on pipeline construction
-                        format: wgpu::TextureFormat::Rgba16Float,
+                    Some(wgpu::ColorTargetState {
+                        format,
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent {
                                 src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -267,15 +283,16 @@ impl ParticlePipeline {
                                 operation: wgpu::BlendOperation::Add,
                             },
                         }),
-                        write_mask: wgpu::ColorWrite::ALL,
-                    },
-                    wgpu::ColorTargetState {
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8Uint,
                         blend: None,
-                        write_mask: wgpu::ColorWrite::ALL,
-                    },
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
                 ],
             }),
+            multiview: None,
         });
 
         Self {

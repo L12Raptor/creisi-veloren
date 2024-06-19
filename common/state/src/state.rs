@@ -8,17 +8,18 @@ use common::uid::IdMaps;
 use common::{
     calendar::Calendar,
     comp,
-    event::{EventBus, LocalEvent, ServerEvent},
+    event::{EventBus, LocalEvent},
     link::Is,
     mounting::{Mount, Rider, VolumeRider, VolumeRiders},
     outcome::Outcome,
     resources::{
-        DeltaTime, EntitiesDiedLastTick, GameMode, PlayerEntity, PlayerPhysicsSettings, Time,
-        TimeOfDay, TimeScale,
+        DeltaTime, EntitiesDiedLastTick, GameMode, PlayerEntity, PlayerPhysicsSettings,
+        ProgramTime, Time, TimeOfDay, TimeScale,
     },
     shared_server_config::ServerConstants,
     slowjob::SlowJobPool,
     terrain::{Block, MapSizeLg, TerrainChunk, TerrainGrid},
+    tether,
     time::DayPeriod,
     trade::Trades,
     vol::{ReadVol, WriteVol},
@@ -32,7 +33,7 @@ use hashbrown::{HashMap, HashSet};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use specs::{
     prelude::Resource,
-    shred::{Fetch, FetchMut},
+    shred::{Fetch, FetchMut, SendDispatcher},
     storage::{MaskedStorage as EcsMaskedStorage, Storage as EcsStorage},
     Component, DispatcherBuilder, Entity as EcsEntity, WorldExt,
 };
@@ -127,6 +128,7 @@ pub struct State {
     ecs: specs::World,
     // Avoid lifetime annotation by storing a thread pool instead of the whole dispatcher
     thread_pool: Arc<ThreadPool>,
+    dispatcher: SendDispatcher<'static>,
 }
 
 pub type Pools = Arc<ThreadPool>;
@@ -149,13 +151,41 @@ impl State {
     }
 
     /// Create a new `State` in client mode.
-    pub fn client(pools: Pools, map_size_lg: MapSizeLg, default_chunk: Arc<TerrainChunk>) -> Self {
-        Self::new(GameMode::Client, pools, map_size_lg, default_chunk)
+    pub fn client(
+        pools: Pools,
+        map_size_lg: MapSizeLg,
+        default_chunk: Arc<TerrainChunk>,
+        add_systems: impl Fn(&mut DispatcherBuilder),
+        #[cfg(feature = "plugins")] plugin_mgr: PluginMgr,
+    ) -> Self {
+        Self::new(
+            GameMode::Client,
+            pools,
+            map_size_lg,
+            default_chunk,
+            add_systems,
+            #[cfg(feature = "plugins")]
+            plugin_mgr,
+        )
     }
 
     /// Create a new `State` in server mode.
-    pub fn server(pools: Pools, map_size_lg: MapSizeLg, default_chunk: Arc<TerrainChunk>) -> Self {
-        Self::new(GameMode::Server, pools, map_size_lg, default_chunk)
+    pub fn server(
+        pools: Pools,
+        map_size_lg: MapSizeLg,
+        default_chunk: Arc<TerrainChunk>,
+        add_systems: impl Fn(&mut DispatcherBuilder),
+        #[cfg(feature = "plugins")] plugin_mgr: PluginMgr,
+    ) -> Self {
+        Self::new(
+            GameMode::Server,
+            pools,
+            map_size_lg,
+            default_chunk,
+            add_systems,
+            #[cfg(feature = "plugins")]
+            plugin_mgr,
+        )
     }
 
     pub fn new(
@@ -163,10 +193,31 @@ impl State {
         pools: Pools,
         map_size_lg: MapSizeLg,
         default_chunk: Arc<TerrainChunk>,
+        add_systems: impl Fn(&mut DispatcherBuilder),
+        #[cfg(feature = "plugins")] plugin_mgr: PluginMgr,
     ) -> Self {
+        prof_span!(guard, "create dispatcher");
+        let mut dispatch_builder =
+            DispatcherBuilder::<'static, 'static>::new().with_pool(Arc::clone(&pools));
+        // TODO: Consider alternative ways to do this
+        add_systems(&mut dispatch_builder);
+        let dispatcher = dispatch_builder
+            .build()
+            .try_into_sendable()
+            .unwrap_or_else(|_| panic!("Thread local systems not allowed"));
+        drop(guard);
+
         Self {
-            ecs: Self::setup_ecs_world(game_mode, Arc::clone(&pools), map_size_lg, default_chunk),
+            ecs: Self::setup_ecs_world(
+                game_mode,
+                Arc::clone(&pools),
+                map_size_lg,
+                default_chunk,
+                #[cfg(feature = "plugins")]
+                plugin_mgr,
+            ),
             thread_pool: pools,
+            dispatcher,
         }
     }
 
@@ -178,6 +229,7 @@ impl State {
         thread_pool: Arc<ThreadPool>,
         map_size_lg: MapSizeLg,
         default_chunk: Arc<TerrainChunk>,
+        #[cfg(feature = "plugins")] mut plugin_mgr: PluginMgr,
     ) -> specs::World {
         prof_span!("State::setup_ecs_world");
         let mut ecs = specs::World::new();
@@ -191,17 +243,20 @@ impl State {
         ecs.register::<comp::ActiveAbilities>();
         ecs.register::<comp::Buffs>();
         ecs.register::<comp::Auras>();
+        ecs.register::<comp::EnteredAuras>();
         ecs.register::<comp::Energy>();
         ecs.register::<comp::Combo>();
         ecs.register::<comp::Health>();
         ecs.register::<comp::Poise>();
         ecs.register::<comp::CanBuild>();
         ecs.register::<comp::LightEmitter>();
-        ecs.register::<comp::Item>();
+        ecs.register::<comp::PickupItem>();
         ecs.register::<comp::Scale>();
         ecs.register::<Is<Mount>>();
         ecs.register::<Is<Rider>>();
         ecs.register::<Is<VolumeRider>>();
+        ecs.register::<Is<tether::Leader>>();
+        ecs.register::<Is<tether::Follower>>();
         ecs.register::<comp::Mass>();
         ecs.register::<comp::Density>();
         ecs.register::<comp::Collider>();
@@ -213,7 +268,7 @@ impl State {
         ecs.register::<comp::Group>();
         ecs.register::<comp::Shockwave>();
         ecs.register::<comp::ShockwaveHitEntities>();
-        ecs.register::<comp::BeamSegment>();
+        ecs.register::<comp::Beam>();
         ecs.register::<comp::Alignment>();
         ecs.register::<comp::LootOwner>();
         ecs.register::<comp::Admin>();
@@ -261,7 +316,6 @@ impl State {
         ecs.register::<comp::Faction>();
         ecs.register::<comp::invite::Invite>();
         ecs.register::<comp::invite::PendingInvites>();
-        ecs.register::<comp::Beam>();
         ecs.register::<VolumeRiders>();
 
         // Register synced resources used by the ECS.
@@ -269,6 +323,7 @@ impl State {
         ecs.insert(Calendar::default());
         ecs.insert(WeatherGrid::new(Vec2::zero()));
         ecs.insert(Time(0.0));
+        ecs.insert(ProgramTime(0.0));
         ecs.insert(TimeScale(1.0));
 
         // Register unsynced resources used by the ECS.
@@ -292,7 +347,6 @@ impl State {
         ecs.insert(SlowJobPool::new(slow_limit, 10_000, thread_pool));
 
         // TODO: only register on the server
-        ecs.insert(EventBus::<ServerEvent>::default());
         ecs.insert(comp::group::GroupManager::default());
         ecs.insert(SysMetrics::default());
         ecs.insert(PhysicsMetrics::default());
@@ -302,32 +356,21 @@ impl State {
 
         // Load plugins from asset directory
         #[cfg(feature = "plugins")]
-        ecs.insert(match PluginMgr::from_assets() {
-            Ok(mut plugin_mgr) => {
-                let ecs_world = EcsWorld {
-                    entities: &ecs.entities(),
-                    health: ecs.read_component().into(),
-                    uid: ecs.read_component().into(),
-                    id_maps: &ecs.read_resource::<IdMaps>().into(),
-                    player: ecs.read_component().into(),
-                };
-                if let Err(e) = plugin_mgr
-                    .execute_event(&ecs_world, &plugin_api::event::PluginLoadEvent {
-                        game_mode,
-                    })
-                {
-                    tracing::debug!(?e, "Failed to run plugin init");
-                    tracing::info!("Plugins disabled, enable debug logging for more information.");
-                    PluginMgr::default()
-                } else {
-                    plugin_mgr
-                }
-            },
-            Err(e) => {
-                tracing::debug!(?e, "Failed to read plugins from assets");
+        ecs.insert({
+            let ecs_world = EcsWorld {
+                entities: &ecs.entities(),
+                health: ecs.read_component().into(),
+                uid: ecs.read_component().into(),
+                id_maps: &ecs.read_resource::<IdMaps>().into(),
+                player: ecs.read_component().into(),
+            };
+            if let Err(e) = plugin_mgr.load_event(&ecs_world, game_mode) {
+                tracing::debug!(?e, "Failed to run plugin init");
                 tracing::info!("Plugins disabled, enable debug logging for more information.");
                 PluginMgr::default()
-            },
+            } else {
+                plugin_mgr
+            }
         });
 
         ecs
@@ -376,6 +419,15 @@ impl State {
     /// Read a component attributed to a particular entity.
     pub fn read_component_copied<C: Component + Copy>(&self, entity: EcsEntity) -> Option<C> {
         self.ecs.read_storage().get(entity).copied()
+    }
+
+    /// # Panics
+    /// Panics if `EventBus<E>` is borrowed
+    pub fn emit_event_now<E>(&self, event: E)
+    where
+        EventBus<E>: Resource,
+    {
+        self.ecs.write_resource::<EventBus<E>>().emit_now(event)
     }
 
     /// Given mutable access to the resource R, assuming the resource
@@ -437,6 +489,11 @@ impl State {
     /// Note that this does not correspond to the time of day.
     pub fn get_time(&self) -> f64 { self.ecs.read_resource::<Time>().0 }
 
+    /// Get the current true in-game time, unaffected by time_scale.
+    ///
+    /// Note that this does not correspond to the time of day.
+    pub fn get_program_time(&self) -> f64 { self.ecs.read_resource::<ProgramTime>().0 }
+
     /// Get the current delta time.
     pub fn get_delta_time(&self) -> f32 { self.ecs.read_resource::<DeltaTime>().0 }
 
@@ -483,12 +540,15 @@ impl State {
     }
 
     /// Removes every chunk of the terrain.
-    pub fn clear_terrain(&mut self) {
+    pub fn clear_terrain(&mut self) -> usize {
         let removed_chunks = &mut self.ecs.write_resource::<TerrainChanges>().removed_chunks;
 
-        self.terrain_mut().drain().for_each(|(key, _)| {
-            removed_chunks.insert(key);
-        });
+        self.terrain_mut()
+            .drain()
+            .map(|(key, _)| {
+                removed_chunks.insert(key);
+            })
+            .count()
     }
 
     /// Insert the provided chunk into this state's terrain.
@@ -513,7 +573,7 @@ impl State {
 
     /// Remove the chunk with the given key from this state's terrain, if it
     /// exists.
-    pub fn remove_chunk(&mut self, key: Vec2<i32>) {
+    pub fn remove_chunk(&mut self, key: Vec2<i32>) -> bool {
         if self
             .ecs
             .write_resource::<TerrainGrid>()
@@ -524,6 +584,10 @@ impl State {
                 .write_resource::<TerrainChanges>()
                 .removed_chunks
                 .insert(key);
+
+            true
+        } else {
+            false
         }
     }
 
@@ -567,17 +631,9 @@ impl State {
             }
             let outcome = self.ecs.read_resource::<EventBus<Outcome>>();
             while let Some(outcomes) = scheduled_changes.outcomes.poll(current_time) {
-                for (pos, block) in outcomes.iter() {
-                    let offset_dir = Vec3::<i32>::zero() - pos;
-                    let offset = offset_dir
-                        / Vec3::new(offset_dir.x.abs(), offset_dir.y.abs(), offset_dir.z.abs());
-                    let outcome_pos = Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32)
-                        - (Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32) / 2.0);
+                for (pos, block) in outcomes.into_iter() {
                     if let Some(sprite) = block.get_sprite() {
-                        outcome.emit_now(Outcome::SpriteDelete {
-                            pos: outcome_pos,
-                            sprite,
-                        });
+                        outcome.emit_now(Outcome::SpriteDelete { pos, sprite });
                     }
                 }
             }
@@ -615,7 +671,6 @@ impl State {
     pub fn tick(
         &mut self,
         dt: Duration,
-        add_systems: impl Fn(&mut DispatcherBuilder),
         update_terrain: bool,
         mut metrics: Option<&mut StateTickMetrics>,
         server_constants: &ServerConstants,
@@ -637,6 +692,7 @@ impl State {
         self.ecs.write_resource::<TimeOfDay>().0 +=
             dt.as_secs_f64() * server_constants.day_cycle_coefficient * time_scale;
         self.ecs.write_resource::<Time>().0 += dt.as_secs_f64() * time_scale;
+        self.ecs.write_resource::<ProgramTime>().0 += dt.as_secs_f64();
 
         // Update delta time.
         // Beyond a delta time of MAX_DELTA_TIME, start lagging to avoid skipping
@@ -644,24 +700,12 @@ impl State {
         self.ecs.write_resource::<DeltaTime>().0 =
             (dt.as_secs_f32() * time_scale as f32).min(MAX_DELTA_TIME);
 
-        section_span!(guard, "create dispatcher");
-        // Run systems to update the world.
-        // Create and run a dispatcher for ecs systems.
-        let mut dispatch_builder =
-            DispatcherBuilder::new().with_pool(Arc::clone(&self.thread_pool));
-        // TODO: Consider alternative ways to do this
-        add_systems(&mut dispatch_builder);
-        // This dispatches all the systems in parallel.
-        let mut dispatcher = dispatch_builder.build();
-        drop(guard);
-
         section_span!(guard, "run systems");
-        dispatcher.dispatch(&self.ecs);
+        // This dispatches all the systems in parallel.
+        self.dispatcher.dispatch(&self.ecs);
         drop(guard);
 
-        section_span!(guard, "maintain ecs");
-        self.ecs.maintain();
-        drop(guard);
+        self.maintain_ecs();
 
         if update_terrain {
             self.apply_terrain_changes_internal(true, block_update);
@@ -702,6 +746,11 @@ impl State {
             }
         }
         drop(guard);
+    }
+
+    pub fn maintain_ecs(&mut self) {
+        span!(_guard, "maintain ecs");
+        self.ecs.maintain();
     }
 
     /// Clean up the state after a tick.

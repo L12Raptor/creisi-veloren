@@ -1,9 +1,6 @@
 use crate::{
     assets::{self, Asset, AssetExt},
-    comp::{
-        item::tool::ToolKind,
-        skills::{GeneralSkill, Skill},
-    },
+    comp::{item::tool::ToolKind, skills::Skill},
 };
 use core::borrow::{Borrow, BorrowMut};
 use hashbrown::HashMap;
@@ -138,7 +135,7 @@ impl SkillGroupKind {
     pub fn skill_point_cost(self, level: u16) -> u32 {
         use std::f32::consts::E;
         match self {
-            Self::Weapon(ToolKind::Sword | ToolKind::Axe) => {
+            Self::Weapon(ToolKind::Sword | ToolKind::Axe | ToolKind::Hammer) => {
                 let level = level as f32;
                 ((400.0 * (level / (level + 20.0)).powi(2) + 5.0 * E.powf(0.025 * level))
                     .min(u32::MAX as f32) as u32)
@@ -256,8 +253,6 @@ impl SkillGroup {
 pub struct SkillSet {
     skill_groups: HashMap<SkillGroupKind, SkillGroup>,
     skills: HashMap<Skill, u16>,
-    pub modify_health: bool,
-    pub modify_energy: bool,
 }
 
 impl Component for SkillSet {
@@ -273,8 +268,6 @@ impl Default for SkillSet {
         let mut skill_group = Self {
             skill_groups: HashMap::new(),
             skills: SkillSet::initial_skills(),
-            modify_health: false,
-            modify_energy: false,
         };
 
         // Insert default skill groups
@@ -306,8 +299,6 @@ impl SkillSet {
         let mut skillset = SkillSet {
             skill_groups,
             skills: SkillSet::initial_skills(),
-            modify_health: true,
-            modify_energy: true,
         };
         let mut persistence_load_error = None;
 
@@ -491,14 +482,14 @@ impl SkillSet {
     ///
     /// NOTE: Please don't use pathological or clever implementations of to_mut
     /// here.
-    pub fn unlock_skill_cow<'a, B, C: 'a>(
+    pub fn unlock_skill_cow<'a, B, C>(
         this_: &'a mut B,
         skill: Skill,
         to_mut: impl FnOnce(&'a mut B) -> &'a mut C,
     ) -> Result<(), SkillUnlockError>
     where
         B: Borrow<SkillSet>,
-        C: BorrowMut<SkillSet>,
+        C: BorrowMut<SkillSet> + 'a,
     {
         if let Some(skill_group_kind) = skill.skill_group_kind() {
             let this = (*this_).borrow();
@@ -506,8 +497,8 @@ impl SkillSet {
             let prerequisites_met = this.prerequisites_met(skill);
             // Check that skill is not yet at max level
             if !matches!(this.skills.get(&skill), Some(level) if *level == skill.max_level()) {
-                if let Some(skill_group) = this.skill_groups.get(&skill_group_kind) &&
-                    this.skill_group_accessible_if_exists(skill_group_kind)
+                if let Some(skill_group) = this.skill_groups.get(&skill_group_kind)
+                    && this.skill_group_accessible_if_exists(skill_group_kind)
                 {
                     if prerequisites_met {
                         if let Some(new_available_sp) = skill_group
@@ -517,25 +508,17 @@ impl SkillSet {
                             // Perform all mutation inside this branch, to avoid triggering a copy
                             // on write or flagged storage in cases where this matters.
                             let this_ = to_mut(this_);
-                            let mut this = this_.borrow_mut();
+                            let this = this_.borrow_mut();
                             // NOTE: Verified to exist previously when we accessed
                             // this.skill_groups (assuming a non-pathological implementation of
                             // ToOwned).
-                            let skill_group = this.skill_groups.get_mut(&skill_group_kind)
-                                .expect("Verified to exist when we previously accessed this.skill_groups");
+                            let skill_group = this.skill_groups.get_mut(&skill_group_kind).expect(
+                                "Verified to exist when we previously accessed this.skill_groups",
+                            );
                             skill_group.available_sp = new_available_sp;
                             skill_group.ordered_skills.push(skill);
-                            match skill {
-                                Skill::UnlockGroup(group) => {
-                                    this.unlock_skill_group(group);
-                                },
-                                Skill::General(GeneralSkill::HealthIncrease) => {
-                                    this.modify_health = true;
-                                },
-                                Skill::General(GeneralSkill::EnergyIncrease) => {
-                                    this.modify_energy = true;
-                                },
-                                _ => {},
+                            if let Skill::UnlockGroup(group) = skill {
+                                this.unlock_skill_group(group);
                             }
                             this.skills.insert(skill, next_level);
                             Ok(())

@@ -1,5 +1,7 @@
+pub mod sprite;
 mod watcher;
 
+use self::sprite::SpriteSpec;
 pub use self::watcher::{BlocksOfInterest, FireplaceType, Interaction};
 
 use crate::{
@@ -15,6 +17,7 @@ use crate::{
         SpriteGlobalsBindGroup, SpriteInstance, SpriteVertex, SpriteVerts, TerrainAtlasData,
         TerrainLocals, TerrainShadowDrawer, TerrainVertex, SPRITE_VERT_PAGE_SIZE,
     },
+    scene::terrain::sprite::SpriteModelConfig,
 };
 
 use super::{
@@ -22,7 +25,7 @@ use super::{
     math, SceneData, RAIN_THRESHOLD,
 };
 use common::{
-    assets::{self, AssetExt, DotVoxAsset},
+    assets::{AssetExt, DotVoxAsset},
     figure::Segment,
     spiral::Spiral2d,
     terrain::{Block, SpriteKind, TerrainChunk},
@@ -34,7 +37,6 @@ use core::{f32, fmt::Debug, marker::PhantomData, time::Duration};
 use crossbeam_channel as channel;
 use guillotiere::AtlasAllocator;
 use hashbrown::HashMap;
-use serde::Deserialize;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -151,96 +153,6 @@ struct MeshWorkerResponse {
     blocks_of_interest: BlocksOfInterest,
 }
 
-#[derive(Deserialize)]
-/// Configuration data for an individual sprite model.
-struct SpriteModelConfig<Model> {
-    /// Data for the .vox model associated with this sprite.
-    model: Model,
-    /// Sprite model center (as an offset from 0 in the .vox file).
-    offset: (f32, f32, f32),
-    /// LOD axes (how LOD gets applied along each axis, when we switch
-    /// to an LOD model).
-    lod_axes: (f32, f32, f32),
-}
-
-#[derive(Deserialize)]
-/// Configuration data for a group of sprites (currently associated with a
-/// particular SpriteKind).
-struct SpriteConfig<Model> {
-    /// All possible model variations for this sprite.
-    // NOTE: Could make constant per sprite type, but eliminating this indirection and
-    // allocation is probably not that important considering how sprites are used.
-    variations: Vec<SpriteModelConfig<Model>>,
-    /// The extent to which the sprite sways in the window.
-    ///
-    /// 0.0 is normal.
-    wind_sway: f32,
-}
-
-// TODO: reduce llvm IR lines from this
-/// Configuration data for all sprite models.
-///
-/// NOTE: Model is an asset path to the appropriate sprite .vox model.
-#[derive(Deserialize)]
-#[serde(try_from = "HashMap<SpriteKind, Option<SpriteConfig<String>>>")]
-pub struct SpriteSpec([Option<SpriteConfig<String>>; 256]);
-
-impl SpriteSpec {
-    fn get(&self, kind: SpriteKind) -> Option<&SpriteConfig<String>> {
-        const _: () = assert!(core::mem::size_of::<SpriteKind>() == 1);
-        // NOTE: This will never be out of bounds since `SpriteKind` is `repr(u8)`
-        self.0[kind as usize].as_ref()
-    }
-}
-
-/// Conversion of SpriteSpec from a hashmap failed because some sprites were
-/// missing.
-struct SpritesMissing(Vec<SpriteKind>);
-
-use core::fmt;
-
-impl fmt::Display for SpritesMissing {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "Missing entries in the sprite manifest for these sprites: {:?}",
-            &self.0,
-        )
-    }
-}
-
-// Here we ensure all variants have an entry in the config.
-impl TryFrom<HashMap<SpriteKind, Option<SpriteConfig<String>>>> for SpriteSpec {
-    type Error = SpritesMissing;
-
-    fn try_from(
-        mut map: HashMap<SpriteKind, Option<SpriteConfig<String>>>,
-    ) -> Result<Self, Self::Error> {
-        let mut array = [(); 256].map(|()| None);
-        let sprites_missing = SpriteKind::iter()
-            .filter(|kind| match map.remove(kind) {
-                Some(config) => {
-                    array[*kind as usize] = config;
-                    false
-                },
-                None => true,
-            })
-            .collect::<Vec<_>>();
-
-        if sprites_missing.is_empty() {
-            Ok(Self(array))
-        } else {
-            Err(SpritesMissing(sprites_missing))
-        }
-    }
-}
-
-impl assets::Asset for SpriteSpec {
-    type Loader = assets::RonLoader;
-
-    const EXTENSION: &'static str = "ron";
-}
-
 pub fn get_sprite_instances<'a, I: 'a>(
     lod_levels: &'a mut [I; SPRITE_LOD_LEVELS],
     set_instance: impl Fn(&mut I, SpriteInstance, Vec3<i32>),
@@ -248,7 +160,7 @@ pub fn get_sprite_instances<'a, I: 'a>(
     mut to_wpos: impl FnMut(Vec3<f32>) -> Vec3<i32>,
     mut light_map: impl FnMut(Vec3<i32>) -> f32,
     mut glow_map: impl FnMut(Vec3<i32>) -> f32,
-    sprite_data: &HashMap<(SpriteKind, usize), [SpriteData; SPRITE_LOD_LEVELS]>,
+    sprite_data: &HashMap<(SpriteKind, usize, usize), [SpriteData; SPRITE_LOD_LEVELS]>,
     sprite_config: &SpriteSpec,
 ) {
     prof_span!("extract sprite_instances");
@@ -257,7 +169,7 @@ pub fn get_sprite_instances<'a, I: 'a>(
             continue;
         };
 
-        let Some(cfg) = sprite_config.get(sprite) else {
+        let Some((cfg_i, cfg)) = sprite_config.get_for_block(&block) else {
             continue;
         };
 
@@ -270,10 +182,19 @@ pub fn get_sprite_instances<'a, I: 'a>(
             .overflowing_add((wpos.x as u64).overflowing_mul(wpos.y as u64).0)
             .0; // Awful PRNG
 
-        let ori = (block.get_ori().unwrap_or((seed % 4) as u8 * 2)) & 0b111;
+        // % 4 is non uniform, take 7 and combine two lesser probable outcomes
+        let ori = (block.get_ori().unwrap_or((((seed % 7) + 1) / 2) as u8 * 2)) & 0b111;
         if !cfg.variations.is_empty() {
-            let variation = seed as usize % cfg.variations.len();
-            let key = (sprite, variation);
+            // try to make the variation more uniform as the PRNG is highly unfair
+            let variation = match cfg.variations.len() {
+                1 => 0,
+                2 => (seed as usize % 4) / 3,
+                3 => (seed as usize % 5) / 2,
+                // for four use a different seed than for ori to not have them match always
+                4 => (((seed.overflowing_add(wpos.x as u64).0) as usize % 7) + 1) / 2,
+                _ => seed as usize % cfg.variations.len(),
+            };
+            let key = (sprite, variation, cfg_i);
 
             // NOTE: Safe because we called sprite_config_for already.
             // NOTE: Safe because 0 ≤ ori < 8
@@ -326,7 +247,7 @@ fn mesh_worker(
     max_texture_size: u16,
     chunk: Arc<TerrainChunk>,
     range: Aabb<i32>,
-    sprite_data: &HashMap<(SpriteKind, usize), [SpriteData; SPRITE_LOD_LEVELS]>,
+    sprite_data: &HashMap<(SpriteKind, usize, usize), [SpriteData; SPRITE_LOD_LEVELS]>,
     sprite_config: &SpriteSpec,
 ) -> MeshWorkerResponse {
     span!(_guard, "mesh_worker");
@@ -437,8 +358,8 @@ fn mesh_worker(
                 (
                     deep_level
                         .into_iter()
-                        .chain(shallow_level.into_iter())
-                        .chain(surface_level.into_iter())
+                        .chain(shallow_level)
+                        .chain(surface_level)
                         .collect(),
                     alt_indices,
                 )
@@ -474,10 +395,6 @@ pub struct Terrain<V: RectRasterableVol = TerrainChunk> {
     /// might significantly reduce the number of textures we need for
     /// particularly difficult locations.
     atlas: AtlasAllocator,
-    /// FIXME: This could possibly become an `AssetHandle<SpriteSpec>`, to get
-    /// hot-reloading for free, but I am not sure if sudden changes of this
-    /// value would break something
-    pub sprite_config: Arc<SpriteSpec>,
     chunks: HashMap<Vec2<i32>, TerrainChunkData>,
     /// Temporary storage for dead chunks that might still be shadowing chunks
     /// in view.  We wait until either the chunk definitely cannot be
@@ -507,9 +424,8 @@ pub struct Terrain<V: RectRasterableVol = TerrainChunk> {
 
     // GPU data
     // Maps sprite kind + variant to data detailing how to render it
-    pub sprite_data: Arc<HashMap<(SpriteKind, usize), [SpriteData; SPRITE_LOD_LEVELS]>>,
+    pub sprite_render_state: SpriteRenderState,
     pub sprite_globals: SpriteGlobalsBindGroup,
-    pub sprite_atlas_textures: Arc<AtlasTextures<pipelines::sprite::Locals, FigureSpriteAtlasData>>,
     /// As stated previously, this is always the very latest texture into which
     /// we allocate.  Code cannot assume that this is the assigned texture
     /// for any particular chunk; look at the `texture` field in
@@ -524,12 +440,20 @@ impl TerrainChunkData {
 }
 
 #[derive(Clone)]
-pub struct SpriteRenderContext {
-    sprite_config: Arc<SpriteSpec>,
+pub struct SpriteRenderState {
+    /// FIXME: This could possibly become an `AssetHandle<SpriteSpec>`, to get
+    /// hot-reloading for free, but I am not sure if sudden changes of this
+    /// value would break something
+    pub sprite_config: Arc<SpriteSpec>,
     // Maps sprite kind + variant to data detailing how to render it
-    sprite_data: Arc<HashMap<(SpriteKind, usize), [SpriteData; SPRITE_LOD_LEVELS]>>,
-    sprite_atlas_textures: Arc<AtlasTextures<pipelines::sprite::Locals, FigureSpriteAtlasData>>,
-    sprite_verts_buffer: Arc<SpriteVerts>,
+    pub sprite_data: Arc<HashMap<(SpriteKind, usize, usize), [SpriteData; SPRITE_LOD_LEVELS]>>,
+    pub sprite_atlas_textures: Arc<AtlasTextures<pipelines::sprite::Locals, FigureSpriteAtlasData>>,
+}
+
+#[derive(Clone)]
+pub struct SpriteRenderContext {
+    pub state: SpriteRenderState,
+    pub sprite_verts_buffer: Arc<SpriteVerts>,
 }
 
 pub type SpriteRenderContextLazy = Box<dyn FnMut(&mut Renderer) -> SpriteRenderContext>;
@@ -540,7 +464,7 @@ impl SpriteRenderContext {
 
         struct SpriteWorkerResponse {
             sprite_config: Arc<SpriteSpec>,
-            sprite_data: HashMap<(SpriteKind, usize), [SpriteData; SPRITE_LOD_LEVELS]>,
+            sprite_data: HashMap<(SpriteKind, usize, usize), [SpriteData; SPRITE_LOD_LEVELS]>,
             sprite_atlas_texture_data: FigureSpriteAtlasData,
             sprite_atlas_size: Vec2<u16>,
             sprite_mesh: Mesh<SpriteVertex>,
@@ -559,9 +483,14 @@ impl SpriteRenderContext {
             );
             let mut sprite_mesh = Mesh::new();
             // NOTE: Tracks the start vertex of the next model to be meshed.
-            let sprite_data: HashMap<(SpriteKind, usize), _> = SpriteKind::iter()
-                .filter_map(|kind| Some((kind, sprite_config.get(kind)?)))
-                .flat_map(|(kind, sprite_config)| {
+            let sprite_data: HashMap<(SpriteKind, usize, usize), _> = SpriteKind::iter()
+                .flat_map(|kind| {
+                    sprite_config
+                        .get(kind)
+                        .enumerate()
+                        .map(move |(i, (v, _))| (kind, v, i))
+                })
+                .flat_map(|(kind, sprite_config, filter_variant)| {
                     sprite_config.variations.iter().enumerate().map(
                         move |(
                             variation,
@@ -644,7 +573,7 @@ impl SpriteRenderContext {
                                     }
                                 });
 
-                                ((kind, variation), lod_sprite_data)
+                                ((kind, variation, filter_variant), lod_sprite_data)
                             }
                         },
                     )
@@ -696,10 +625,12 @@ impl SpriteRenderContext {
             let sprite_verts_buffer = renderer.create_sprite_verts(sprite_mesh);
 
             Self {
-                // TODO: these are all Arcs, would it makes sense to factor out the Arc?
-                sprite_config: Arc::clone(&sprite_config),
-                sprite_data: Arc::new(sprite_data),
-                sprite_atlas_textures: Arc::new(sprite_atlas_textures),
+                state: SpriteRenderState {
+                    // TODO: these are all Arcs, would it makes sense to factor out the Arc?
+                    sprite_config: Arc::clone(&sprite_config),
+                    sprite_data: Arc::new(sprite_data),
+                    sprite_atlas_textures: Arc::new(sprite_atlas_textures),
+                },
                 sprite_verts_buffer: Arc::new(sprite_verts_buffer),
             }
         };
@@ -723,7 +654,6 @@ impl<V: RectRasterableVol> Terrain<V> {
 
         Self {
             atlas,
-            sprite_config: sprite_render_context.sprite_config,
             chunks: HashMap::default(),
             shadow_chunks: Vec::default(),
             mesh_send_tmp: send,
@@ -731,8 +661,7 @@ impl<V: RectRasterableVol> Terrain<V> {
             mesh_todo: HashMap::default(),
             mesh_todos_active: Arc::new(AtomicU64::new(0)),
             mesh_recv_overflow: 0.0,
-            sprite_data: sprite_render_context.sprite_data,
-            sprite_atlas_textures: sprite_render_context.sprite_atlas_textures,
+            sprite_render_state: sprite_render_context.state,
             sprite_globals: renderer.bind_sprite_globals(
                 global_model,
                 lod_data,
@@ -775,7 +704,8 @@ impl<V: RectRasterableVol> Terrain<V> {
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: fmt,
-                        usage: wgpu::TextureUsage::COPY_DST | wgpu::TextureUsage::SAMPLED,
+                        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
                     },
                     &wgpu::TextureViewDescriptor {
                         label: Some("Terrain atlas texture view"),
@@ -788,7 +718,7 @@ impl<V: RectRasterableVol> Terrain<V> {
                         array_layer_count: None,
                     },
                     &wgpu::SamplerDescriptor {
-                        label: Some("Terrain atlas texture sampler"),
+                        label: Some("Terrain atlas sampler"),
                         address_mode_u: wgpu::AddressMode::ClampToEdge,
                         address_mode_v: wgpu::AddressMode::ClampToEdge,
                         address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -1218,8 +1148,8 @@ impl<V: RectRasterableVol> Terrain<V> {
 
             // Queue the worker thread.
             let started_tick = todo.started_tick;
-            let sprite_data = Arc::clone(&self.sprite_data);
-            let sprite_config = Arc::clone(&self.sprite_config);
+            let sprite_data = Arc::clone(&self.sprite_render_state.sprite_data);
+            let sprite_config = Arc::clone(&self.sprite_render_state.sprite_config);
             let cnt = Arc::clone(&self.mesh_todos_active);
             cnt.fetch_add(1, Ordering::Relaxed);
             scene_data
@@ -1563,7 +1493,7 @@ impl<V: RectRasterableVol> Terrain<V> {
                 min: visible_bounding_box.min.as_::<f64>(),
                 max: visible_bounding_box.max.as_::<f64>(),
             };
-            let weather = scene_data.state.weather_at(focus_off.xy() + cam_pos.xy());
+            let weather = scene_data.client.weather_at_player();
             let ray_direction = math::Vec3::<f32>::from(weather.rain_vel().normalized());
 
             // NOTE: We use proj_mat_treeculler here because

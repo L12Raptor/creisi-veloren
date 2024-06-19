@@ -1,9 +1,9 @@
-cargo-features = ["named-profiles","profile-overrides"]
-
 [workspace]
+resolver = "2"
 members = [
     "common",
     "common/assets",
+    "common/i18n",
     "common/base",
     "common/dynlib",
     "common/ecs",
@@ -11,11 +11,9 @@ members = [
     "common/state",
     "common/systems",
     "common/frontend",
+    "common/query_server",
     "client",
     "client/i18n",
-    "plugin/api",
-    "plugin/derive",
-    "plugin/rt",
     "rtsim",
     "server",
     "server/agent",
@@ -49,13 +47,13 @@ opt-level = 3
 # this profile is used by developers if dev doesn't has enough debug information,
 # the name must != debug, as debug is used by dev because....
 [profile.debuginfo]
-inherits= 'dev'
+inherits = 'dev'
 debug = true
 
 # used to perform things that do a *lot* of math (i.e. worldgen) but still need reasonable compilation time.  Ideally this would also
 # add -C target-cpu=native, but I don't think you can set this by profile currently.
 [profile.no_overflow]
-inherits= 'dev'
+inherits = 'dev'
 overflow-checks = false
 debug-assertions = false
 
@@ -78,7 +76,7 @@ overflow-checks = false
 debug-assertions = false
 lto = true
 debug = false
-panic = "abort" # don't need unwinding so we can skip including the landing pads for that
+panic = "abort"          # don't need unwinding so we can skip including the landing pads for that
 # line tables so we can have useful backtraces for in-house crates
 [profile.release.package."veloren-network"]
 debug = 1
@@ -99,6 +97,10 @@ debug = 1
 [profile.release.package."veloren-world"]
 debug = 1
 
+[profile.release-thinlto]
+inherits = 'release'
+lto = "thin"
+
 # used for cargo bench
 [profile.bench]
 opt-level = 2
@@ -106,7 +108,7 @@ incremental = true
 
 # this profile is used by developers for release profiling
 [profile.releasedebuginfo]
-inherits =  'release'
+inherits = 'release'
 debug = 1
 
 [workspace.metadata.nix]
@@ -123,73 +125,68 @@ rand_chacha = { version = "0.3" }
 bincode = { version = "1.3.3" }
 bitflags = { version = "2.2.1" }
 slab = { version = "0.4.2" }
-chrono = { version = "0.4.24", default-features=false, features = ["clock", "std", "wasmbind", "serde"] }
+chrono = { version = "0.4.24", default-features = false, features = [
+    "clock",
+    "std",
+    "wasmbind",
+    "serde",
+] }
 chrono-tz = { version = "0.8", features = ["serde"] }
 inline_tweak = { version = "1.0.8" }
 
 tokio = { version = "1.28", default-features = false, features = ["rt"] }
 tracing = { version = "0.1" }
 futures-util = { version = "0.3.7", default-features = false }
-prometheus = { version = "0.13", default-features = false}
-prometheus-hyper = "0.1.4"
+prometheus = { version = "0.13", default-features = false }
+prometheus-hyper = "0.2"
 
 strum = { version = "0.24", features = ["derive"] }
 enum-map = { version = "2.4" }
 hashbrown = { version = "0.13", features = ["rayon", "serde", "nightly"] }
 fxhash = { version = "0.2.1" }
-crossbeam-utils = { version = "0.8.1"}
-crossbeam-channel = { version = "0.5"}
+crossbeam-utils = { version = "0.8.1" }
+crossbeam-channel = { version = "0.5" }
 ordered-float = { version = "3", default-features = true }
 num = { version = "0.4" }
 num-traits = { version = "0.2" }
-vek = { version = "0.15.8", features = ["serde"] }
+vek = { version = "0.17.0", features = ["serde"] }
 itertools = { version = "0.10" }
 
 serde = { version = "1.0.118", features = ["derive"] }
 serde_json = { version = "1.0.50" }
-ron = { version = "0.8", default-features = false}
+ron = { version = "0.8", default-features = false }
 
-specs = { version = "0.19", features = ["nightly"] }
+specs = { version = "0.20", features = ["nightly"] }
 image = { version = "0.24", default-features = false, features = ["png"] }
 rayon = { version = "1.5" }
 
-clap = { version = "4.2",  features = ["derive"]}
+clap = { version = "4.2", features = ["derive"] }
+async-trait = "0.1.42"
+sha2 = "0.10"
+hex = "0.4.3"
+
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+quinn = { version = "0.11" }
 
 [patch.crates-io]
-vek = { git = "https://github.com/yoanlcq/vek.git", rev = "84d5cb65841d46599a986c5477341bea4456be26" }
-# patch winit to support older raw-window-handle that works with old wgpu
-winit = { git = "https://github.com/Imberflur/winit.git", tag = "raw-window-handle-0.4-retro-support-v1" }
-# patch wgpu so we can use wgpu-profiler crate
-# wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "a92b8549a8e2cb9dac781bafc5ed32828f3caf46" }
-wgpu = { git = "https://github.com/pythonesque/wgpu.git", rev = "179ea209374a92837cde252f1d9ee01f628cae08" }
-# ntapi 3.7 fails to compile under windows due to the bug https://github.com/MSxDOS/ntapi/pull/12
-ntapi = { git = "https://github.com/MSxDOS/ntapi.git", rev = "9f56b149c9e25796739157c0fce3e0007a7de6eb" }
+# until next specs release
+specs = { git = "https://github.com/amethyst/specs.git", rev = "4e2da1df29ee840baa9b936593c45592b7c9ae27" }
+# This is needed because of:
+# * an issue with spirv & naga in wgpu 0.18 (I assume this is fixed upstream but not in 0.18)
+# * an issue with uint in uniforms for gl. (potentially fixed in 0.19?)
+# * an issue with releasing current context on Windows opengl (fixed in 0.19.1)
+# * another spirv issue: unused builtins not always being removed.  (upstream PR open)
+wgpu = { git = "https://github.com/Imberflur/wgpu.git", tag = "0.18-with-fixes-for-veloren-v1" }
+# wgpu = { path = "../wgpu/wgpu" }
 
-# # use the latest fixes in naga (remove when updates trickle down to wgpu-rs)
-# naga = { git = "https://github.com/gfx-rs/naga.git", rev = "3a0f0144112ff621dd7f731bf455adf6cab19164" }
-# # use the latest fixes in gfx (remove when updates trickle down to wgpu-rs)
-# gfx-hal = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
-# gfx-backend-empty = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
-# gfx-backend-vulkan = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
-# gfx-backend-gl = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
-# gfx-backend-dx12 = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
-# gfx-backend-dx11 = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
-# gfx-backend-metal = { git = "https://github.com/gfx-rs/gfx.git", rev = "e305dcca3557923a6a8810162d8dd09cb45a43a6" }
+# keyboard-keynames = { git = "https://gitlab.com/Capucho/keyboard-keynames.git", rev = "7b1375ee4ea01d0e0b80c419cb27f0498e67df3a" }
 
 # # Uncomment this to use a local fork of winit (for testing purposes)
 # winit = { path = "../winit" }
 
 # # Uncomment this to use a local fork of wgpu (for testing purposes)
 # [patch.'https://github.com/gfx-rs/wgpu']
+# wgpu-hal = { path = "../wgpu/wgpu-hal" }
 # wgpu-core = { path = "../wgpu/wgpu-core" }
 # wgpu-types = { path = "../wgpu/wgpu-types" }
-
-# # Uncomment this to use a local fork of gfx-hal (for testing purposes)
-# [patch."https://github.com/gfx-rs/gfx"]
-# gfx-hal = { path = "../gfx/src/hal" }
-# gfx-backend-empty = { path = "../gfx/src/backend/empty" }
-# gfx-backend-vulkan = { path = "../gfx/src/backend/vulkan" }
-# gfx-backend-gl = { path = "../gfx/src/backend/gl" }
-# gfx-backend-dx12 = { path = "../gfx/src/backend/dx12" }
-# gfx-backend-dx11 = { path = "../gfx/src/backend/dx11" }
-# gfx-backend-metal = { path = "../gfx/src/backend/metal" }
+# naga = { path = "../wgpu/naga" }

@@ -1,14 +1,11 @@
 hud-rank_up = Новый SP
 hud-skill-sp_available = { $number } SP доступны
 hud-skill-not_unlocked = Еще не разблокирован
-hud-skill-req_sp ={"\u000A"}
+hud-skill-req_sp =
+    { "\u000A" }
 
     Необходимо { $number } SP
 hud-skill-set_as_exp_bar = Установить как шкалу опыта
-hud-skill-inc_health_title = Повышение здоровья
-hud-skill-inc_health = Увеличивает максимальное здоровье на { $boost }{ $SP }
-hud-skill-inc_energy_title = Повышение энергии
-hud-skill-inc_energy = Увеличивает максимальную энергию на { $boost }{ $SP }
 hud-skill-unlck_sword_title = Разблокировать меч
 hud-skill-unlck_sword = Разблокировать древо навыков владения мечом{ $SP }
 hud-skill-unlck_axe_title = Разблокировать топор
@@ -21,14 +18,6 @@ hud-skill-unlck_staff_title = Разблокировать посох
 hud-skill-unlck_staff = Разблокировать древо навыков владения посохом{ $SP }
 hud-skill-unlck_sceptre_title = Разблокировать скипетр
 hud-skill-unlck_sceptre = Разблокировать древо навыков владения скипетром{ $SP }
-hud-skill-dodge_title = Перекат
-hud-skill-dodge = Перекаты активируются средней кнопкой мыши, во время них вы игнорируете урон почти от всех атак ближнего боя.
-hud-skill-roll_energy_title = Расход энергии
-hud-skill-roll_energy = Перекат использует на { $boost }% меньше энергии{ $SP }
-hud-skill-roll_speed_title = Скорость
-hud-skill-roll_speed = Перекат на { $boost }% быстрее{ $SP }
-hud-skill-roll_dur_title = Продолжительность переката
-hud-skill-roll_dur = Перекат на { $boost }% дольше{ $SP }
 hud-skill-climbing_title = Скалолазание
 hud-skill-climbing = Высота прыжка на вершине подъема больше
 hud-skill-climbing_cost_title = Расход энергии
@@ -129,38 +118,6 @@ hud-skill-bow_shotgun_arrow_count_title = Увеличенный колчан
 hud-skill-bow_shotgun_arrow_count = Увеличивает количество стрел в серии выстрелов на { $boost }{ $SP }
 hud-skill-bow_shotgun_spread_title = Прицельный выстрел
 hud-skill-bow_shotgun_spread = Уменьшает разброс стрел на { $boost }%{ $SP }
-hud-skill-hmr_leap_radius_title = Радиус удара скачка
-hud-skill-hmr_leap_radius = Увеличивает радиус атаки при ударе об землю на { $boost } метров{ $SP }
-hud-skill-hmr_leap_distance_title = Расстояние скачка
-hud-skill-hmr_leap_distance = Увеличивает расстояние скачка на { $boost }%{ $SP }
-hud-skill-hmr_leap_cost_title = Расход энергии
-hud-skill-hmr_leap_cost = Снижает затраты энергии на { $boost }%{ $SP }
-hud-skill-hmr_leap_knockback_title = Отбрасывание скачком
-hud-skill-hmr_leap_knockback = Увеличивает отбрасывание от скачка на { $boost }%{ $SP }
-hud-skill-hmr_leap_damage_title = Урон
-hud-skill-hmr_leap_damage = Увеличивает урон скачка на { $boost }%{ $SP }
-hud-skill-hmr_unlock_leap_title = Разблокировать скачок
-hud-skill-hmr_unlock_leap = Разблокирует скачок{ $SP }
-hud-skill-hmr_charged_melee_title = Силовая атака
-hud-skill-hmr_charged_melee = ПКМ совершает оглушающий удар. Зажатие ПКМ накапливает силу и оглушает врага, отбрасывая его
-hud-skill-hmr_charged_rate_title = Скорость
-hud-skill-hmr_charged_rate = Увеличивает скорость с которой вы накапливаете силу удара на { $boost }%{ $SP }
-hud-skill-hmr_charged_melee_nrg_drain_title = Расход энергии
-hud-skill-hmr_charged_melee_nrg_drain = Уменьшает затраты энергии на { $boost }%{ $SP }
-hud-skill-hmr_charged_melee_damage_title = Урон
-hud-skill-hmr_charged_melee_damage = Увеличивает урон на { $boost }%{ $SP }
-hud-skill-hmr_charged_melee_knockback_title = Оглушение силовой атакой
-hud-skill-hmr_charged_melee_knockback = Увеличивает отбрасывание { $boost }%{ $SP }
-hud-skill-hmr_single_strike_title = Одиночный удар
-hud-skill-hmr_single_strike = Такой же одинокий, как и ты
-hud-skill-hmr_single_strike_regen_title = Восстановление энергии
-hud-skill-hmr_single_strike_regen = Увеличивает прирост энергии с каждым удачным ударом{ $SP }
-hud-skill-hmr_single_strike_speed_title = Скорость
-hud-skill-hmr_single_strike_speed = Увеличивает скорость атаки с каждым удачным ударом{ $SP }
-hud-skill-hmr_single_strike_damage_title = Урон
-hud-skill-hmr_single_strike_damage = Увеличивает урон с каждым удачным ударом{ $SP }
-hud-skill-hmr_single_strike_knockback_title = Отбрасывание
-hud-skill-hmr_single_strike_knockback = Увеличивает потенциал отбрасывания на { $boost }%{ $SP }
 hud-skill-mining_title = Добыча
 hud-skill-pick_strike_title = Удар киркой
 hud-skill-pick_strike = Разбивай камни киркой, чтобы получить руду, самоцветы и опыт
@@ -170,3 +127,18 @@ hud-skill-pick_strike_oregain_title = Больше руды
 hud-skill-pick_strike_oregain = Шанс на получение бонусной руды ({ $boost }% за каждый уровень){ $SP }
 hud-skill-pick_strike_gemgain_title = Больше самоцветов
 hud-skill-pick_strike_gemgain = Шанс на получение бонусных самоцветов ({ $boost }% за каждый уровень){ $SP }
+# Internal terms, currently only used in es
+# If we remove them here, they also get auto-removed in es,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-hud-skill-sc_wardaura_title = ""
+# Internal terms, currently only used in es
+# If we remove them here, they also get auto-removed in es,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-hud-skill-bow_shotgun_title = ""
+# Internal terms, currently only used in es
+# If we remove them here, they also get auto-removed in es,
+# so please keep them, even when not used in English file.
+# See https://github.com/WeblateOrg/weblate/issues/9895
+-hud-skill-st_shockwave_title = ""

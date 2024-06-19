@@ -2,7 +2,7 @@ hud-settings-general = Основні
 hud-settings-none = Нічого
 hud-settings-press_behavior-toggle = Перемикання
 hud-settings-press_behavior-hold = Утримування
-hud-settings-autopress_behavior-toggle = Перемикання
+hud-settings-autopress_behavior-toggle = Перемкнути
 hud-settings-autopress_behavior-auto = Автоматично
 hud-settings-help_window = Вікно довідки
 hud-settings-debug_info = Технічна інформація
@@ -16,9 +16,12 @@ hud-settings-custom_scaling = Ручне
 hud-settings-crosshair = Приціл
 hud-settings-opacity = Прозорість
 hud-settings-hotbar = Панель швидкого доступу
+hud-settings-slots = Слоти
 hud-settings-toggle_shortcuts = Гарячі клавіші
-hud-settings-buffs_skillbar = Бафи біля Панелі Швидкого Доступу
+hud-settings-buffs_skillbar = Бафи біля панелі швидкого доступу
 hud-settings-buffs_mmap = Бафи біля Мінімапи
+hud-settings-use_prefixes = Показувати позначки SI для кількостей
+hud-settings-prefix_switch_point = Максимальна кількість цифр для переключення позначок SI
 hud-settings-toggle_bar_experience = Панель досвіду
 hud-settings-scrolling_combat_text = Відображення Пошкоджень/Зцілень
 hud-settings-damage_accumulation_duration = Тривалість Аккумулювання Шкоди
@@ -29,13 +32,15 @@ hud-settings-speech_bubble = Діалоги
 hud-settings-speech_bubble_self = Відображати своє діалогове вікно
 hud-settings-speech_bubble_dark_mode = Темний режим діалогового вікна
 hud-settings-speech_bubble_icon = Піктограма
-hud-settings-energybar_numbers = Панель здоров'я і енергії
-hud-settings-always_show_bars = 
-    Завжди відображати панель 
-    здоров'я і енергії
+hud-settings-energybar_numbers = На смугах здоров'я та енергії
+hud-settings-always_show_bars =
+    Завжди відображати смуги
+    здоров'я та енергії
 hud-settings-enable_poise_bar = Увімкнути панель рівноваги
-hud-settings-experience_numbers = Числа досвіду
-hud-settings-accumulate_experience = Утримування Значень Досвіду
+hud-settings-experience_numbers = Очки досвіду
+hud-settings-accumulate_experience =
+    Групувати щойно отримані очки
+    досвіду
 hud-settings-values = Значення
 hud-settings-percentages = Відсотки
 hud-settings-chat = Чат
@@ -54,6 +59,8 @@ hud-settings-enable_mouse_smoothing =
     камери
 hud-settings-free_look_behavior = Вмикання вільного перегляду
 hud-settings-auto_walk_behavior = Вмикання авто-ходи
+hud-settings-walking_speed_behavior = Налаштування швидкості ходи
+hud-settings-walking_speed = Швидкість ходи
 hud-settings-camera_clamp_behavior = Поведінка закріпленої камери
 hud-settings-zoom_lock_behavior = Функція фіксації віддаленості камери
 hud-settings-player_physics_behavior = Фізика гравця (експериментальнe)
@@ -61,10 +68,10 @@ hud-settings-stop_auto_walk_on_input =
     Вимикати авто-ходу
     при русі
 hud-settings-auto_camera = Авто камера
-hud-settings-bow_zoom = 
-    Збільшення під час 
+hud-settings-bow_zoom =
+    Наближати під час 
     зарядки лука
-hud-settings-zoom_lock = 
+hud-settings-zoom_lock =
     Фіксація віддаленості 
     камери
 hud-settings-reset_gameplay = За замовчуванням
@@ -163,3 +170,7 @@ hud-settings-reset_chat = За замовчуванням
 hud-settings-third_party_integrations = Сторонні інтеграції
 hud-settings-enable_discord_integration = Ввімкнути інтеграцію Discord
 hud-settings-subtitles = Субтитри
+hud-settings-aim_offset_x = Горизонтальне Зміщення Прицілу
+hud-settings-aim_offset_y = Вертикальне Зміщення Прицілу
+hud-settings-present_mode-vsync_adaptive = Адаптивна vsync
+hud-settings-language_send_to_server = Надіслати налаштовану мову на сервери (для локалізації правил і "повідомлень дня")

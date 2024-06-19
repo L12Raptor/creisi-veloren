@@ -1,4 +1,5 @@
-use crate::{comp::Content, make_case_elim, make_proj_elim};
+use crate::{make_case_elim, make_proj_elim};
+use common_i18n::Content;
 use rand::{seq::SliceRandom, thread_rng};
 use serde::{Deserialize, Serialize};
 
@@ -24,20 +25,50 @@ impl Body {
         Self { species, body_type }
     }
 
-    pub fn localize(&self) -> Content {
-        Content::localized(match &self.species {
-            Species::Ogre => "body-biped_large-ogre",
-            Species::Cyclops => "body-biped_large-cyclops",
-            Species::Wendigo => "body-biped_large-wendigo",
-            Species::Werewolf => "body-biped_large-werewolf",
-            Species::Cavetroll => "body-biped_large-cave_troll",
-            Species::Mountaintroll => "body-biped_large-mountain_troll",
-            Species::Swamptroll => "body-biped_large-swamp_troll",
-            Species::Blueoni => "body-biped_large-blue_oni",
-            Species::Redoni => "body-biped_large-red_oni",
-            Species::Tursus => "body-biped_large-tursus",
-            _ => "body-generic",
-        })
+    /// Should be only used with npc-tell_monster.
+    ///
+    /// If you want to use for displaying names in HUD, add new strings.
+    /// If you want to use for anything else, add new strings.
+    pub fn localize_npc(&self) -> Option<Content> {
+        let key = match &self.species {
+            Species::Ogre => match self.body_type {
+                BodyType::Male => "body-npc-speech-biped_large-ogre-male",
+                BodyType::Female => "body-npc-speech-biped_large-ogre-female",
+            },
+            Species::Cyclops => "body-npc-speech-biped_large-cyclops",
+            Species::Wendigo => "body-npc-speech-biped_large-wendigo",
+            Species::Werewolf => "body-npc-speech-biped_large-werewolf",
+            Species::Cavetroll => "body-npc-speech-biped_large-cave_troll",
+            Species::Mountaintroll => "body-npc-speech-biped_large-mountain_troll",
+            Species::Swamptroll => "body-npc-speech-biped_large-swamp_troll",
+            Species::Blueoni => "body-npc-speech-biped_large-blue_oni",
+            Species::Redoni => "body-npc-speech-biped_large-red_oni",
+            Species::Tursus => "body-npc-speech-biped_large-tursus",
+            Species::Dullahan => "body-npc-speech-biped_large-dullahan",
+            Species::Occultsaurok => "body-npc-speech-biped_large-occult_saurok",
+            Species::Mightysaurok => "body-npc-speech-biped_large-mighty_saurok",
+            Species::Slysaurok => "body-npc-speech-biped_large-sly_saurok",
+            Species::Mindflayer => "body-npc-speech-biped_large-mindflayer",
+            Species::Minotaur => "body-npc-speech-biped_large-minotaur",
+            Species::Tidalwarrior => "body-npc-speech-biped_large-tidal_warrior",
+            Species::Yeti => "body-npc-speech-biped_large-yeti",
+            Species::Harvester => "body-npc-speech-biped_large-harvester",
+            Species::Cultistwarlord => "body-npc-speech-biped_large-cultist_warlord",
+            Species::Cultistwarlock => "body-npc-speech-biped_large-cultist_warlock",
+            Species::Huskbrute => "body-npc-speech-biped_large-husk_brute",
+            Species::Gigasfrost => "body-npc-speech-biped_large-gigas_frost",
+            Species::AdletElder => "body-npc-speech-biped_large-adlet_elder",
+            Species::SeaBishop => "body-npc-speech-biped_large-sea_bishop",
+            Species::HaniwaGeneral => "body-npc-speech-biped_large-haniwa_general",
+            Species::TerracottaBesieger => "body-npc-speech-biped_large-terracotta_besieger",
+            Species::TerracottaDemolisher => "body-npc-speech-biped_large-terracotta_demolisher",
+            Species::TerracottaPunisher => "body-npc-speech-biped_large-terracotta_punisher",
+            Species::TerracottaPursuer => "body-npc-speech-biped_large-terracotta_pursuer",
+            Species::Cursekeeper => "body-npc-speech-biped_large-cursekeeper",
+            Species::Forgemaster => "body-npc-speech-biped_large-forgemaster",
+        };
+
+        Some(Content::localized(key))
     }
 }
 
@@ -75,6 +106,13 @@ make_case_elim!(
         Gigasfrost = 22,
         AdletElder = 23,
         SeaBishop = 24,
+        HaniwaGeneral = 25,
+        TerracottaBesieger = 26,
+        TerracottaDemolisher = 27,
+        TerracottaPunisher = 28,
+        TerracottaPursuer = 29,
+        Cursekeeper = 30,
+        Forgemaster = 31,
     }
 );
 
@@ -108,6 +146,13 @@ pub struct AllSpecies<SpeciesMeta> {
     pub gigas_frost: SpeciesMeta,
     pub adlet_elder: SpeciesMeta,
     pub sea_bishop: SpeciesMeta,
+    pub haniwa_general: SpeciesMeta,
+    pub terracotta_besieger: SpeciesMeta,
+    pub terracotta_demolisher: SpeciesMeta,
+    pub terracotta_punisher: SpeciesMeta,
+    pub terracotta_pursuer: SpeciesMeta,
+    pub cursekeeper: SpeciesMeta,
+    pub forgemaster: SpeciesMeta,
 }
 
 impl<'a, SpeciesMeta> core::ops::Index<&'a Species> for AllSpecies<SpeciesMeta> {
@@ -141,11 +186,18 @@ impl<'a, SpeciesMeta> core::ops::Index<&'a Species> for AllSpecies<SpeciesMeta> 
             Species::Gigasfrost => &self.gigas_frost,
             Species::AdletElder => &self.adlet_elder,
             Species::SeaBishop => &self.sea_bishop,
+            Species::HaniwaGeneral => &self.haniwa_general,
+            Species::TerracottaBesieger => &self.terracotta_besieger,
+            Species::TerracottaDemolisher => &self.terracotta_demolisher,
+            Species::TerracottaPunisher => &self.terracotta_punisher,
+            Species::TerracottaPursuer => &self.terracotta_pursuer,
+            Species::Cursekeeper => &self.cursekeeper,
+            Species::Forgemaster => &self.forgemaster,
         }
     }
 }
 
-pub const ALL_SPECIES: [Species; 25] = [
+pub const ALL_SPECIES: [Species; 32] = [
     Species::Ogre,
     Species::Cyclops,
     Species::Wendigo,
@@ -171,6 +223,13 @@ pub const ALL_SPECIES: [Species; 25] = [
     Species::Gigasfrost,
     Species::AdletElder,
     Species::SeaBishop,
+    Species::HaniwaGeneral,
+    Species::TerracottaBesieger,
+    Species::TerracottaDemolisher,
+    Species::TerracottaPunisher,
+    Species::TerracottaPursuer,
+    Species::Cursekeeper,
+    Species::Forgemaster,
 ];
 
 impl<'a, SpeciesMeta: 'a> IntoIterator for &'a AllSpecies<SpeciesMeta> {

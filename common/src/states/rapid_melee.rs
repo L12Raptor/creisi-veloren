@@ -1,6 +1,7 @@
 use crate::{
+    combat,
     comp::{character_state::OutputEvents, CharacterState, MeleeConstructor, StateUpdate},
-    event::ServerEvent,
+    event::ComboChangeEvent,
     states::{
         behavior::{CharacterBehavior, JoinData},
         utils::*,
@@ -27,6 +28,9 @@ pub struct StaticData {
     pub move_modifier: f32,
     pub ori_modifier: f32,
     pub minimum_combo: u32,
+    /// Used to indicate to the frontend what ability this is for any special
+    /// effects
+    pub frontend_specifier: Option<FrontendSpecifier>,
     /// What key is used to press ability
     pub ability_info: AbilityInfo,
 }
@@ -76,14 +80,14 @@ impl CharacterBehavior for Data {
                         c.exhausted = true;
                     }
 
-                    let crit_data = get_crit_data(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     let tool_stats = get_tool_stats(data, self.static_data.ability_info);
 
                     data.updater.insert(
                         data.entity,
                         self.static_data
                             .melee_constructor
-                            .create_melee(crit_data, tool_stats),
+                            .create_melee(precision_mult, tool_stats),
                     );
                 } else if self.timer < self.static_data.swing_duration {
                     // Swings
@@ -113,7 +117,7 @@ impl CharacterBehavior for Data {
 
                 // Consume combo if any was required
                 if self.static_data.minimum_combo > 0 {
-                    output_events.emit_server(ServerEvent::ComboChange {
+                    output_events.emit_server(ComboChangeEvent {
                         entity: data.entity,
                         change: -data.combo.map_or(0, |c| c.counter() as i32),
                     });
@@ -123,7 +127,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recover
                     if let CharacterState::RapidMelee(c) = &mut update.character {
-                        c.timer = tick_attack_or_default(data, self.timer, None);
+                        c.timer = tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        );
                     }
                 } else {
                     // Done
@@ -138,4 +146,10 @@ impl CharacterBehavior for Data {
 
         update
     }
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FrontendSpecifier {
+    CultistVortex,
+    Whirlwind,
 }

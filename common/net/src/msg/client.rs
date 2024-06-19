@@ -1,5 +1,8 @@
 use super::{world_msg::SiteId, PingMsg};
-use common::{character::CharacterId, comp, comp::Skill, terrain::block::Block, ViewDistances};
+use common::{
+    character::CharacterId, comp, comp::Skill, event::PluginHash, terrain::block::Block,
+    ViewDistances,
+};
 use serde::{Deserialize, Serialize};
 use vek::*;
 
@@ -36,6 +39,7 @@ pub enum ClientType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientRegister {
     pub token_or_username: String,
+    pub locale: Option<String>,
 }
 
 /// Messages sent from the client to the server
@@ -94,6 +98,7 @@ pub enum ClientGeneral {
     RequestLossyTerrainCompression {
         lossy_terrain_compression: bool,
     },
+    RequestPlugins(Vec<PluginHash>),
 }
 
 impl ClientMsg {
@@ -128,7 +133,6 @@ impl ClientMsg {
                         | ClientGeneral::ExitInGame
                         | ClientGeneral::PlayerPhysics { .. }
                         | ClientGeneral::TerrainChunkRequest { .. }
-                        | ClientGeneral::LodZoneRequest { .. }
                         | ClientGeneral::UnlockSkill(_)
                         | ClientGeneral::RequestSiteInfo(_)
                         | ClientGeneral::RequestPlayerPhysics { .. }
@@ -140,7 +144,10 @@ impl ClientMsg {
                         //Always possible
                         ClientGeneral::ChatMsg(_)
                         | ClientGeneral::Command(_, _)
-                        | ClientGeneral::Terminate => true,
+                        | ClientGeneral::Terminate
+                        // LodZoneRequest is required by the char select screen
+                        | ClientGeneral::LodZoneRequest { .. } => true,
+                        | ClientGeneral::RequestPlugins(_) => true,
                     }
             },
             ClientMsg::Ping(_) => true,

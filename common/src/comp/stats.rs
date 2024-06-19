@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use specs::{Component, DerefFlaggedStorage};
 use std::{error::Error, fmt};
 
-use crate::combat::{AttackEffect, DamagedEffect};
+use crate::combat::{AttackEffect, DamagedEffect, DeathEffect};
 
 use super::Body;
 
@@ -26,6 +26,25 @@ impl Default for StatsModifier {
             mult_mod: 1.0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct StatsSplit {
+    pub pos_mod: f32,
+    pub neg_mod: f32,
+}
+
+impl Default for StatsSplit {
+    fn default() -> Self {
+        Self {
+            pos_mod: 0.0,
+            neg_mod: 0.0,
+        }
+    }
+}
+
+impl StatsSplit {
+    pub fn modifier(&self) -> f32 { self.pos_mod + self.neg_mod }
 }
 
 impl StatsModifier {
@@ -53,17 +72,23 @@ impl Error for StatChangeError {}
 pub struct Stats {
     pub name: String,
     pub original_body: Body,
-    pub damage_reduction: f32,
-    pub poise_reduction: f32,
+    pub damage_reduction: StatsSplit,
+    pub poise_reduction: StatsSplit,
     pub heal_multiplier: f32,
+    // Note: This is used to counteract agility as a "potion sickness" right now, and otherwise
+    // does not impact movement speed
+    pub move_speed_multiplier: f32,
     pub max_health_modifiers: StatsModifier,
     pub move_speed_modifier: f32,
+    pub jump_modifier: f32,
     pub attack_speed_modifier: f32,
+    pub recovery_speed_modifier: f32,
     pub friction_modifier: f32,
     pub max_energy_modifiers: StatsModifier,
     pub poise_damage_modifier: f32,
     pub attack_damage_modifier: f32,
-    pub crit_chance_modifier: StatsModifier,
+    pub precision_multiplier_override: Option<f32>,
+    pub precision_vulnerability_multiplier_override: Option<f32>,
     pub swim_speed_modifier: f32,
     /// This adds effects to any attacks that the entity makes
     pub effects_on_attack: Vec<AttackEffect>,
@@ -73,6 +98,10 @@ pub struct Stats {
     pub energy_reward_modifier: f32,
     /// This creates effects when the entity is damaged
     pub effects_on_damaged: Vec<DamagedEffect>,
+    /// This creates effects when the entity is killed
+    pub effects_on_death: Vec<DeathEffect>,
+    pub disable_auxiliary_abilities: bool,
+    pub crowd_control_resistance: f32,
 }
 
 impl Stats {
@@ -80,22 +109,29 @@ impl Stats {
         Self {
             name,
             original_body: body,
-            damage_reduction: 0.0,
-            poise_reduction: 0.0,
+            damage_reduction: StatsSplit::default(),
+            poise_reduction: StatsSplit::default(),
             heal_multiplier: 1.0,
+            move_speed_multiplier: 1.0,
             max_health_modifiers: StatsModifier::default(),
             move_speed_modifier: 1.0,
+            jump_modifier: 1.0,
             attack_speed_modifier: 1.0,
+            recovery_speed_modifier: 1.0,
             friction_modifier: 1.0,
             max_energy_modifiers: StatsModifier::default(),
             poise_damage_modifier: 1.0,
             attack_damage_modifier: 1.0,
-            crit_chance_modifier: StatsModifier::default(),
+            precision_multiplier_override: None,
+            precision_vulnerability_multiplier_override: None,
             swim_speed_modifier: 1.0,
             effects_on_attack: Vec::new(),
             mitigations_penetration: 0.0,
             energy_reward_modifier: 1.0,
             effects_on_damaged: Vec::new(),
+            effects_on_death: Vec::new(),
+            disable_auxiliary_abilities: false,
+            crowd_control_resistance: 0.0,
         }
     }
 

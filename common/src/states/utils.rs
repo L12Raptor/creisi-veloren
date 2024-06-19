@@ -1,12 +1,12 @@
 use crate::{
     astar::Astar,
-    combat,
     comp::{
         ability::{AbilityInitEvent, AbilityMeta, Capability, SpecifiedAbility, Stance},
         arthropod, biped_large, biped_small, bird_medium,
-        buff::{BuffCategory, BuffChange},
+        buff::{Buff, BuffCategory, BuffChange, BuffData, BuffSource, DestInfo},
         character_state::OutputEvents,
         controller::InventoryManip,
+        golem,
         inventory::slot::{ArmorSlot, EquipSlot, Slot},
         item::{
             armor::Friction,
@@ -15,14 +15,16 @@ use crate::{
         },
         quadruped_low, quadruped_medium, quadruped_small, ship,
         skills::{Skill, SwimSkill, SKILL_MODIFIERS},
-        theropod, Body, CharacterState, Density, InputAttr, InputKind, InventoryAction, Melee,
-        StateUpdate,
+        theropod, Alignment, Body, CharacterState, Density, InputAttr, InputKind, InventoryAction,
+        Melee, Pos, StateUpdate,
     },
-    consts::{FRIC_GROUND, GRAVITY, MAX_PICKUP_RANGE},
-    event::{LocalEvent, ServerEvent},
+    consts::{FRIC_GROUND, GRAVITY, MAX_MOUNT_RANGE, MAX_PICKUP_RANGE},
+    event::{BuffEvent, ChangeStanceEvent, ComboChangeEvent, InventoryManipEvent, LocalEvent},
+    mounting::Volume,
     outcome::Outcome,
     states::{behavior::JoinData, utils::CharacterState::Idle, *},
     terrain::{Block, TerrainGrid, UnlockKind},
+    uid::Uid,
     util::Dir,
     vol::ReadVol,
 };
@@ -42,6 +44,8 @@ pub const MOVEMENT_THRESHOLD_VEL: f32 = 3.0;
 impl Body {
     pub fn base_accel(&self) -> f32 {
         match self {
+            // Note: Entities have been slowed down relative to humanoid speeds, but it may be worth
+            // reverting/increasing speed once we've established slower AI.
             Body::Humanoid(_) => 100.0,
             Body::QuadrupedSmall(body) => match body.species {
                 quadruped_small::Species::Turtle => 30.0,
@@ -58,45 +62,47 @@ impl Body {
                 quadruped_small::Species::Rabbit => 110.0,
                 quadruped_small::Species::Cat => 150.0,
                 quadruped_small::Species::Quokka => 100.0,
+                quadruped_small::Species::MossySnail => 20.0,
                 _ => 125.0,
             },
             Body::QuadrupedMedium(quadruped_medium) => match quadruped_medium.species {
-                quadruped_medium::Species::Grolgar => 110.0,
-                quadruped_medium::Species::Saber => 180.0,
-                quadruped_medium::Species::Tiger => 150.0,
-                quadruped_medium::Species::Tuskram => 160.0,
-                quadruped_medium::Species::Lion => 170.0,
+                quadruped_medium::Species::Grolgar => 100.0,
+                quadruped_medium::Species::Saber => 110.0,
+                quadruped_medium::Species::Tiger => 110.0,
+                quadruped_medium::Species::Tuskram => 85.0,
+                quadruped_medium::Species::Lion => 105.0,
                 quadruped_medium::Species::Tarasque => 100.0,
-                quadruped_medium::Species::Wolf => 180.0,
-                quadruped_medium::Species::Frostfang => 180.0,
-                quadruped_medium::Species::Mouflon => 100.0,
-                quadruped_medium::Species::Catoblepas => 70.0,
-                quadruped_medium::Species::Bonerattler => 130.0,
-                quadruped_medium::Species::Deer => 150.0,
-                quadruped_medium::Species::Hirdrasil => 160.0,
-                quadruped_medium::Species::Roshwalr => 160.0,
-                quadruped_medium::Species::Donkey => 110.0,
+                quadruped_medium::Species::Wolf => 115.0,
+                quadruped_medium::Species::Frostfang => 115.0,
+                quadruped_medium::Species::Mouflon => 75.0,
+                quadruped_medium::Species::Catoblepas => 60.0,
+                quadruped_medium::Species::Bonerattler => 115.0,
+                quadruped_medium::Species::Deer => 120.0,
+                quadruped_medium::Species::Hirdrasil => 110.0,
+                quadruped_medium::Species::Roshwalr => 70.0,
+                quadruped_medium::Species::Donkey => 90.0,
                 quadruped_medium::Species::Camel => 75.0,
                 quadruped_medium::Species::Zebra => 150.0,
-                quadruped_medium::Species::Antelope => 185.0,
-                quadruped_medium::Species::Kelpie => 180.0,
-                quadruped_medium::Species::Horse => 180.0,
+                quadruped_medium::Species::Antelope => 155.0,
+                quadruped_medium::Species::Kelpie => 140.0,
+                quadruped_medium::Species::Horse => 140.0,
                 quadruped_medium::Species::Barghest => 80.0,
                 quadruped_medium::Species::Cattle => 80.0,
-                quadruped_medium::Species::Darkhound => 160.0,
+                quadruped_medium::Species::Darkhound => 115.0,
                 quadruped_medium::Species::Highland => 80.0,
-                quadruped_medium::Species::Yak => 90.0,
+                quadruped_medium::Species::Yak => 80.0,
                 quadruped_medium::Species::Panda => 90.0,
                 quadruped_medium::Species::Bear => 90.0,
-                quadruped_medium::Species::Dreadhorn => 140.0,
-                quadruped_medium::Species::Moose => 130.0,
-                quadruped_medium::Species::Snowleopard => 160.0,
-                quadruped_medium::Species::Mammoth => 180.0,
-                quadruped_medium::Species::Ngoubou => 170.0,
-                quadruped_medium::Species::Llama => 120.0,
-                quadruped_medium::Species::Alpaca => 110.0,
+                quadruped_medium::Species::Dreadhorn => 95.0,
+                quadruped_medium::Species::Moose => 105.0,
+                quadruped_medium::Species::Snowleopard => 115.0,
+                quadruped_medium::Species::Mammoth => 75.0,
+                quadruped_medium::Species::Ngoubou => 95.0,
+                quadruped_medium::Species::Llama => 100.0,
+                quadruped_medium::Species::Alpaca => 100.0,
                 quadruped_medium::Species::Akhlut => 90.0,
-                quadruped_medium::Species::Bristleback => 135.0,
+                quadruped_medium::Species::Bristleback => 105.0,
+                quadruped_medium::Species::ClaySteed => 85.0,
             },
             Body::BipedLarge(body) => match body.species {
                 biped_large::Species::Slysaurok => 100.0,
@@ -108,6 +114,7 @@ impl Body {
                 biped_large::Species::Cultistwarlord => 110.0,
                 biped_large::Species::Cultistwarlock => 90.0,
                 biped_large::Species::Gigasfrost => 45.0,
+                biped_large::Species::Forgemaster => 100.0,
                 _ => 80.0,
             },
             Body::BirdMedium(_) => 80.0,
@@ -118,55 +125,68 @@ impl Body {
             Body::BipedSmall(biped_small) => match biped_small.species {
                 biped_small::Species::Haniwa => 65.0,
                 biped_small::Species::Boreal => 100.0,
+                biped_small::Species::Gnarling => 70.0,
                 _ => 80.0,
             },
             Body::Object(_) => 0.0,
             Body::ItemDrop(_) => 0.0,
-            Body::Golem(_) => 60.0,
-            Body::Theropod(_) => 135.0,
+            Body::Golem(body) => match body.species {
+                golem::Species::ClayGolem => 120.0,
+                golem::Species::IronGolem => 100.0,
+                _ => 60.0,
+            },
+            Body::Theropod(theropod) => match theropod.species {
+                theropod::Species::Archaeos
+                | theropod::Species::Odonto
+                | theropod::Species::Ntouka => 110.0,
+                theropod::Species::Dodarock => 75.0,
+                theropod::Species::Yale => 115.0,
+                _ => 125.0,
+            },
             Body::QuadrupedLow(quadruped_low) => match quadruped_low.species {
-                quadruped_low::Species::Crocodile => 130.0,
-                quadruped_low::Species::SeaCrocodile => 120.0,
-                quadruped_low::Species::Alligator => 110.0,
+                quadruped_low::Species::Crocodile => 60.0,
+                quadruped_low::Species::SeaCrocodile => 60.0,
+                quadruped_low::Species::Alligator => 65.0,
                 quadruped_low::Species::Salamander => 85.0,
                 quadruped_low::Species::Elbst => 85.0,
-                quadruped_low::Species::Monitor => 160.0,
-                quadruped_low::Species::Asp => 110.0,
+                quadruped_low::Species::Monitor => 130.0,
+                quadruped_low::Species::Asp => 100.0,
                 quadruped_low::Species::Tortoise => 60.0,
                 quadruped_low::Species::Rocksnapper => 70.0,
                 quadruped_low::Species::Rootsnapper => 70.0,
                 quadruped_low::Species::Reefsnapper => 70.0,
                 quadruped_low::Species::Pangolin => 90.0,
                 quadruped_low::Species::Maneater => 80.0,
-                quadruped_low::Species::Sandshark => 160.0,
-                quadruped_low::Species::Hakulaq => 140.0,
+                quadruped_low::Species::Sandshark => 125.0,
+                quadruped_low::Species::Hakulaq => 125.0,
                 quadruped_low::Species::Dagon => 140.0,
                 quadruped_low::Species::Lavadrake => 100.0,
                 quadruped_low::Species::Icedrake => 100.0,
-                quadruped_low::Species::Basilisk => 90.0,
-                quadruped_low::Species::Deadwood => 140.0,
+                quadruped_low::Species::Basilisk => 85.0,
+                quadruped_low::Species::Deadwood => 110.0,
                 quadruped_low::Species::Mossdrake => 100.0,
                 quadruped_low::Species::Driggle => 120.0,
-                quadruped_low::Species::HermitAlligator => 120.0,
+                quadruped_low::Species::Snaretongue => 120.0,
                 quadruped_low::Species::Rigusaurus => 90.0,
             },
-            Body::Ship(ship::Body::Carriage) => 200.0,
+            Body::Ship(ship::Body::Carriage) => 40.0,
             Body::Ship(_) => 0.0,
             Body::Arthropod(arthropod) => match arthropod.species {
-                arthropod::Species::Tarantula => 135.0,
-                arthropod::Species::Blackwidow => 110.0,
-                arthropod::Species::Antlion => 120.0,
+                arthropod::Species::Tarantula => 85.0,
+                arthropod::Species::Blackwidow => 95.0,
+                arthropod::Species::Antlion => 115.0,
                 arthropod::Species::Hornbeetle => 80.0,
-                arthropod::Species::Leafbeetle => 80.0,
+                arthropod::Species::Leafbeetle => 65.0,
                 arthropod::Species::Stagbeetle => 80.0,
-                arthropod::Species::Weevil => 110.0,
-                arthropod::Species::Cavespider => 110.0,
+                arthropod::Species::Weevil => 70.0,
+                arthropod::Species::Cavespider => 90.0,
                 arthropod::Species::Moltencrawler => 70.0,
                 arthropod::Species::Mosscrawler => 70.0,
                 arthropod::Species::Sandcrawler => 70.0,
                 arthropod::Species::Dagonite => 70.0,
                 arthropod::Species::Emberfly => 75.0,
             },
+            Body::Crustacean(_) => 80.0,
         }
     }
 
@@ -185,7 +205,10 @@ impl Body {
         // => 1 / (1 - drag).powi(2) - 1 = (dv / 30) / v
         // => 1 / (1 / (1 - drag).powi(2) - 1) = v / (dv / 30)
         // => (dv / 30) / (1 / (1 - drag).powi(2) - 1) = v
-        let v = (-self.base_accel() / 30.0) / ((1.0 - FRIC_GROUND).powi(2) - 1.0);
+        let v = match self {
+            Body::Ship(ship) => ship.get_speed(),
+            _ => (-self.base_accel() / 30.0) / ((1.0 - FRIC_GROUND).powi(2) - 1.0),
+        };
         debug_assert!(v >= 0.0, "Speed must be positive!");
         v
     }
@@ -230,6 +253,7 @@ impl Body {
             Body::Ship(ship) if ship.has_water_thrust() => 5.0 / self.dimensions().y,
             Body::Ship(_) => 6.0 / self.dimensions().y,
             Body::Arthropod(_) => 3.5,
+            Body::Crustacean(_) => 3.5,
         }
     }
 
@@ -274,6 +298,7 @@ impl Body {
                 },
                 Body::QuadrupedSmall(_) => 1500.0 * self.mass().0,
                 Body::Arthropod(_) => 500.0 * self.mass().0,
+                Body::Crustacean(_) => 400.0 * self.mass().0,
             } * front_profile,
         )
     }
@@ -594,24 +619,36 @@ pub fn handle_orientation(
         (a.to_quat().into_vec4() - b.to_quat().into_vec4()).reduce(|a, b| a.abs() + b.abs())
     }
 
-    let (tilt_ori, efficiency) = if let Body::Ship(ship) = data.body && ship.has_wheels() {
-        let height_at = |rpos| data
-            .terrain
-            .ray(
-                data.pos.0 + rpos + Vec3::unit_z() * 4.0,
-                data.pos.0 + rpos - Vec3::unit_z() * 4.0,
-            )
-            .until(Block::is_solid)
-            .cast()
-            .0;
+    let (tilt_ori, efficiency) = if let Body::Ship(ship) = data.body
+        && ship.has_wheels()
+    {
+        let height_at = |rpos| {
+            data.terrain
+                .ray(
+                    data.pos.0 + rpos + Vec3::unit_z() * 4.0,
+                    data.pos.0 + rpos - Vec3::unit_z() * 4.0,
+                )
+                .until(Block::is_solid)
+                .cast()
+                .0
+        };
 
-        // Do some cheap raycasting with the ground to determine the appropriate orientation for the vehicle
-        let x_diff = (height_at(data.ori.to_horizontal().right().to_vec() * 3.0) - height_at(data.ori.to_horizontal().right().to_vec() * -3.0)) / 10.0;
-        let y_diff = (height_at(data.ori.to_horizontal().look_dir().to_vec() * -4.5) - height_at(data.ori.to_horizontal().look_dir().to_vec() * 4.5)) / 10.0;
+        // Do some cheap raycasting with the ground to determine the appropriate
+        // orientation for the vehicle
+        let x_diff = (height_at(data.ori.to_horizontal().right().to_vec() * 3.0)
+            - height_at(data.ori.to_horizontal().right().to_vec() * -3.0))
+            / 10.0;
+        let y_diff = (height_at(data.ori.to_horizontal().look_dir().to_vec() * -4.5)
+            - height_at(data.ori.to_horizontal().look_dir().to_vec() * 4.5))
+            / 10.0;
 
         (
             Quaternion::rotation_y(x_diff.atan()) * Quaternion::rotation_x(y_diff.atan()),
-            (data.vel.0 - data.physics.ground_vel).xy().magnitude().max(3.0) * efficiency,
+            (data.vel.0 - data.physics.ground_vel)
+                .xy()
+                .magnitude()
+                .max(3.0)
+                * efficiency,
         )
     } else {
         (Quaternion::identity(), efficiency)
@@ -622,7 +659,7 @@ pub fn handle_orientation(
     // else the current horizontal movement direction is used
     let target_ori = if let Some(dir_override) = dir_override {
         dir_override.into()
-    } else if is_strafing(data, update) || update.character.is_attack() {
+    } else if is_strafing(data, update) || update.character.should_follow_look() {
         data.inputs
             .look_dir
             .to_horizontal()
@@ -851,6 +888,34 @@ pub fn attempt_dance(data: &JoinData<'_>, update: &mut StateUpdate) {
     }
 }
 
+pub fn can_perform_pet(position: Pos, target_position: Pos, target_alignment: Alignment) -> bool {
+    let within_distance = position.0.distance_squared(target_position.0) <= MAX_MOUNT_RANGE.powi(2);
+    let valid_alignment = matches!(target_alignment, Alignment::Owned(_) | Alignment::Tame);
+
+    within_distance && valid_alignment
+}
+
+pub fn attempt_pet(data: &JoinData<'_>, update: &mut StateUpdate, target_uid: Uid) {
+    let can_pet = data
+        .id_maps
+        .uid_entity(target_uid)
+        .and_then(|target_entity| {
+            data.prev_phys_caches
+                .get(target_entity)
+                .and_then(|prev_phys| prev_phys.pos)
+                .zip(data.alignments.get(target_entity))
+        })
+        .map_or(false, |(target_position, target_alignment)| {
+            can_perform_pet(*data.pos, target_position, *target_alignment)
+        });
+
+    if can_pet && data.physics.on_ground.is_some() && data.body.is_humanoid() {
+        update.character = CharacterState::Pet(pet::Data {
+            static_data: pet::StaticData { target_uid },
+        });
+    }
+}
+
 pub fn attempt_talk(data: &JoinData<'_>, update: &mut StateUpdate) {
     if data.physics.on_ground.is_some() {
         update.character = CharacterState::Talk;
@@ -895,7 +960,9 @@ pub fn handle_wallrun(data: &JoinData<'_>, update: &mut StateUpdate) -> bool {
         && data.physics.in_liquid().is_none()
         && data.body.can_climb()
     {
-        update.character = CharacterState::Wallrun(wallrun::Data);
+        update.character = CharacterState::Wallrun(wallrun::Data {
+            was_wielded: data.character.is_wield() || data.character.was_wielded(),
+        });
         true
     } else {
         false
@@ -1033,7 +1100,7 @@ pub fn handle_manipulate_loadout(
             } else {
                 // Else emit inventory action instantaneously
                 let inv_manip = InventoryManip::Use(slot);
-                output_events.emit_server(ServerEvent::InventoryManip(data.entity, inv_manip));
+                output_events.emit_server(InventoryManipEvent(data.entity, inv_manip));
             }
         },
         InventoryAction::Collect(sprite_pos) => {
@@ -1112,21 +1179,44 @@ pub fn handle_manipulate_loadout(
         // For inventory actions without a dedicated character state, just do action instantaneously
         InventoryAction::Swap(equip, slot) => {
             let inv_manip = InventoryManip::Swap(Slot::Equip(equip), slot);
-            output_events.emit_server(ServerEvent::InventoryManip(data.entity, inv_manip));
+            output_events.emit_server(InventoryManipEvent(data.entity, inv_manip));
         },
         InventoryAction::Drop(equip) => {
             let inv_manip = InventoryManip::Drop(Slot::Equip(equip));
-            output_events.emit_server(ServerEvent::InventoryManip(data.entity, inv_manip));
+            output_events.emit_server(InventoryManipEvent(data.entity, inv_manip));
         },
         InventoryAction::Sort => {
-            output_events.emit_server(ServerEvent::InventoryManip(
-                data.entity,
-                InventoryManip::Sort,
-            ));
+            output_events.emit_server(InventoryManipEvent(data.entity, InventoryManip::Sort));
         },
         InventoryAction::Use(slot @ Slot::Equip(_)) => {
             let inv_manip = InventoryManip::Use(slot);
-            output_events.emit_server(ServerEvent::InventoryManip(data.entity, inv_manip));
+            output_events.emit_server(InventoryManipEvent(data.entity, inv_manip));
+        },
+        InventoryAction::Use(Slot::Overflow(_)) => {
+            // Items in overflow slots cannot be used until moved to a real slot
+        },
+        InventoryAction::ToggleSpriteLight(pos, enable) => {
+            if matches!(pos.kind, Volume::Terrain) {
+                let sprite_interact = sprite_interact::SpriteInteractKind::ToggleLight(enable);
+
+                let (buildup_duration, use_duration, recover_duration) =
+                    sprite_interact.durations();
+
+                update.character = CharacterState::SpriteInteract(sprite_interact::Data {
+                    static_data: sprite_interact::StaticData {
+                        buildup_duration,
+                        use_duration,
+                        recover_duration,
+                        sprite_pos: pos.pos,
+                        sprite_kind: sprite_interact,
+                        was_wielded: data.character.is_wield(),
+                        was_sneak: data.character.is_stealthy(),
+                        required_item: None,
+                    },
+                    timer: Duration::default(),
+                    stage_section: StageSection::Buildup,
+                });
+            }
         },
     }
 }
@@ -1186,7 +1276,7 @@ pub fn handle_jump(
                 data.entity,
                 strength * impulse / data.mass.0
                     * data.scale.map_or(1.0, |s| s.0.powf(13.0).powf(0.25))
-                    * data.stats.move_speed_modifier,
+                    * data.stats.jump_modifier,
             ));
         })
         .is_some()
@@ -1210,7 +1300,14 @@ fn handle_ability(
                     Some(data.body),
                     Some(data.character),
                     &context,
+                    Some(data.stats),
                 )
+            })
+            .map(|(mut a, f, s)| {
+                if let Some(contextual_stats) = a.ability_meta().contextual_stats {
+                    a = a.adjusted_by_stats(contextual_stats.equivalent_stats(data))
+                }
+                (a, f, s)
             })
             .filter(|(ability, _, _)| ability.requirements_paid(data, update))
         {
@@ -1228,24 +1325,44 @@ fn handle_ability(
             if let Some(init_event) = ability.ability_meta().init_event {
                 match init_event {
                     AbilityInitEvent::EnterStance(stance) => {
-                        output_events.emit_server(ServerEvent::ChangeStance {
+                        output_events.emit_server(ChangeStanceEvent {
                             entity: data.entity,
                             stance,
+                        });
+                    },
+                    AbilityInitEvent::GainBuff {
+                        kind,
+                        strength,
+                        duration,
+                    } => {
+                        let dest_info = DestInfo {
+                            stats: Some(data.stats),
+                            mass: Some(data.mass),
+                        };
+                        output_events.emit_server(BuffEvent {
+                            entity: data.entity,
+                            buff_change: BuffChange::Add(Buff::new(
+                                kind,
+                                BuffData::new(strength, duration),
+                                vec![BuffCategory::SelfBuff],
+                                BuffSource::Character { by: *data.uid },
+                                *data.time,
+                                dest_info,
+                                Some(data.mass),
+                            )),
                         });
                     },
                 }
             }
             if let CharacterState::Roll(roll) = &mut update.character {
-                if let CharacterState::ComboMelee(c) = data.character {
-                    roll.was_combo = Some((c.static_data.ability_info.input, c.stage));
+                if data.character.is_wield() || data.character.was_wielded() {
                     roll.was_wielded = true;
-                } else {
-                    if data.character.is_wield() || data.character.was_wielded() {
-                        roll.was_wielded = true;
-                    }
-                    if data.character.is_stealthy() {
-                        roll.is_sneaking = true;
-                    }
+                }
+                if data.character.is_stealthy() {
+                    roll.is_sneaking = true;
+                }
+                if data.character.is_aimed() {
+                    roll.prev_aimed_dir = Some(data.controller.inputs.look_dir);
                 }
             }
             return true;
@@ -1273,6 +1390,30 @@ pub fn handle_input(
         },
         InputKind::Fly => {},
     }
+}
+
+// NOTE: Quality of Life hack
+//
+// Uses glider ability if has any, otherwise fallback
+pub fn handle_glider_input_or(
+    data: &JoinData<'_>,
+    update: &mut StateUpdate,
+    output_events: &mut OutputEvents,
+    fallback_fn: fn(&JoinData<'_>, &mut StateUpdate),
+) {
+    if data
+        .inventory
+        .and_then(|inv| inv.equipped(EquipSlot::Glider))
+        .and_then(|glider| glider.item_config())
+        .is_none()
+    {
+        fallback_fn(data, update);
+        return;
+    };
+
+    if let Some(input) = data.controller.queued_inputs.keys().next() {
+        handle_ability(data, update, output_events, *input);
+    };
 }
 
 pub fn attempt_input(
@@ -1354,38 +1495,9 @@ pub fn get_hands(data: &JoinData<'_>) -> (Option<Hands>, Option<Hands>) {
     )
 }
 
-/// Returns (critical chance, critical multiplier) which is calculated from
-/// equipped weapon and equipped armor respectively
-pub fn get_crit_data(data: &JoinData<'_>, ai: AbilityInfo) -> (f32, f32) {
-    const DEFAULT_CRIT_CHANCE: f32 = 0.1;
-
-    let crit_chance = ai
-        .hand
-        .map(|hand| match hand {
-            HandInfo::TwoHanded | HandInfo::MainHand => EquipSlot::ActiveMainhand,
-            HandInfo::OffHand => EquipSlot::ActiveOffhand,
-        })
-        .and_then(|slot| data.inventory.and_then(|inv| inv.equipped(slot)))
-        .and_then(|item| {
-            if let ItemKind::Tool(tool) = &*item.kind() {
-                Some(tool.stats(item.stats_durability_multiplier()).crit_chance)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(DEFAULT_CRIT_CHANCE);
-
-    let crit_mult = combat::compute_crit_mult(data.inventory, data.msm);
-
-    (crit_chance, crit_mult)
-}
-
 pub fn get_tool_stats(data: &JoinData<'_>, ai: AbilityInfo) -> tool::Stats {
     ai.hand
-        .map(|hand| match hand {
-            HandInfo::TwoHanded | HandInfo::MainHand => EquipSlot::ActiveMainhand,
-            HandInfo::OffHand => EquipSlot::ActiveOffhand,
-        })
+        .map(|hand| hand.to_equip_slot())
         .and_then(|slot| data.inventory.and_then(|inv| inv.equipped(slot)))
         .and_then(|item| {
             if let ItemKind::Tool(tool) = &*item.kind() {
@@ -1402,7 +1514,8 @@ pub fn input_is_pressed(data: &JoinData<'_>, input: InputKind) -> bool {
 }
 
 /// Checked `Duration` addition. Computes `timer` + `dt`, applying relevant stat
-/// attack modifiers and `other_modifiers`, returning None if overflow occurred.
+/// attack modifiers and `otcompute_precision_multeturning None if overflow
+/// occurred.
 pub fn checked_tick_attack(
     data: &JoinData<'_>,
     timer: Duration,
@@ -1554,6 +1667,11 @@ pub fn end_ability(data: &JoinData<'_>, update: &mut StateUpdate) {
             time_entered: *data.time,
         });
     }
+    if let CharacterState::Roll(roll) = data.character {
+        if let Some(dir) = roll.prev_aimed_dir {
+            update.ori = dir.into();
+        }
+    }
 }
 
 pub fn end_melee_ability(data: &JoinData<'_>, update: &mut StateUpdate) {
@@ -1581,11 +1699,18 @@ impl HandInfo {
             },
         }
     }
+
+    pub fn to_equip_slot(&self) -> EquipSlot {
+        match self {
+            HandInfo::TwoHanded | HandInfo::MainHand => EquipSlot::ActiveMainhand,
+            HandInfo::OffHand => EquipSlot::ActiveOffhand,
+        }
+    }
 }
 
 pub fn leave_stance(data: &JoinData<'_>, output_events: &mut OutputEvents) {
     if !matches!(data.stance, Some(Stance::None)) {
-        output_events.emit_server(ServerEvent::ChangeStance {
+        output_events.emit_server(ChangeStanceEvent {
             entity: data.entity,
             stance: Stance::None,
         });
@@ -1615,16 +1740,18 @@ pub enum ComboConsumption {
     #[default]
     All,
     Half,
+    Cost,
 }
 
 impl ComboConsumption {
-    pub fn consume(&self, data: &JoinData, output_events: &mut OutputEvents) {
+    pub fn consume(&self, data: &JoinData, output_events: &mut OutputEvents, cost: u32) {
         let combo = data.combo.map_or(0, |c| c.counter());
         let to_consume = match self {
             Self::All => combo,
             Self::Half => (combo + 1) / 2,
+            Self::Cost => cost,
         };
-        output_events.emit_server(ServerEvent::ComboChange {
+        output_events.emit_server(ComboChangeEvent {
             entity: data.entity,
             change: -(to_consume as i32),
         });
@@ -1634,13 +1761,13 @@ impl ComboConsumption {
 fn loadout_change_hook(data: &JoinData<'_>, output_events: &mut OutputEvents, clear_combo: bool) {
     if clear_combo {
         // Reset combo to 0
-        output_events.emit_server(ServerEvent::ComboChange {
+        output_events.emit_server(ComboChangeEvent {
             entity: data.entity,
             change: -data.combo.map_or(0, |c| c.counter() as i32),
         });
     }
     // Clear any buffs from equipped weapons
-    output_events.emit_server(ServerEvent::Buff {
+    output_events.emit_server(BuffEvent {
         entity: data.entity,
         buff_change: BuffChange::RemoveByCategory {
             all_required: vec![BuffCategory::RemoveOnLoadoutChange],

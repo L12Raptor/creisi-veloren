@@ -7,31 +7,49 @@ main-tip = Consiglio:
 main-unbound_key_tip = Slega
 main-notice =
     Benvenuto nella versione Alpha di Veloren!
-    
+
     Prima di tuffarti nel divertimento, ti preghiamo di tenere a mente che:
-    
+
     - Questa è una versione alpha molto prematura. Aspettati errori, giocabilità non completa, meccaniche non rifinite e funzioni mancanti.
-    
+
     - Se hai critiche costruttive o errori da segnalare, ci puoi contattare tramite Reddit, GitLab o il server Discord della nostra community.
-    
+
     - Veloren è concesso in licenza con la licenza open-source GPL 3. Il che vuol dire che sei libero di giocare, modificare e ridistribuire il gioco come
      tu desideri (purché il lavoro che ne derivi sia sempre sotto licenza GPL 3).
-    
+
     - Veloren è un progetto comunitario no-profit, e chiunque ci lavori sopra è un volontario.
     Se ti piace ciò che vedi, sei il benvenuto ad unirti ai team di sviluppo e artistico!
-    
+
     Grazie per aver dedicato del tempo a leggere questo avviso, speriamo che ti divertirai col gioco!
-    
+
     ~ Il team di sviluppo di Veloren
 main-login_process =
     Informazioni sul processo di autenticazione:
-    
+
     Notare che hai bisogno di un account
     per giocare su server con autenticazione abilitata.
-    
+
     Puoi creare un account su
-    
+
     https://veloren.net/account/.
+main-singleplayer-new = Nuovo
+main-singleplayer-delete = Cancella
+main-singleplayer-regenerate = Rigenera
+main-singleplayer-create_custom = Crea personalizzato
+main-singleplayer-invalid_name = Errore: Nome non valido
+main-singleplayer-seed = Seme
+main-singleplayer-random_seed = Casuale
+main-singleplayer-day_length = Durata del giorno
+main-singleplayer-size_lg = Scala logaritmica
+main-singleplayer-map_large_warning = Attenzione: mondi di grandi dimensioni impiegheranno molto tempo per avviarsi per la prima volta
+main-singleplayer-world_name = Nome del mondo
+main-singleplayer-map_scale = Scala verticale
+main-singleplayer-map_erosion_quality = Qualità dell'erosione
+main-singleplayer-map_shape = Forma
+main-singleplayer-play = Gioca
+main-singleplayer-generate_and_play = Genera & Gioca
+menu-singleplayer-confirm_delete = Sei sicuro di voler cancellare "{ $world_name }"?
+menu-singleplayer-confirm_regenerate = Sei sicuro di voler rigenerare "{ $world_name }"?
 main-login-server_not_found = Server non trovato
 main-login-authentication_error = Errore di autenticazione sul server
 main-login-internal_error = Errore interno al client (probabilmente, il personaggio è stato cancellato)
@@ -64,12 +82,14 @@ main-servers-stream_error = Errore di connessione/compressione/(de)serializzazio
 main-servers-database_error = Errore sul database del server: { $raw_error }
 main-servers-persistence_error = Errore di persistenza del server (probabilmente causato da asset/dati dei personaggi): { $raw_error }
 main-servers-other_error = Errore generale del server: { $raw_error }
+main-server-rules = Questo server ha regole che devono essere accettate
+main-server-rules-seen-before = Queste regole sono cambiate dall'ultima volta che le hai accettate
 main-credits = Crediti
 main-credits-created_by = creato da
 main-credits-music = Musica
 main-credits-fonts = Font
 main-credits-other_art = Altra arte
-main-credits-contributors = Collaboratori
+main-credits-contributors = Contributori
 loading-tips =
     .a0 = Premi '{ $gameinput-togglelantern }' per accendere la tua lanterna.
     .a1 = Premi '{ $gameinput-help }' per vedere tutte le combinazioni di tasti base.

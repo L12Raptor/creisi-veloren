@@ -18,7 +18,7 @@ use vek::*;
 //    /// NOTE: bone_idx must be in [0, 15] (may be bumped to [0, 31] at some
 //    /// point).
 // TODO: this function name...
-pub fn generate_mesh_base_vol_figure<'a: 'b, 'b, V: 'a>(
+pub fn generate_mesh_base_vol_figure<'a: 'b, 'b, V>(
     vol: V,
     (greedy, opaque_mesh, offs, scale, bone_idx): (
         &'b mut GreedyMesh<'a, FigureSpriteAtlasData>,
@@ -29,7 +29,7 @@ pub fn generate_mesh_base_vol_figure<'a: 'b, 'b, V: 'a>(
     ),
 ) -> MeshGen<TerrainVertex, TerrainVertex, TerrainVertex, math::Aabb<f32>>
 where
-    V: BaseVol<Vox = Cell> + ReadVol + SizedVol,
+    V: BaseVol<Vox = Cell> + ReadVol + SizedVol + 'a,
 {
     assert!(bone_idx <= 15, "Bone index for figures must be in [0, 15]");
     let max_size = greedy.max_size();
@@ -63,7 +63,7 @@ where
         |vol: &mut V, pos: Vec3<i32>| vol.get(pos).map_or(true, |vox| !vox.is_filled());
     let should_draw = |vol: &mut V, pos: Vec3<i32>, delta: Vec3<i32>, uv| {
         should_draw_greedy(pos, delta, uv, |vox| {
-            vol.get(vox).map(|vox| *vox).unwrap_or_else(|_| Cell::Empty)
+            vol.get(vox).copied().unwrap_or(Cell::Empty)
         })
     };
     let create_opaque = |atlas_pos, pos, norm| {
@@ -115,7 +115,7 @@ where
 //    /// NOTE: bone_idx must be in [0, 15] (may be bumped to [0, 31] at some
 //    /// point).
 // TODO: this function name...
-pub fn generate_mesh_base_vol_terrain<'a: 'b, 'b, V: 'a>(
+pub fn generate_mesh_base_vol_terrain<'a: 'b, 'b, V>(
     vol: V,
     (greedy, opaque_mesh, offs, scale, bone_idx): (
         &'b mut GreedyMesh<'a, FigureSpriteAtlasData>,
@@ -126,7 +126,7 @@ pub fn generate_mesh_base_vol_terrain<'a: 'b, 'b, V: 'a>(
     ),
 ) -> MeshGen<TerrainVertex, TerrainVertex, TerrainVertex, math::Aabb<f32>>
 where
-    V: BaseVol<Vox = Block> + ReadVol + SizedVol,
+    V: BaseVol<Vox = Block> + ReadVol + SizedVol + 'a,
 {
     assert!(bone_idx <= 15, "Bone index for figures must be in [0, 15]");
     let max_size = greedy.max_size();
@@ -167,9 +167,7 @@ where
     let get_opacity = |vol: &mut V, pos: Vec3<i32>| vol.get(pos).map_or(true, |vox| vox.is_fluid());
     let should_draw = |vol: &mut V, pos: Vec3<i32>, delta: Vec3<i32>, _uv| {
         super::terrain::should_draw_greedy(pos, delta, |vox| {
-            vol.get(vox)
-                .map(|vox| *vox)
-                .unwrap_or_else(|_| Block::empty())
+            vol.get(vox).copied().unwrap_or_else(|_| Block::empty())
         })
     };
 
@@ -220,7 +218,7 @@ where
     (Mesh::new(), Mesh::new(), Mesh::new(), bounds)
 }
 
-pub fn generate_mesh_base_vol_sprite<'a: 'b, 'b, V: 'a>(
+pub fn generate_mesh_base_vol_sprite<'a: 'b, 'b, V>(
     vol: V,
     (greedy, opaque_mesh, vertical_stripes): (
         &'b mut GreedyMesh<'a, FigureSpriteAtlasData, greedy::SpriteAtlasAllocator>,
@@ -230,7 +228,7 @@ pub fn generate_mesh_base_vol_sprite<'a: 'b, 'b, V: 'a>(
     offset: Vec3<f32>,
 ) -> MeshGen<SpriteVertex, SpriteVertex, TerrainVertex, ()>
 where
-    V: BaseVol<Vox = Cell> + ReadVol + SizedVol,
+    V: BaseVol<Vox = Cell> + ReadVol + SizedVol + 'a,
 {
     let max_size = greedy.max_size();
     // NOTE: Required because we steal two bits from the normal in the shadow uint
@@ -271,7 +269,7 @@ where
                 for y in -1..greedy_size.y + 1 {
                     for z in -1..greedy_size.z + 1 {
                         let wpos = lower_bound + Vec3::new(x, y, z);
-                        let block = vol.get(wpos).map(|b| *b).unwrap_or_else(|_| Cell::Empty);
+                        let block = vol.get(wpos).copied().unwrap_or(Cell::Empty);
                         flat[i] = block;
                         i += 1;
                     }
@@ -347,12 +345,12 @@ where
     (Mesh::new(), Mesh::new(), Mesh::new(), ())
 }
 
-pub fn generate_mesh_base_vol_particle<'a: 'b, 'b, V: 'a>(
+pub fn generate_mesh_base_vol_particle<'a: 'b, 'b, V>(
     vol: V,
     greedy: &'b mut GreedyMesh<'a, FigureSpriteAtlasData>,
 ) -> MeshGen<ParticleVertex, ParticleVertex, TerrainVertex, ()>
 where
-    V: BaseVol<Vox = Cell> + ReadVol + SizedVol,
+    V: BaseVol<Vox = Cell> + ReadVol + SizedVol + 'a,
 {
     let max_size = greedy.max_size();
     // NOTE: Required because we steal two bits from the normal in the shadow uint
@@ -395,7 +393,7 @@ where
         |vol: &mut V, pos: Vec3<i32>| vol.get(pos).map_or(true, |vox| !vox.is_filled());
     let should_draw = |vol: &mut V, pos: Vec3<i32>, delta: Vec3<i32>, uv| {
         should_draw_greedy(pos, delta, uv, |vox| {
-            vol.get(vox).map(|vox| *vox).unwrap_or_else(|_| Cell::Empty)
+            vol.get(vox).copied().unwrap_or(Cell::Empty)
         })
     };
     let create_opaque = |_atlas_pos, pos: Vec3<f32>, norm| ParticleVertex::new(pos, norm);
@@ -439,7 +437,7 @@ fn should_draw_greedy(
     let from = flat_get(pos - delta);
     let to = flat_get(pos);
     let from_opaque = from.is_filled();
-    if from_opaque != !to.is_filled() {
+    if from_opaque == to.is_filled() {
         None
     } else {
         // If going from transparent to opaque, backward facing; otherwise, forward
@@ -458,7 +456,7 @@ fn should_draw_greedy_ao(
     let from = flat_get(pos - delta);
     let to = flat_get(pos);
     let from_opaque = from.is_filled();
-    if from_opaque != !to.is_filled() {
+    if from_opaque == to.is_filled() {
         None
     } else {
         let faces_forward = from_opaque;

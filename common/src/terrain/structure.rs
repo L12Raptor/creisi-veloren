@@ -1,11 +1,11 @@
 use super::{BlockKind, SpriteKind};
 use crate::{
     assets::{self, AssetExt, AssetHandle, BoxedError, DotVoxAsset},
-    comp::Content,
     make_case_elim,
     vol::{BaseVol, ReadVol, SizedVol, WriteVol},
     volumes::dyna::{Dyna, DynaError},
 };
+use common_i18n::Content;
 use dot_vox::DotVoxData;
 use hashbrown::HashMap;
 use serde::Deserialize;
@@ -47,6 +47,13 @@ make_case_elim!(
         GlassKeyhole(consumes: String) = 27,
         Sign(content: Content, ori: u8) = 28,
         KeyholeBars(consumes: String) = 29,
+        HaniwaKeyhole(consumes: String) = 30,
+        TerracottaKeyhole(consumes: String) = 31,
+        SahaginKeyhole(consumes: String) = 32,
+        MapleLeaves = 33,
+        CherryLeaves = 34,
+        AutumnLeaves = 35,
+        RedwoodWood = 36,
     }
 );
 
@@ -157,7 +164,7 @@ pub(crate) fn load_base_structure<B: Default>(
     mut to_block: impl FnMut(Rgb<u8>) -> B,
 ) -> BaseStructure<B> {
     let mut palette = std::array::from_fn(|_| B::default());
-    if let Some(model) = dot_vox_data.models.get(0) {
+    if let Some(model) = dot_vox_data.models.first() {
         for (i, col) in dot_vox_data
             .palette
             .iter()

@@ -75,6 +75,7 @@ impl From<&Item> for Body {
                 ArmorKind::Pants => Body::Armor(ItemDropArmorKind::Pants),
                 ArmorKind::Foot => Body::Armor(ItemDropArmorKind::Foot),
                 ArmorKind::Back => Body::Armor(ItemDropArmorKind::Back),
+                ArmorKind::Backpack => Body::Armor(ItemDropArmorKind::Back),
                 ArmorKind::Ring => Body::Armor(ItemDropArmorKind::Ring),
                 ArmorKind::Neck => Body::Armor(ItemDropArmorKind::Neck),
                 ArmorKind::Head => Body::Armor(ItemDropArmorKind::Head),
@@ -138,12 +139,10 @@ impl Body {
                     ))
                     .unwrap_or_default(),
                 ),
-            Body::Armor(kind) => match kind {
-                ItemDropArmorKind::Neck | ItemDropArmorKind::Back | ItemDropArmorKind::Tabard => {
-                    default.yawed_left(random).pitched_down(PI / 2.0)
-                },
-                _ => default.yawed_left(random),
-            },
+
+            Body::Armor(
+                ItemDropArmorKind::Neck | ItemDropArmorKind::Back | ItemDropArmorKind::Tabard,
+            ) => default.yawed_left(random).pitched_down(PI / 2.0),
             _ => default.yawed_left(random),
         }
     }

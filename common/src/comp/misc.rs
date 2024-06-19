@@ -26,13 +26,16 @@ pub enum Object {
         requires_no_aggro: bool,
         buildup_time: Secs,
     },
+    SurpriseEgg {
+        owner: Option<Uid>,
+    },
 }
 
 impl Component for Object {
     type Storage = DerefFlaggedStorage<Self, specs::VecStorage<Self>>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PortalData {
     pub target: Vec3<f32>,
     pub requires_no_aggro: bool,

@@ -7,31 +7,49 @@ main-tip = 小提示:
 main-unbound_key_tip = 自由
 main-notice =
     欢迎加入 Veloren Alpha 版本!
-    
+
     在你开始享受游戏之前,请注意以下事情:
-    
+
     - 这是非常前期的 alpha 版本,你会遇到不少错误、未完成的游戏模式、未完善的游戏机制以及缺失的功能. 
-    
+
     - 如果有建设性的意见反馈或是错误汇报,可以通过 Reddit、GitLab 或者我们的 Discord 服务器联系我们.
-    
+
     - Veloren 的授权条款是GPL3. 意思是你可以免费游玩,
     修改并重新发布游戏(衍生内容也必须是GPL3)
-    
+
     - Veloren 是一个非营利的社区项目, 参与该项目的都是志愿者.
     如果你想在项目中看到你的身影,欢迎加入开发或艺术团队!
-    
+
     感谢你抽出宝贵的时间阅读此通知,希望你喜欢这款游戏!
-    
+
     ~ The Veloren Devs
 main-login_process =
     有关登录的信息:
-    
+
     请注意,你现在需要一个账户,
     才能在启用身份验证的服务器上游玩.
-    
+
     你可以通过下面的网站创建用户.
-    
+
     https://veloren.net/account/.
+main-singleplayer-new = 新建
+main-singleplayer-delete = 删除
+main-singleplayer-regenerate = 重新生成
+main-singleplayer-create_custom = 自定义
+main-singleplayer-invalid_name = 错误: 无效的世界名称
+main-singleplayer-seed = 种子
+main-singleplayer-day_length = 白天长度
+main-singleplayer-random_seed = 随机种子
+main-singleplayer-size_lg = 指数级大小
+main-singleplayer-map_large_warning = 警告: 生成大型地图可能需要很长时间
+main-singleplayer-world_name = 世界名称
+main-singleplayer-map_scale = 地图缩放
+main-singleplayer-map_erosion_quality = 地图侵蚀质量
+main-singleplayer-map_shape = 地图形状
+main-singleplayer-play = 开始游戏
+main-singleplayer-generate_and_play = 生成并开始游戏
+menu-singleplayer-confirm_delete = 你确定要删除 "{ $world_name }"
+menu-singleplayer-confirm_regenerate = 你确定要重新生成 "{ $world_name }"
 main-login-server_not_found = 找不到服务器
 main-login-authentication_error = 服务器验证错误
 main-login-internal_error = 客户端出现内部错误（很可能是玩家角色被删除）
@@ -64,6 +82,8 @@ main-servers-stream_error = Client connection/compression/(de)serialization erro
 main-servers-database_error = 服务器数据库错误: { $raw_error }
 main-servers-persistence_error = 服务器持久性错误（可能与资源文件/角色数据相关）: { $raw_error }
 main-servers-other_error = 服务器常规错误: { $raw_error }
+main-server-rules = 这个服务器有一些规则你要遵守
+main-server-rules-seen-before = 这些规则从你上次玩这个服务器时有所改变
 main-credits = 鸣谢
 main-credits-created_by = 创建了
 main-credits-music = 音乐

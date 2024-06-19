@@ -1,12 +1,43 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 use tracing::warn;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum ShutdownSignal {
+    SIGUSR1,
+    SIGUSR2,
+    SIGTERM,
+}
+
+impl ShutdownSignal {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn to_signal(self) -> core::ffi::c_int {
+        match self {
+            Self::SIGUSR1 => signal_hook::consts::SIGUSR1,
+            Self::SIGUSR2 => signal_hook::consts::SIGUSR2,
+            Self::SIGTERM => signal_hook::consts::SIGTERM,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub update_shutdown_grace_period_secs: u32,
     pub update_shutdown_message: String,
+    pub web_address: SocketAddr,
+    /// SECRET API HEADER used to access the chat api, if disabled the API is
+    /// unreachable
+    pub web_chat_secret: Option<String>,
+    /// public SECRET API HEADER used to access the /ui_api, if disabled the API
+    /// is reachable localhost only (by /ui)
+    pub ui_api_secret: Option<String>,
+    pub shutdown_signals: Vec<ShutdownSignal>,
 }
 
 impl Default for Settings {
@@ -14,6 +45,14 @@ impl Default for Settings {
         Self {
             update_shutdown_grace_period_secs: 120,
             update_shutdown_message: "The server is restarting for an update".to_owned(),
+            web_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 14005)),
+            web_chat_secret: None,
+            ui_api_secret: None,
+            shutdown_signals: if cfg!(any(target_os = "linux", target_os = "macos")) {
+                vec![ShutdownSignal::SIGUSR1]
+            } else {
+                Vec::new()
+            },
         }
     }
 }

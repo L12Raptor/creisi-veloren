@@ -72,7 +72,7 @@ make_case_elim!(
         Elbst = 19,
         Mossdrake = 20,
         Driggle = 21,
-        HermitAlligator = 22,
+        Snaretongue = 22,
         Rigusaurus = 23,
     }
 );
@@ -104,7 +104,7 @@ pub struct AllSpecies<SpeciesMeta> {
     pub icedrake: SpeciesMeta,
     pub mossdrake: SpeciesMeta,
     pub driggle: SpeciesMeta,
-    pub hermit_alligator: SpeciesMeta,
+    pub snaretongue: SpeciesMeta,
     pub rigusaurus: SpeciesMeta,
 }
 
@@ -136,7 +136,7 @@ impl<'a, SpeciesMeta> core::ops::Index<&'a Species> for AllSpecies<SpeciesMeta> 
             Species::Icedrake => &self.icedrake,
             Species::Mossdrake => &self.mossdrake,
             Species::Driggle => &self.driggle,
-            Species::HermitAlligator => &self.hermit_alligator,
+            Species::Snaretongue => &self.snaretongue,
             Species::Rigusaurus => &self.rigusaurus,
         }
     }
@@ -165,7 +165,7 @@ pub const ALL_SPECIES: [Species; 24] = [
     Species::Icedrake,
     Species::Mossdrake,
     Species::Driggle,
-    Species::HermitAlligator,
+    Species::Snaretongue,
     Species::Rigusaurus,
 ];
 

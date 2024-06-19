@@ -15,6 +15,7 @@ pub enum SlotError {
 pub enum Slot {
     Inventory(InvSlotId),
     Equip(EquipSlot),
+    Overflow(usize),
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,15 +107,6 @@ pub enum ArmorSlot {
     Bag4,
 }
 
-impl Slot {
-    pub fn can_hold(self, item_kind: &ItemKind) -> bool {
-        match (self, item_kind) {
-            (Self::Inventory(_), _) => true,
-            (Self::Equip(slot), item_kind) => slot.can_hold(item_kind),
-        }
-    }
-}
-
 impl EquipSlot {
     pub fn can_hold(self, item_kind: &ItemKind) -> bool {
         match (self, item_kind) {
@@ -142,6 +134,7 @@ impl ArmorSlot {
                 | (Self::Ring1, ArmorKind::Ring)
                 | (Self::Ring2, ArmorKind::Ring)
                 | (Self::Back, ArmorKind::Back)
+                | (Self::Back, ArmorKind::Backpack)
                 | (Self::Belt, ArmorKind::Belt)
                 | (Self::Legs, ArmorKind::Pants)
                 | (Self::Feet, ArmorKind::Foot)

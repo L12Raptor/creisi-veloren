@@ -1,11 +1,18 @@
 use common::{
-    combat::{self, AttackOptions, AttackSource, AttackerInfo, TargetInfo},
+    combat::{self, AttackOptions, AttackerInfo, TargetInfo},
     comp::{
         agent::{Sound, SoundKind},
-        Alignment, Body, Buffs, CharacterState, Combo, Energy, Group, Health, Inventory, Ori,
+        aura::EnteredAuras,
+        shockwave::ShockwaveDodgeable,
+        Alignment, Body, Buffs, CharacterState, Combo, Energy, Group, Health, Inventory, Mass, Ori,
         PhysicsState, Player, Pos, Scale, Shockwave, ShockwaveHitEntities, Stats,
     },
-    event::{EventBus, ServerEvent},
+    event::{
+        BuffEvent, ComboChangeEvent, DeleteEvent, EmitExt, EnergyChangeEvent,
+        EntityAttackedHookEvent, EventBus, HealthChangeEvent, KnockbackEvent, MineBlockEvent,
+        ParryHookEvent, PoiseChangeEvent, SoundEvent,
+    },
+    event_emitters,
     outcome::Outcome,
     resources::{DeltaTime, Time},
     uid::{IdMaps, Uid},
@@ -14,15 +21,29 @@ use common::{
 };
 use common_ecs::{Job, Origin, Phase, System};
 use rand::Rng;
-use specs::{
-    shred::ResourceId, Entities, Join, Read, ReadStorage, SystemData, World, WriteStorage,
-};
+use specs::{shred, Entities, Join, LendJoin, Read, ReadStorage, SystemData, WriteStorage};
 use vek::*;
+
+event_emitters! {
+    struct Events[Emitters] {
+        health_change: HealthChangeEvent,
+        energy_change: EnergyChangeEvent,
+        poise_change: PoiseChangeEvent,
+        sound: SoundEvent,
+        mine_block: MineBlockEvent,
+        parry_hook: ParryHookEvent,
+        kockback: KnockbackEvent,
+        entity_attack_hoow: EntityAttackedHookEvent,
+        combo_change: ComboChangeEvent,
+        buff: BuffEvent,
+        delete: DeleteEvent,
+    }
+}
 
 #[derive(SystemData)]
 pub struct ReadData<'a> {
     entities: Entities<'a>,
-    server_bus: Read<'a, EventBus<ServerEvent>>,
+    events: Events<'a>,
     time: Read<'a, Time>,
     players: ReadStorage<'a, Player>,
     dt: Read<'a, DeltaTime>,
@@ -42,6 +63,8 @@ pub struct ReadData<'a> {
     combos: ReadStorage<'a, Combo>,
     character_states: ReadStorage<'a, CharacterState>,
     buffs: ReadStorage<'a, Buffs>,
+    entered_auras: ReadStorage<'a, EnteredAuras>,
+    masses: ReadStorage<'a, Mass>,
 }
 
 /// This system is responsible for handling accepted inputs like moving or
@@ -64,7 +87,7 @@ impl<'a> System<'a> for Sys {
         _job: &mut Job<Self>,
         (read_data, mut shockwaves, mut shockwave_hit_lists, outcomes): Self::SystemData,
     ) {
-        let mut server_emitter = read_data.server_bus.emitter();
+        let mut emitters = read_data.events.get_emitters();
         let mut outcomes_emitter = outcomes.emitter();
         let mut rng = rand::thread_rng();
 
@@ -94,7 +117,7 @@ impl<'a> System<'a> for Sys {
                 .and_then(|uid| read_data.id_maps.uid_entity(uid));
 
             if rng.gen_bool(0.05) {
-                server_emitter.emit(ServerEvent::Sound {
+                emitters.emit(SoundEvent {
                     sound: Sound::new(SoundKind::Shockwave, pos.0, 40.0, time),
                 });
             }
@@ -102,7 +125,7 @@ impl<'a> System<'a> for Sys {
             // If shockwave is out of time emit destroy event but still continue since it
             // may have traveled and produced effects a bit before reaching it's end point
             if time > end_time {
-                server_emitter.emit(ServerEvent::Delete(entity));
+                emitters.emit(DeleteEvent(entity));
                 continue;
             }
 
@@ -172,7 +195,14 @@ impl<'a> System<'a> for Sys {
                 };
 
                 // Check if it is a hit
+                //
+                // TODO: Should the owner entity really be filtered out here? Unlike other
+                // attacks, explosions and shockwaves are rather "imprecise"
+                // attacks with which one shoud be easily able to hit oneself.
+                // Once we make shockwaves start out a little way out from the center, this can
+                // be removed.
                 let hit = entity != target
+                    && shockwave_owner.map_or(true, |owner| owner != target)
                     && !health_b.is_dead
                     && (pos_b.0 - pos.0).magnitude() < frame_end_dist + rad_b
                     // Collision shapes
@@ -182,9 +212,15 @@ impl<'a> System<'a> for Sys {
                         arc_strip.collides_with_circle(Disk::new(pos_b2, rad_b))
                     }
                     && (pos_b_ground - pos.0).angle_between(pos_b.0 - pos.0) < max_angle
-                    && (!shockwave.requires_ground || physics_state_b.on_ground.is_some());
+                    && match shockwave.dodgeable {
+                        ShockwaveDodgeable::Roll | ShockwaveDodgeable::No => true,
+                        ShockwaveDodgeable::Jump => physics_state_b.on_ground.is_some()
+                    };
 
                 if hit {
+                    let allow_friendly_fire = shockwave_owner.is_some_and(|entity| {
+                        combat::allow_friendly_fire(&read_data.entered_auras, entity, target)
+                    });
                     let dir = Dir::from_unnormalized(pos_b.0 - pos.0).unwrap_or(look_dir);
 
                     let attacker_info =
@@ -198,6 +234,7 @@ impl<'a> System<'a> for Sys {
                                 combo: read_data.combos.get(entity),
                                 inventory: read_data.inventories.get(entity),
                                 stats: read_data.stats.get(entity),
+                                mass: read_data.masses.get(entity),
                             });
 
                     let target_info = TargetInfo {
@@ -211,31 +248,35 @@ impl<'a> System<'a> for Sys {
                         char_state: read_data.character_states.get(target),
                         energy: read_data.energies.get(target),
                         buffs: read_data.buffs.get(target),
+                        mass: read_data.masses.get(target),
                     };
 
                     let target_dodging = read_data
                         .character_states
                         .get(target)
                         .and_then(|cs| cs.attack_immunities())
-                        .map_or(false, |i| {
-                            if shockwave.requires_ground {
-                                i.ground_shockwaves
-                            } else {
-                                i.air_shockwaves
-                            }
+                        .map_or(false, |i| match shockwave.dodgeable {
+                            ShockwaveDodgeable::Roll => i.air_shockwaves,
+                            ShockwaveDodgeable::Jump => i.ground_shockwaves,
+                            ShockwaveDodgeable::No => false,
                         });
                     // PvP check
-                    let may_harm = combat::may_harm(
+                    let permit_pvp = combat::permit_pvp(
                         &read_data.alignments,
                         &read_data.players,
+                        &read_data.entered_auras,
                         &read_data.id_maps,
                         shockwave_owner,
                         target,
                     );
+                    // Shockwaves aren't precise, and thus cannot be a precise strike
+                    let precision_mult = None;
                     let attack_options = AttackOptions {
                         target_dodging,
-                        may_harm,
+                        permit_pvp,
+                        allow_friendly_fire,
                         target_group,
+                        precision_mult,
                     };
 
                     shockwave.properties.attack.apply_attack(
@@ -244,13 +285,9 @@ impl<'a> System<'a> for Sys {
                         dir,
                         attack_options,
                         1.0,
-                        if shockwave.requires_ground {
-                            AttackSource::GroundShockwave
-                        } else {
-                            AttackSource::AirShockwave
-                        },
+                        shockwave.dodgeable.to_attack_source(),
                         *read_data.time,
-                        |e| server_emitter.emit(e),
+                        &mut emitters,
                         |o| outcomes_emitter.emit(o),
                         &mut rng,
                         0,
@@ -264,7 +301,7 @@ impl<'a> System<'a> for Sys {
         // Set start time on new shockwaves
         // This change doesn't need to be recorded as it is not sent to the client
         shockwaves.set_event_emission(false);
-        (&mut shockwaves).join().for_each(|mut shockwave| {
+        (&mut shockwaves).lend_join().for_each(|mut shockwave| {
             if shockwave.creation.is_none() {
                 shockwave.creation = Some(time);
             }

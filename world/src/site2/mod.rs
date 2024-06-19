@@ -11,6 +11,7 @@ pub use self::{
     util::Dir,
 };
 use crate::{
+    config::CONFIG,
     sim::Path,
     site::{namegen::NameGen, SpawnRules},
     util::{attempt, DHashSet, Grid, CARDINALS, SQUARE_4, SQUARE_9},
@@ -18,6 +19,7 @@ use crate::{
 };
 use common::{
     astar::Astar,
+    calendar::Calendar,
     comp::Alignment,
     generation::EntityInfo,
     lottery::Lottery,
@@ -105,8 +107,15 @@ impl Site {
             .filter_map(|plot| match &plot.kind {
                 PlotKind::Dungeon(d) => Some(d.spawn_rules(wpos)),
                 PlotKind::Gnarling(g) => Some(g.spawn_rules(wpos)),
-                PlotKind::Adlet(a) => Some(a.spawn_rules(wpos)),
-                //PlotKind::DwarvenMine(m) => Some(m.spawn_rules(wpos)),
+                PlotKind::Adlet(ad) => Some(ad.spawn_rules(wpos)),
+                PlotKind::SeaChapel(p) => Some(p.spawn_rules(wpos)),
+                PlotKind::Haniwa(ha) => Some(ha.spawn_rules(wpos)),
+                PlotKind::TerracottaPalace(tp) => Some(tp.spawn_rules(wpos)),
+                PlotKind::TerracottaHouse(th) => Some(th.spawn_rules(wpos)),
+                PlotKind::TerracottaYard(ty) => Some(ty.spawn_rules(wpos)),
+                PlotKind::Cultist(cl) => Some(cl.spawn_rules(wpos)),
+                PlotKind::Sahagin(sg) => Some(sg.spawn_rules(wpos)),
+                PlotKind::DwarvenMine(dm) => Some(dm.spawn_rules(wpos)),
                 _ => None,
             })
             .fold(base_spawn_rules, |a, b| a.combine(b))
@@ -416,7 +425,7 @@ impl Site {
         site
     }
 
-    /*pub fn generate_mine(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+    pub fn generate_mine(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
         let mut rng = reseed(rng);
         let mut site = Site {
             origin,
@@ -449,7 +458,7 @@ impl Site {
         });
 
         site
-    }  */
+    }
 
     pub fn generate_citadel(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
         let mut rng = reseed(rng);
@@ -543,6 +552,132 @@ impl Site {
         site
     }
 
+    pub fn generate_terracotta(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+        let mut rng = reseed(rng);
+        let gen_name = NameGen::location(&mut rng).generate_terracotta();
+        let suffix = [
+            "Tombs",
+            "Necropolis",
+            "Ruins",
+            "Mausoleum",
+            "Cemetery",
+            "Burial Grounds",
+            "Remains",
+            "Temples",
+            "Gardens",
+        ]
+        .choose(&mut rng)
+        .unwrap();
+        let name = match rng.gen_range(0..2) {
+            0 => format!("{} {}", gen_name, suffix),
+            _ => format!("{} of {}", suffix, gen_name),
+        };
+        let mut site = Site {
+            origin,
+            name,
+            ..Site::default()
+        };
+
+        site.make_plaza(land, &mut rng);
+
+        let size = 15.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        {
+            let terracotta_palace =
+                plot::TerracottaPalace::generate(land, &mut reseed(&mut rng), &site, aabr);
+            let terracotta_palace_alt = terracotta_palace.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::TerracottaPalace(terracotta_palace),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(terracotta_palace_alt),
+            });
+        }
+        let build_chance = Lottery::from(vec![(12.0, 1), (4.0, 2)]);
+        for _ in 0..16 {
+            match *build_chance.choose_seeded(rng.gen()) {
+                1 => {
+                    // TerracottaHouse
+                    let size = (9.0 + rng.gen::<f32>().powf(5.0) * 1.5).round() as u32;
+                    if let Some((aabr, _, _)) = attempt(32, || {
+                        site.find_roadside_aabr(
+                            &mut rng,
+                            9..(size + 1).pow(2),
+                            Extent2::broadcast(size),
+                        )
+                    }) {
+                        let terracotta_house = plot::TerracottaHouse::generate(
+                            land,
+                            &mut reseed(&mut rng),
+                            &site,
+                            aabr,
+                        );
+                        let terracotta_house_alt = terracotta_house.alt;
+                        let plot = site.create_plot(Plot {
+                            kind: PlotKind::TerracottaHouse(terracotta_house),
+                            root_tile: aabr.center(),
+                            tiles: aabr_tiles(aabr).collect(),
+                            seed: rng.gen(),
+                        });
+
+                        site.blit_aabr(aabr, Tile {
+                            kind: TileKind::Building,
+                            plot: Some(plot),
+                            hard_alt: Some(terracotta_house_alt),
+                        });
+                    } else {
+                        site.make_plaza(land, &mut rng);
+                    }
+                },
+
+                2 => {
+                    // TerracottaYard
+                    let size = (9.0 + rng.gen::<f32>().powf(5.0) * 1.5).round() as u32;
+                    if let Some((aabr, _, _)) = attempt(32, || {
+                        site.find_roadside_aabr(
+                            &mut rng,
+                            9..(size + 1).pow(2),
+                            Extent2::broadcast(size),
+                        )
+                    }) {
+                        let terracotta_yard = plot::TerracottaYard::generate(
+                            land,
+                            &mut reseed(&mut rng),
+                            &site,
+                            aabr,
+                        );
+                        let terracotta_yard_alt = terracotta_yard.alt;
+                        let plot = site.create_plot(Plot {
+                            kind: PlotKind::TerracottaYard(terracotta_yard),
+                            root_tile: aabr.center(),
+                            tiles: aabr_tiles(aabr).collect(),
+                            seed: rng.gen(),
+                        });
+
+                        site.blit_aabr(aabr, Tile {
+                            kind: TileKind::Building,
+                            plot: Some(plot),
+                            hard_alt: Some(terracotta_yard_alt),
+                        });
+                    } else {
+                        site.make_plaza(land, &mut rng);
+                    }
+                },
+                _ => {},
+            }
+        }
+        site
+    }
+
     pub fn generate_giant_tree(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
         let mut rng = reseed(rng);
         let mut site = Site {
@@ -572,7 +707,14 @@ impl Site {
     }
 
     // Size is 0..1
-    pub fn generate_city(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>, size: f32) -> Self {
+    pub fn generate_city(
+        land: &Land,
+        index: IndexRef,
+        rng: &mut impl Rng,
+        origin: Vec2<i32>,
+        size: f32,
+        calendar: Option<&Calendar>,
+    ) -> Self {
         let mut rng = reseed(rng);
 
         let mut site = Site {
@@ -585,12 +727,23 @@ impl Site {
 
         site.make_plaza(land, &mut rng);
 
-        let build_chance = Lottery::from(vec![(64.0, 1), (5.0, 2), (8.0, 3), (5.0, 4), (5.0, 5)]);
+        let build_chance = Lottery::from(vec![
+            (64.0, 1),
+            (5.0, 2),
+            (8.0, 3),
+            (5.0, 4),
+            (5.0, 5),
+            (15.0, 6),
+            (15.0, 7),
+        ]);
 
         let mut castles = 0;
 
         let mut workshops = 0;
 
+        let mut airship_docks = 0;
+
+        let mut taverns = 0;
         for _ in 0..(size * 200.0) as i32 {
             match *build_chance.choose_seeded(rng.gen()) {
                 // Workshop
@@ -646,6 +799,7 @@ impl Site {
                             door_tile,
                             door_dir,
                             aabr,
+                            calendar,
                         );
                         let house_alt = house.alt;
                         let plot = site.create_plot(Plot {
@@ -868,6 +1022,83 @@ impl Site {
                         castles += 1;
                     }
                 },
+                //airship dock
+                n if (n == 6 && size > 0.125 && airship_docks == 0) => {
+                    if let Some((_aabr, _, _door_dir)) = attempt(10, || {
+                        site.find_roadside_aabr(&mut rng, 4..4, Extent2::new(2, 2))
+                    }) {
+                        let size = 3.0 as u32;
+                        if let Some((aabr, door_tile, door_dir)) = attempt(32, || {
+                            site.find_roadside_aabr(
+                                &mut rng,
+                                4..(size + 1).pow(2),
+                                Extent2::broadcast(size),
+                            )
+                        }) {
+                            let airship_dock = plot::AirshipDock::generate(
+                                land,
+                                &mut reseed(&mut rng),
+                                &site,
+                                door_tile,
+                                door_dir,
+                                aabr,
+                            );
+                            let airship_dock_alt = airship_dock.alt;
+                            let plot = site.create_plot(Plot {
+                                kind: PlotKind::AirshipDock(airship_dock),
+                                root_tile: aabr.center(),
+                                tiles: aabr_tiles(aabr).collect(),
+                                seed: rng.gen(),
+                            });
+
+                            site.blit_aabr(aabr, Tile {
+                                kind: TileKind::Building,
+                                plot: Some(plot),
+                                hard_alt: Some(airship_dock_alt),
+                            });
+                            airship_docks += 1;
+                        } else {
+                            site.make_plaza(land, &mut rng);
+                        }
+                    }
+                },
+                7 if (size > 0.125 && taverns < 2) => {
+                    let size = (3.5 + rng.gen::<f32>().powf(5.0) * 2.0).round() as u32;
+                    if let Some((aabr, door_tile, door_dir)) = attempt(32, || {
+                        site.find_roadside_aabr(
+                            &mut rng,
+                            7..(size + 1).pow(2),
+                            Extent2::broadcast(size),
+                        )
+                    }) {
+                        let tavern = plot::Tavern::generate(
+                            land,
+                            index,
+                            &mut reseed(&mut rng),
+                            &site,
+                            door_tile,
+                            Dir::from_vec2(door_dir),
+                            aabr,
+                        );
+                        let tavern_alt = tavern.door_wpos.z;
+                        let plot = site.create_plot(Plot {
+                            kind: PlotKind::Tavern(tavern),
+                            root_tile: aabr.center(),
+                            tiles: aabr_tiles(aabr).collect(),
+                            seed: rng.gen(),
+                        });
+
+                        site.blit_aabr(aabr, Tile {
+                            kind: TileKind::Building,
+                            plot: Some(plot),
+                            hard_alt: Some(tavern_alt),
+                        });
+
+                        taverns += 1;
+                    } else {
+                        site.make_plaza(land, &mut rng);
+                    }
+                },
                 _ => {},
             }
         }
@@ -875,7 +1106,12 @@ impl Site {
         site
     }
 
-    pub fn generate_cliff_town(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+    pub fn generate_cliff_town(
+        land: &Land,
+        index: IndexRef,
+        rng: &mut impl Rng,
+        origin: Vec2<i32>,
+    ) -> Self {
         let mut rng = reseed(rng);
         let mut site = Site {
             origin,
@@ -886,13 +1122,14 @@ impl Site {
         site.make_plaza(land, &mut rng);
         for _ in 0..30 {
             // CliffTower
-            let size = (8.0 + rng.gen::<f32>().powf(5.0) * 1.0).round() as u32;
+            let size = (9.0 + rng.gen::<f32>().powf(5.0) * 1.0).round() as u32;
             let campfire = campfires < 4;
             if let Some((aabr, door_tile, door_dir)) = attempt(32, || {
                 site.find_roadside_aabr(&mut rng, 8..(size + 1).pow(2), Extent2::broadcast(size))
             }) {
                 let cliff_tower = plot::CliffTower::generate(
                     land,
+                    index,
                     &mut reseed(&mut rng),
                     &site,
                     door_tile,
@@ -1144,6 +1381,29 @@ impl Site {
 
         site.make_plaza(land, &mut rng);
 
+        let size = 17.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+
+        let desert_city_arena =
+            plot::DesertCityArena::generate(land, &mut reseed(&mut rng), &site, aabr);
+
+        let desert_city_arena_alt = desert_city_arena.alt;
+        let plot = site.create_plot(Plot {
+            kind: PlotKind::DesertCityArena(desert_city_arena),
+            root_tile: aabr.center(),
+            tiles: aabr_tiles(aabr).collect(),
+            seed: rng.gen(),
+        });
+
+        site.blit_aabr(aabr, Tile {
+            kind: TileKind::Building,
+            plot: Some(plot),
+            hard_alt: Some(desert_city_arena_alt),
+        });
+
         let build_chance = Lottery::from(vec![(20.0, 1), (10.0, 2)]);
 
         let mut temples = 0;
@@ -1225,6 +1485,54 @@ impl Site {
                 },
                 _ => {},
             }
+        }
+        site
+    }
+
+    pub fn generate_haniwa(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+        let mut rng = reseed(rng);
+        let mut site = Site {
+            origin,
+            name: format!(
+                "{} {}",
+                NameGen::location(&mut rng).generate_haniwa(),
+                [
+                    "Catacombs",
+                    "Crypt",
+                    "Tomb",
+                    "Gravemound",
+                    "Tunnels",
+                    "Vault",
+                    "Chambers",
+                    "Halls",
+                    "Tumulus",
+                    "Barrow",
+                ]
+                .choose(&mut rng)
+                .unwrap()
+            ),
+            ..Site::default()
+        };
+        let size = 24.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        {
+            let haniwa = plot::Haniwa::generate(land, &mut reseed(&mut rng), &site, aabr);
+            let haniwa_alt = haniwa.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::Haniwa(haniwa),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(haniwa_alt),
+            });
         }
         site
     }
@@ -1319,6 +1627,187 @@ impl Site {
                 kind: TileKind::Building,
                 plot: Some(plot),
                 hard_alt: Some(jungle_ruin_alt),
+            });
+        }
+        site
+    }
+
+    pub fn generate_rock_circle(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+        let mut rng = reseed(rng);
+        let mut site = Site {
+            origin,
+            name: "".to_string(),
+            ..Site::default()
+        };
+        let size = 8.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        {
+            let rock_circle = plot::RockCircle::generate(land, &mut reseed(&mut rng), &site, aabr);
+            let rock_circle_alt = rock_circle.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::RockCircle(rock_circle),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(rock_circle_alt),
+            });
+        }
+        site
+    }
+
+    pub fn generate_troll_cave(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+        let mut rng = reseed(rng);
+        let mut site = Site {
+            origin,
+            name: "".to_string(),
+            ..Site::default()
+        };
+        let size = 2.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        let site_temp = temp_at_wpos(land, origin);
+        {
+            let troll_cave =
+                plot::TrollCave::generate(land, &mut reseed(&mut rng), &site, aabr, site_temp);
+            let troll_cave_alt = troll_cave.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::TrollCave(troll_cave),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(troll_cave_alt),
+            });
+        }
+        site
+    }
+
+    pub fn generate_camp(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+        let mut rng = reseed(rng);
+        let mut site = Site {
+            origin,
+            name: "".to_string(),
+            ..Site::default()
+        };
+        let size = 2.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        let site_temp = temp_at_wpos(land, origin);
+        {
+            let camp = plot::Camp::generate(land, &mut reseed(&mut rng), &site, aabr, site_temp);
+            let camp_alt = camp.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::Camp(camp),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(camp_alt),
+            });
+        }
+        site
+    }
+
+    pub fn generate_cultist(land: &Land, rng: &mut impl Rng, origin: Vec2<i32>) -> Self {
+        let mut rng = reseed(rng);
+        let mut site = Site {
+            origin,
+            name: {
+                let name = NameGen::location(&mut rng).generate();
+                match rng.gen_range(0..5) {
+                    0 => format!("{} Dungeon", name),
+                    1 => format!("{} Lair", name),
+                    2 => format!("{} Crib", name),
+                    3 => format!("{} Catacombs", name),
+                    _ => format!("{} Pit", name),
+                }
+            },
+            ..Site::default()
+        };
+        let size = 22.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        {
+            let cultist = plot::Cultist::generate(land, &mut reseed(&mut rng), &site, aabr);
+            let cultist_alt = cultist.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::Cultist(cultist),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(cultist_alt),
+            });
+        }
+        site
+    }
+
+    pub fn generate_sahagin(
+        land: &Land,
+        index: IndexRef,
+        rng: &mut impl Rng,
+        origin: Vec2<i32>,
+    ) -> Self {
+        let mut rng = reseed(rng);
+        let mut site = Site {
+            origin,
+            name: {
+                let name = NameGen::location(&mut rng).generate();
+                match rng.gen_range(0..4) {
+                    0 => format!("{} Isle", name),
+                    1 => format!("{} Islet", name),
+                    2 => format!("{} Key", name),
+                    3 => format!("{} Cay", name),
+                    _ => format!("{} Rock", name),
+                }
+            },
+            ..Site::default()
+        };
+        let size = 16.0 as i32;
+        let aabr = Aabr {
+            min: Vec2::broadcast(-size),
+            max: Vec2::broadcast(size),
+        };
+        {
+            let sahagin = plot::Sahagin::generate(land, index, &mut reseed(&mut rng), &site, aabr);
+            let sahagin_alt = sahagin.alt;
+            let plot = site.create_plot(Plot {
+                kind: PlotKind::Sahagin(sahagin),
+                root_tile: aabr.center(),
+                tiles: aabr_tiles(aabr).collect(),
+                seed: rng.gen(),
+            });
+
+            site.blit_aabr(aabr, Tile {
+                kind: TileKind::Building,
+                plot: Some(plot),
+                hard_alt: Some(sahagin_alt),
             });
         }
         site
@@ -1419,6 +1908,7 @@ impl Site {
             (-border..TILE_SIZE as i32 + border)
                 .map(move |x| (twpos + Vec2::new(x, y), Vec2::new(x, y)))
         });
+        let calendar = None;
 
         #[allow(clippy::single_match)]
         match &tile.kind {
@@ -1473,7 +1963,7 @@ impl Site {
                             .unwrap();
                             canvas.spawn(
                                 EntityInfo::at(Vec3::new(wpos2d.x, wpos2d.y, alt).as_())
-                                    .with_asset_expect(spec, dynamic_rng)
+                                    .with_asset_expect(spec, dynamic_rng, calendar)
                                     .with_alignment(Alignment::Tame),
                             );
                         }
@@ -1649,6 +2139,8 @@ impl Site {
         for plot in plots_to_render {
             let (prim_tree, fills, mut entities) = match &self.plots[plot].kind {
                 PlotKind::House(house) => house.render_collect(self, canvas),
+                PlotKind::AirshipDock(airship_dock) => airship_dock.render_collect(self, canvas),
+                PlotKind::Tavern(tavern) => tavern.render_collect(self, canvas),
                 PlotKind::CoastalHouse(coastal_house) => coastal_house.render_collect(self, canvas),
                 PlotKind::CoastalWorkshop(coastal_workshop) => {
                     coastal_workshop.render_collect(self, canvas)
@@ -1660,26 +2152,43 @@ impl Site {
                 PlotKind::Dungeon(dungeon) => dungeon.render_collect(self, canvas),
                 PlotKind::Gnarling(gnarling) => gnarling.render_collect(self, canvas),
                 PlotKind::Adlet(adlet) => adlet.render_collect(self, canvas),
+                PlotKind::Haniwa(haniwa) => haniwa.render_collect(self, canvas),
                 PlotKind::GiantTree(giant_tree) => giant_tree.render_collect(self, canvas),
                 PlotKind::CliffTower(cliff_tower) => cliff_tower.render_collect(self, canvas),
+                PlotKind::Sahagin(sahagin) => sahagin.render_collect(self, canvas),
                 PlotKind::SavannahPit(savannah_pit) => savannah_pit.render_collect(self, canvas),
                 PlotKind::SavannahHut(savannah_hut) => savannah_hut.render_collect(self, canvas),
                 PlotKind::SavannahWorkshop(savannah_workshop) => {
                     savannah_workshop.render_collect(self, canvas)
                 },
-                //PlotKind::DwarvenMine(_dwarven_mine) => dwarven_mine.render_collect(self,
-                // canvas),
+                PlotKind::DwarvenMine(dwarven_mine) => dwarven_mine.render_collect(self, canvas),
+                PlotKind::TerracottaPalace(terracotta_palace) => {
+                    terracotta_palace.render_collect(self, canvas)
+                },
+                PlotKind::TerracottaHouse(terracotta_house) => {
+                    terracotta_house.render_collect(self, canvas)
+                },
+                PlotKind::TerracottaYard(terracotta_yard) => {
+                    terracotta_yard.render_collect(self, canvas)
+                },
+                PlotKind::Cultist(cultist) => cultist.render_collect(self, canvas),
                 PlotKind::DesertCityMultiPlot(desert_city_multi_plot) => {
                     desert_city_multi_plot.render_collect(self, canvas)
                 },
                 PlotKind::DesertCityTemple(desert_city_temple) => {
                     desert_city_temple.render_collect(self, canvas)
                 },
+                PlotKind::DesertCityArena(desert_city_arena) => {
+                    desert_city_arena.render_collect(self, canvas)
+                },
                 PlotKind::Citadel(citadel) => citadel.render_collect(self, canvas),
                 PlotKind::Bridge(bridge) => bridge.render_collect(self, canvas),
                 PlotKind::PirateHideout(pirate_hideout) => {
                     pirate_hideout.render_collect(self, canvas)
                 },
+                PlotKind::RockCircle(rock_circle) => rock_circle.render_collect(self, canvas),
+                PlotKind::TrollCave(troll_cave) => troll_cave.render_collect(self, canvas),
+                PlotKind::Camp(camp) => camp.render_collect(self, canvas),
                 PlotKind::Plaza | PlotKind::Road(_) => continue,
                 // _ => continue, Avoid using a wildcard here!!
             };
@@ -1782,7 +2291,20 @@ impl Site {
 }
 
 pub fn test_site() -> Site {
-    Site::generate_city(&Land::empty(), &mut thread_rng(), Vec2::zero(), 0.5)
+    let index = crate::index::Index::new(0);
+    let index_ref = IndexRef {
+        colors: &index.colors(),
+        features: &index.features(),
+        index: &index,
+    };
+    Site::generate_city(
+        &Land::empty(),
+        index_ref,
+        &mut thread_rng(),
+        Vec2::zero(),
+        0.5,
+        None,
+    )
 }
 
 fn wpos_is_hazard(land: &Land, wpos: Vec2<i32>) -> Option<HazardKind> {
@@ -1796,6 +2318,12 @@ fn wpos_is_hazard(land: &Land, wpos: Vec2<i32>) -> Option<HazardKind> {
             .filter(|g| *g > 0.8)
             .map(|gradient| HazardKind::Hill { gradient })
     }
+}
+
+fn temp_at_wpos(land: &Land, wpos: Vec2<i32>) -> f32 {
+    land.get_chunk_wpos(wpos)
+        .map(|c| c.temp)
+        .unwrap_or(CONFIG.temperate_temp)
 }
 
 pub fn aabr_tiles(aabr: Aabr<i32>) -> impl Iterator<Item = Vec2<i32>> {

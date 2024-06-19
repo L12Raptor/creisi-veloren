@@ -53,6 +53,7 @@ pub mod biped_small;
 pub mod bird_large;
 pub mod bird_medium;
 pub mod character;
+pub mod crustacean;
 pub mod dragon;
 pub mod fish_medium;
 pub mod fish_small;
@@ -65,6 +66,7 @@ pub mod quadruped_medium;
 pub mod quadruped_small;
 pub mod ship;
 pub mod theropod;
+pub mod util;
 pub mod vek;
 
 use self::vek::*;

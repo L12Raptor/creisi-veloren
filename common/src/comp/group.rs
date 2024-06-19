@@ -2,7 +2,8 @@ use crate::{comp::Alignment, uid::Uid};
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use slab::Slab;
-use specs::{Component, DerefFlaggedStorage, Join};
+use specs::{storage::GenericReadStorage, Component, DerefFlaggedStorage, Join, LendJoin};
+use std::iter;
 use tracing::{error, warn};
 
 // Primitive group system
@@ -82,7 +83,6 @@ impl<E> ChangeNotification<E> {
 }
 
 type GroupsMut<'a> = specs::WriteStorage<'a, Group>;
-type Groups<'a> = specs::ReadStorage<'a, Group>;
 type Alignments<'a> = specs::ReadStorage<'a, Alignment>;
 type Uids<'a> = specs::ReadStorage<'a, Uid>;
 
@@ -98,7 +98,7 @@ fn pets(
     entity: specs::Entity,
     uid: Uid,
     alignments: &Alignments,
-    entities: &specs::Entities,
+    entities: &specs::world::EntitiesRes,
 ) -> Vec<specs::Entity> {
     (entities, alignments)
         .join()
@@ -112,23 +112,22 @@ fn pets(
 pub fn members<'a>(
     group: Group,
     groups: impl Join<Type = &'a Group> + 'a,
-    entities: &'a specs::Entities,
+    entities: &'a specs::world::EntitiesRes,
     alignments: &'a Alignments,
     uids: &'a Uids,
 ) -> impl Iterator<Item = (specs::Entity, Role)> + 'a {
     (entities, groups, alignments, uids)
         .join()
-        .filter_map(move |(e, g, a, u)| {
-            (*g == group).then(|| {
-                (
-                    e,
-                    if matches!(a, Alignment::Owned(owner) if owner != u) {
-                        Role::Pet
-                    } else {
-                        Role::Member
-                    },
-                )
-            })
+        .filter(move |&(_e, g, _a, _u)| (*g == group))
+        .map(|(e, _g, a, u)| {
+            (
+                e,
+                if matches!(a, Alignment::Owned(owner) if owner != u) {
+                    Role::Pet
+                } else {
+                    Role::Member
+                },
+            )
         })
 }
 
@@ -265,27 +264,35 @@ impl GroupManager {
         uids: &Uids,
         notifier: &mut impl FnMut(specs::Entity, ChangeNotification<specs::Entity>),
     ) {
-        let group = match groups.get(owner).copied() {
-            Some(group) => group,
-            None => {
-                let new_group = self.create_group(owner, 1);
-                groups.insert(owner, new_group).unwrap();
-                // Inform
-                notifier(owner, ChangeNotification::NewLeader(owner));
-                new_group
-            },
-        };
+        if !entities.is_alive(owner) {
+            warn!("Tried to create new pet for non-existent owner {owner:?}");
+        } else if !entities.is_alive(pet) {
+            warn!("Tried to create new pet for non-existent pet {pet:?}");
+        } else {
+            let group = match groups.get(owner).copied() {
+                Some(group) => group,
+                None => {
+                    let new_group = self.create_group(owner, 1);
+                    // Unwrap can't fail, we checked that `owner` is alive above
+                    groups.insert(owner, new_group).unwrap();
+                    // Inform
+                    notifier(owner, ChangeNotification::NewLeader(owner));
+                    new_group
+                },
+            };
 
-        // Inform
-        members(group, &*groups, entities, alignments, uids).for_each(|(e, role)| match role {
-            Role::Member => {
-                notifier(e, ChangeNotification::Added(pet, Role::Pet));
-            },
-            Role::Pet => {},
-        });
+            // Inform
+            members(group, &*groups, entities, alignments, uids).for_each(|(e, role)| match role {
+                Role::Member => {
+                    notifier(e, ChangeNotification::Added(pet, Role::Pet));
+                },
+                Role::Pet => {},
+            });
 
-        // Add
-        groups.insert(pet, group).unwrap();
+            // Add
+            // Unwrap can't fail, we checked that `pet` is alive above
+            groups.insert(pet, group).unwrap();
+        }
     }
 
     pub fn leave_group(
@@ -303,19 +310,6 @@ impl GroupManager {
             return;
         }
         self.remove_from_group(member, groups, alignments, uids, entities, notifier, false);
-
-        // Set NPC back to their group
-        if let Some(alignment) = alignments.get(member) {
-            match alignment {
-                Alignment::Npc => {
-                    let _ = groups.insert(member, NPC);
-                },
-                Alignment::Enemy => {
-                    let _ = groups.insert(member, ENEMY);
-                },
-                _ => {},
-            }
-        }
     }
 
     pub fn entity_deleted(
@@ -324,7 +318,7 @@ impl GroupManager {
         groups: &mut GroupsMut,
         alignments: &Alignments,
         uids: &Uids,
-        entities: &specs::Entities,
+        entities: &specs::world::EntitiesRes,
         notifier: &mut impl FnMut(specs::Entity, ChangeNotification<specs::Entity>),
     ) {
         self.remove_from_group(member, groups, alignments, uids, entities, notifier, true);
@@ -339,7 +333,7 @@ impl GroupManager {
         groups: &mut GroupsMut,
         alignments: &Alignments,
         uids: &Uids,
-        entities: &specs::Entities,
+        entities: &specs::world::EntitiesRes,
         notifier: &mut impl FnMut(specs::Entity, ChangeNotification<specs::Entity>),
         to_be_deleted: bool,
     ) {
@@ -361,7 +355,7 @@ impl GroupManager {
                 .join()
                 .filter(|(e, _, g, _)| **g == group && !(to_be_deleted && *e == member))
                 .fold(
-                    HashMap::<Uid, (Option<specs::Entity>, Vec<specs::Entity>)>::new(),
+                    HashMap::<Uid, (Option<specs::Entity>, Option<Alignment>, Vec<specs::Entity>)>::new(),
                     |mut acc, (e, uid, _, alignment)| {
                         if let Some(owner) = alignment.and_then(|a| match a {
                             Alignment::Owned(owner) if uid != owner => Some(owner),
@@ -369,10 +363,14 @@ impl GroupManager {
                         }) {
                             // A pet
                             // Assumes owner will be in the group
-                            acc.entry(*owner).or_default().1.push(e);
+                            acc.entry(*owner).or_default().2.push(e);
                         } else {
                             // Not a pet
-                            acc.entry(*uid).or_default().0 = Some(e);
+                            //
+                            // Entry may already exist from inserting pets
+                            let entry = acc.entry(*uid).or_default();
+                            entry.0 = Some(e);
+                            entry.1 = alignment.copied();
                         }
 
                         acc
@@ -380,9 +378,15 @@ impl GroupManager {
                 )
                 .into_iter()
                 .map(|(_, v)| v)
-                .for_each(|(owner, pets)| {
+                .for_each(|(owner, alignment, pets)| {
                     if let Some(owner) = owner {
-                        if !pets.is_empty() {
+                        if let Some(special_group) = alignment.and_then(|a| a.group()) {
+                            // Set NPC and pets back to their special alignment based group
+                            for entity in iter::once(owner).chain(pets) {
+                                groups.insert(entity, special_group)
+                                    .expect("entity from join above so it must exist");
+                            }
+                        } else if !pets.is_empty() {
                             let mut members =
                                 pets.iter().map(|e| (*e, Role::Pet)).collect::<Vec<_>>();
                             members.push((owner, Role::Member));
@@ -409,8 +413,8 @@ impl GroupManager {
                         });
                     }
                 });
+        // Not leader
         } else {
-            // Not leader
             let leaving_member_uid = if let Some(uid) = uids.get(member) {
                 *uid
             } else {
@@ -420,8 +424,24 @@ impl GroupManager {
 
             let leaving_pets = pets(member, leaving_member_uid, alignments, entities);
 
-            // If pets and not about to be deleted form new group
-            if !leaving_pets.is_empty() && !to_be_deleted {
+            // Handle updates for the leaving group member and their pets.
+            if let Some(special_group) = alignments.get(member).and_then(|a| a.group())
+                && !to_be_deleted
+            {
+                // Set NPC and pets back to their the special alignment based group
+                for entity in iter::once(member).chain(leaving_pets.iter().copied()) {
+                    groups
+                        .insert(entity, special_group)
+                        .expect("entity from join above so it must exist");
+                }
+            // Form new group if these conditions are met:
+            // * Alignment not for a special npc group (handled above)
+            // * The entity has pets.
+            // * The entity isn't about to be deleted.
+            } else if !leaving_pets.is_empty()
+                && !to_be_deleted
+                && alignments.get(member).and_then(Alignment::group).is_none()
+            {
                 let new_group = self.create_group(member, 1);
 
                 notifier(member, ChangeNotification::NewGroup {
@@ -429,7 +449,7 @@ impl GroupManager {
                     members: leaving_pets
                         .iter()
                         .map(|p| (*p, Role::Pet))
-                        .chain(std::iter::once((member, Role::Member)))
+                        .chain(iter::once((member, Role::Member)))
                         .collect(),
                 });
 
@@ -445,6 +465,8 @@ impl GroupManager {
                 });
             }
 
+            // Handle updates for the rest of the group, potentially disbanding it if there
+            // is now only one member left.
             if let Some(info) = self.group_info_mut(group) {
                 // If not pet, decrement number of members
                 if !matches!(alignments.get(member), Some(Alignment::Owned(owner)) if uids.get(member).map_or(true, |uid| uid != owner))
@@ -486,13 +508,13 @@ impl GroupManager {
 
     // Assign new group leader
     // Does nothing if new leader is not part of a group
-    pub fn assign_leader(
+    pub fn assign_leader<'a>(
         &mut self,
         new_leader: specs::Entity,
-        groups: &Groups,
-        entities: &specs::Entities,
-        alignments: &Alignments,
-        uids: &Uids,
+        groups: impl GenericReadStorage<Component = Group> + Join<Type = &'a Group> + 'a,
+        entities: &'a specs::Entities,
+        alignments: &'a Alignments,
+        uids: &'a Uids,
         mut notifier: impl FnMut(specs::Entity, ChangeNotification<specs::Entity>),
     ) {
         let group = match groups.get(new_leader) {
@@ -509,4 +531,10 @@ impl GroupManager {
             Role::Pet => {},
         });
     }
+}
+
+impl Group {
+    /// Returns whether this is one of the special npc or enemy groups
+    // FIXME: These groups are a HACK
+    pub fn is_special(&self) -> bool { *self == NPC || *self == ENEMY }
 }

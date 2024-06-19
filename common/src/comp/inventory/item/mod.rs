@@ -12,26 +12,29 @@ use crate::{
     comp::inventory::InvSlot,
     effect::Effect,
     recipe::RecipeInput,
+    resources::ProgramTime,
     terrain::Block,
 };
+use common_i18n::Content;
 use core::{
     convert::TryFrom,
     mem,
     num::{NonZeroU32, NonZeroU64},
 };
 use crossbeam_utils::atomic::AtomicCell;
-use hashbrown::Equivalent;
+use hashbrown::{Equivalent, HashMap};
+use item_key::ItemKey;
 use serde::{de, Deserialize, Serialize, Serializer};
 use specs::{Component, DenseVecStorage, DerefFlaggedStorage};
 use std::{borrow::Cow, collections::hash_map::DefaultHasher, fmt, sync::Arc};
-use strum::{EnumString, IntoStaticStr};
+use strum::{EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 use tracing::error;
 use vek::Rgb;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Throwable {
     Bomb,
-    Mine,
+    SurpriseEgg,
     TrainingDummy,
     Firework(Reagent),
 }
@@ -44,6 +47,7 @@ pub enum Reagent {
     Red,
     White,
     Yellow,
+    Phoenix,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -54,6 +58,7 @@ pub enum Utility {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Lantern {
     color: Rgb<u32>,
     strength_thousandths: u32,
@@ -102,7 +107,17 @@ pub enum MaterialKind {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, IntoStaticStr, EnumString,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    IntoStaticStr,
+    EnumString,
+    EnumIter,
 )]
 #[strum(serialize_all = "snake_case")]
 pub enum Material {
@@ -322,6 +337,7 @@ impl Effects {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ItemKind {
     /// Something wieldable
     Tool(Tool),
@@ -341,12 +357,17 @@ pub enum ItemKind {
     },
     Ingredient {
         /// Used to generate names for modular items composed of this ingredient
+        // I think we can actually remove it now?
+        #[deprecated = "part of non-localized name generation"]
         descriptor: String,
     },
     TagExamples {
         /// A list of item names to lookup the appearences of and animate
         /// through
         item_ids: Vec<String>,
+    },
+    RecipeGroup {
+        recipes: Vec<String>,
     },
 }
 
@@ -355,6 +376,8 @@ pub enum ConsumableKind {
     Drink,
     Food,
     ComplexFood,
+    Charm,
+    Recipe,
 }
 
 impl ItemKind {
@@ -382,8 +405,10 @@ impl ItemKind {
             },
             ItemKind::Throwable { kind } => format!("Throwable: {:?}", kind),
             ItemKind::Utility { kind } => format!("Utility: {:?}", kind),
+            #[allow(deprecated)]
             ItemKind::Ingredient { descriptor } => format!("Ingredient: {}", descriptor),
             ItemKind::TagExamples { item_ids } => format!("TagExamples: {:?}", item_ids),
+            ItemKind::RecipeGroup { .. } => String::from("Recipes:"),
         }
     }
 
@@ -398,7 +423,8 @@ impl ItemKind {
             | ItemKind::Throwable { .. }
             | ItemKind::Utility { .. }
             | ItemKind::Ingredient { .. }
-            | ItemKind::TagExamples { .. } => false,
+            | ItemKind::TagExamples { .. }
+            | ItemKind::RecipeGroup { .. } => false,
         }
     }
 }
@@ -455,6 +481,32 @@ pub struct Item {
     durability_lost: Option<u32>,
 }
 
+/// Newtype around [`Item`] used for frontend events to prevent it accidentally
+/// being used for anything other than frontend events
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FrontendItem(Item);
+
+// An item that is dropped into the world an can be picked up. It can stack with
+// other items of the same type regardless of the stack limit, when picked up
+// the last item from the list is popped
+//
+// NOTE: Never call PickupItem::clone, it is only used for network
+// synchronization
+//
+// Invariants:
+//  - Any item that is not the last one must have an amount equal to its
+//    `max_amount()`
+//  - All items must be equal and have a zero amount of slots
+//  - The Item list must not be empty
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PickupItem {
+    items: Vec<Item>,
+    /// This [`ProgramTime`] only makes sense on the server
+    created_at: ProgramTime,
+    /// This [`ProgramTime`] only makes sense on the server
+    next_merge_check: ProgramTime,
+}
+
 use std::hash::{Hash, Hasher};
 
 // Used to find inventory item corresponding to hotbar slot
@@ -465,11 +517,61 @@ impl Hash for Item {
     }
 }
 
+// at the time of writing, we use Fluent, which supports attributes
+// and we can get both name and description using them
+type I18nId = String;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ItemName {
-    Direct(String),
-    Modular,
-    Component(String),
+// TODO: probably make a Resource if used outside of voxygen
+// TODO: add hot-reloading similar to how ItemImgs does it?
+// TODO: make it work with plugins (via Concatenate?)
+/// To be used with ItemDesc::i18n
+///
+/// NOTE: there is a limitation to this manifest, as it uses ItemKey and
+/// ItemKey isn't uniquely identifies Item, when it comes to modular items.
+///
+/// If modular weapon has the same primary component and the same hand-ness,
+/// we use the same model EVEN IF it has different secondary components, like
+/// Staff with Heavy core or Light core.
+///
+/// Translations currently do the same, but *maybe* they shouldn't in which case
+/// we should either extend ItemKey or use new identifier. We could use
+/// ItemDefinitionId, but it's very generic and cumbersome.
+pub struct ItemI18n {
+    /// maps ItemKey to i18n identifier
+    map: HashMap<ItemKey, I18nId>,
+}
+
+impl assets::Asset for ItemI18n {
+    type Loader = assets::RonLoader;
+
+    const EXTENSION: &'static str = "ron";
+}
+
+impl ItemI18n {
+    pub fn new_expect() -> Self {
+        ItemI18n::load_expect("common.item_i18n_manifest")
+            .read()
+            .clone()
+    }
+
+    /// Returns (name, description) in Content form.
+    // TODO: after we remove legacy text from ItemDef, consider making this
+    // function non-fallible?
+    fn item_text_opt(&self, mut item_key: ItemKey) -> Option<(Content, Content)> {
+        // we don't put TagExamples into manifest
+        if let ItemKey::TagExamples(_, id) = item_key {
+            item_key = ItemKey::Simple(id.to_string());
+        }
+
+        let key = self.map.get(&item_key);
+        key.map(|key| {
+            (
+                Content::Key(key.to_owned()),
+                Content::Attr(key.to_owned(), "desc".to_owned()),
+            )
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -482,14 +584,11 @@ impl Serialize for ItemBase {
     // Custom serialization for ItemDef, we only want to send the item_definition_id
     // over the network, the client will use deserialize_item_def to fetch the
     // ItemDef from assets.
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(match self {
-            ItemBase::Simple(item_def) => &item_def.item_definition_id,
-            ItemBase::Modular(mod_base) => mod_base.pseudo_item_id(),
-        })
+        serializer.serialize_str(&self.serialization_item_id())
     }
 }
 
@@ -513,13 +612,8 @@ impl<'de> Deserialize<'de> for ItemBase {
             where
                 E: de::Error,
             {
-                Ok(
-                    if serialized_item_base.starts_with(crate::modular_item_id_prefix!()) {
-                        ItemBase::Modular(ModularBase::load_from_pseudo_id(serialized_item_base))
-                    } else {
-                        ItemBase::Simple(Arc::<ItemDef>::load_expect_cloned(serialized_item_base))
-                    },
-                )
+                ItemBase::from_item_id_string(serialized_item_base)
+                    .map_err(|err| E::custom(err.to_string()))
             }
         }
 
@@ -534,6 +628,27 @@ impl ItemBase {
             ItemBase::Modular(_) => 0,
         }
     }
+
+    // Should be kept the same as the persistence_item_id function in Item
+    // TODO: Maybe use Cow?
+    fn serialization_item_id(&self) -> String {
+        match &self {
+            ItemBase::Simple(item_def) => item_def.item_definition_id.clone(),
+            ItemBase::Modular(mod_base) => String::from(mod_base.pseudo_item_id()),
+        }
+    }
+
+    fn from_item_id_string(item_id_string: &str) -> Result<Self, Error> {
+        if item_id_string.starts_with(crate::modular_item_id_prefix!()) {
+            Ok(ItemBase::Modular(ModularBase::load_from_pseudo_id(
+                item_id_string,
+            )))
+        } else {
+            Ok(ItemBase::Simple(Arc::<ItemDef>::load_cloned(
+                item_id_string,
+            )?))
+        }
+    }
 }
 
 // TODO: could this theorectically hold a ref to the actual components and
@@ -541,7 +656,7 @@ impl ItemBase {
 // `Vec`s)
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemDefinitionId<'a> {
-    Simple(&'a str),
+    Simple(Cow<'a, str>),
     Modular {
         pseudo_base: &'a str,
         components: Vec<ItemDefinitionId<'a>>,
@@ -568,7 +683,7 @@ pub enum ItemDefinitionIdOwned {
 impl ItemDefinitionIdOwned {
     pub fn as_ref(&self) -> ItemDefinitionId<'_> {
         match *self {
-            Self::Simple(ref id) => ItemDefinitionId::Simple(id),
+            Self::Simple(ref id) => ItemDefinitionId::Simple(Cow::Borrowed(id)),
             Self::Modular {
                 ref pseudo_base,
                 ref components,
@@ -598,7 +713,7 @@ impl<'a> ItemDefinitionId<'a> {
 
     pub fn to_owned(&self) -> ItemDefinitionIdOwned {
         match self {
-            Self::Simple(id) => ItemDefinitionIdOwned::Simple(String::from(*id)),
+            Self::Simple(id) => ItemDefinitionIdOwned::Simple(String::from(&**id)),
             Self::Modular {
                 pseudo_base,
                 components,
@@ -624,8 +739,10 @@ pub struct ItemDef {
     /// assets folder, which the ItemDef is loaded from. The name space
     /// prepended with `veloren.core` is reserved for veloren functions.
     item_definition_id: String,
-    pub name: String,
-    pub description: String,
+    #[deprecated = "since item i18n"]
+    name: String,
+    #[deprecated = "since item i18n"]
+    description: String,
     pub kind: ItemKind,
     pub quality: Quality,
     pub tags: Vec<ItemTag>,
@@ -658,38 +775,47 @@ impl TryFrom<(&Item, &AbilityMap, &MaterialStatManifest)> for ItemConfig {
         // TODO: Either remove msm or use it as argument in fn kind
         (item, ability_map, _msm): (&Item, &AbilityMap, &MaterialStatManifest),
     ) -> Result<Self, Self::Error> {
-        if let ItemKind::Tool(tool) = &*item.kind() {
-            // If no custom ability set is specified, fall back to abilityset of tool kind.
-            let tool_default = |tool_kind| {
-                let key = &AbilitySpec::Tool(tool_kind);
-                ability_map.get_ability_set(key)
-            };
-            let abilities = if let Some(set_key) = item.ability_spec() {
-                if let Some(set) = ability_map.get_ability_set(&set_key) {
+        match &*item.kind() {
+            ItemKind::Tool(tool) => {
+                // If no custom ability set is specified, fall back to abilityset of tool kind.
+                let tool_default = |tool_kind| {
+                    let key = &AbilitySpec::Tool(tool_kind);
+                    ability_map.get_ability_set(key)
+                };
+                let abilities = if let Some(set_key) = item.ability_spec() {
+                    if let Some(set) = ability_map.get_ability_set(&set_key) {
+                        set.clone()
+                            .modified_by_tool(tool, item.stats_durability_multiplier())
+                    } else {
+                        error!(
+                            "Custom ability set: {:?} references non-existent set, falling back \
+                             to default ability set.",
+                            set_key
+                        );
+                        tool_default(tool.kind).cloned().unwrap_or_default()
+                    }
+                } else if let Some(set) = tool_default(tool.kind) {
                     set.clone()
                         .modified_by_tool(tool, item.stats_durability_multiplier())
                 } else {
                     error!(
-                        "Custom ability set: {:?} references non-existent set, falling back to \
-                         default ability set.",
-                        set_key
+                        "No ability set defined for tool: {:?}, falling back to default ability \
+                         set.",
+                        tool.kind
                     );
-                    tool_default(tool.kind).cloned().unwrap_or_default()
-                }
-            } else if let Some(set) = tool_default(tool.kind) {
-                set.clone()
-                    .modified_by_tool(tool, item.stats_durability_multiplier())
-            } else {
-                error!(
-                    "No ability set defined for tool: {:?}, falling back to default ability set.",
-                    tool.kind
-                );
-                Default::default()
-            };
+                    Default::default()
+                };
 
-            Ok(ItemConfig { abilities })
-        } else {
-            Err(ItemConfigError::BadItemKind)
+                Ok(ItemConfig { abilities })
+            },
+            ItemKind::Glider => item
+                .ability_spec()
+                .and_then(|set_key| ability_map.get_ability_set(&set_key))
+                .map(|abilities| ItemConfig {
+                    abilities: abilities.clone(),
+                })
+                .ok_or(ItemConfigError::BadItemKind),
+            _ => Err(ItemConfigError::BadItemKind),
         }
     }
 }
@@ -716,6 +842,7 @@ impl ItemDef {
         tags: Vec<ItemTag>,
         slots: u16,
     ) -> Self {
+        #[allow(deprecated)]
         Self {
             item_definition_id,
             name: "test item name".to_owned(),
@@ -730,6 +857,7 @@ impl ItemDef {
 
     #[cfg(test)]
     pub fn create_test_itemdef_from_kind(kind: ItemKind) -> Self {
+        #[allow(deprecated)]
         Self {
             item_definition_id: "test.item".to_string(),
             name: "test item name".to_owned(),
@@ -751,14 +879,13 @@ impl ItemDef {
 /// please don't rely on this for anything!
 impl PartialEq for Item {
     fn eq(&self, other: &Self) -> bool {
-        if let (ItemBase::Simple(self_def), ItemBase::Simple(other_def)) =
-            (&self.item_base, &other.item_base)
-        {
-            self_def.item_definition_id == other_def.item_definition_id
-                && self.components == other.components
-        } else {
-            false
-        }
+        (match (&self.item_base, &other.item_base) {
+            (ItemBase::Simple(our_def), ItemBase::Simple(other_def)) => {
+                our_def.item_definition_id == other_def.item_definition_id
+            },
+            (ItemBase::Modular(our_base), ItemBase::Modular(other_base)) => our_base == other_base,
+            _ => false,
+        }) && self.components() == other.components()
     }
 }
 
@@ -774,8 +901,8 @@ impl assets::Compound for ItemDef {
         }
 
         let RawItemDef {
-            name,
-            description,
+            legacy_name,
+            legacy_description,
             kind,
             quality,
             tags,
@@ -789,10 +916,11 @@ impl assets::Compound for ItemDef {
         // TODO: This probably does not belong here
         let item_definition_id = specifier.replace('\\', ".");
 
+        #[allow(deprecated)]
         Ok(ItemDef {
             item_definition_id,
-            name,
-            description,
+            name: legacy_name,
+            description: legacy_description,
             kind,
             quality,
             tags,
@@ -803,10 +931,10 @@ impl assets::Compound for ItemDef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename = "ItemDef")]
+#[serde(rename = "ItemDef", deny_unknown_fields)]
 struct RawItemDef {
-    name: String,
-    description: String,
+    legacy_name: String,
+    legacy_description: String,
     kind: ItemKind,
     quality: Quality,
     tags: Vec<ItemTag>,
@@ -860,7 +988,7 @@ impl Item {
     ) -> Result<Self, Error> {
         let (base, components) = match item_definition_id {
             ItemDefinitionId::Simple(spec) => {
-                let base = ItemBase::Simple(Arc::<ItemDef>::load_cloned(spec)?);
+                let base = ItemBase::Simple(Arc::<ItemDef>::load_cloned(&spec)?);
                 (base, Vec::new())
             },
             ItemDefinitionId::Modular {
@@ -904,18 +1032,17 @@ impl Item {
     /// asset glob pattern
     pub fn new_from_asset_glob(asset_glob: &str) -> Result<Vec<Self>, Error> {
         let specifier = asset_glob.strip_suffix(".*").unwrap_or(asset_glob);
-        let defs = assets::load_dir::<RawItemDef>(specifier, true)?;
-        defs.ids().map(|id| Item::new_from_asset(id)).collect()
+        let defs = assets::load_rec_dir::<RawItemDef>(specifier)?;
+        defs.read()
+            .ids()
+            .map(|id| Item::new_from_asset(id))
+            .collect()
     }
 
     /// Creates a new instance of an `Item from the provided asset identifier if
     /// it exists
     pub fn new_from_asset(asset: &str) -> Result<Self, Error> {
-        let inner_item = if asset.starts_with("veloren.core.pseudo_items.modular") {
-            ItemBase::Modular(ModularBase::load_from_pseudo_id(asset))
-        } else {
-            ItemBase::Simple(Arc::<ItemDef>::load_cloned(asset)?)
-        };
+        let inner_item = ItemBase::from_item_id_string(asset)?;
         // TODO: Get msm and ability_map less hackily
         let msm = &MaterialStatManifest::load().read();
         let ability_map = &AbilityMap::load().read();
@@ -925,6 +1052,16 @@ impl Item {
             ability_map,
             msm,
         ))
+    }
+
+    /// Creates a [`FrontendItem`] out of this item for frontend use
+    #[must_use]
+    pub fn frontend_item(
+        &self,
+        ability_map: &AbilityMap,
+        msm: &MaterialStatManifest,
+    ) -> FrontendItem {
+        FrontendItem(self.duplicate(ability_map, msm))
     }
 
     /// Duplicates an item, creating an exact copy but with a new item ID
@@ -1084,7 +1221,7 @@ impl Item {
         match &self.item_base {
             ItemBase::Simple(item_def) => {
                 if self.components.is_empty() {
-                    ItemDefinitionId::Simple(&item_def.item_definition_id)
+                    ItemDefinitionId::Simple(Cow::Borrowed(&item_def.item_definition_id))
                 } else {
                     ItemDefinitionId::Compound {
                         simple_base: &item_def.item_definition_id,
@@ -1146,21 +1283,15 @@ impl Item {
         })
     }
 
-    /// Generate a human-readable description of the item and amount.
-    pub fn describe(&self) -> String {
-        if self.amount() > 1 {
-            format!("{} x {}", self.amount(), self.name())
-        } else {
-            self.name().to_string()
-        }
-    }
-
+    #[deprecated = "since item i18n"]
     pub fn name(&self) -> Cow<str> {
         match &self.item_base {
             ItemBase::Simple(item_def) => {
                 if self.components.is_empty() {
+                    #[allow(deprecated)]
                     Cow::Borrowed(&item_def.name)
                 } else {
+                    #[allow(deprecated)]
                     modular::modify_name(&item_def.name, self)
                 }
             },
@@ -1168,8 +1299,10 @@ impl Item {
         }
     }
 
+    #[deprecated = "since item i18n"]
     pub fn description(&self) -> &str {
         match &self.item_base {
+            #[allow(deprecated)]
             ItemBase::Simple(item_def) => &item_def.description,
             // TODO: See if James wanted to make description, else leave with none
             ItemBase::Modular(_) => "",
@@ -1197,37 +1330,6 @@ impl Item {
         }
     }
 
-    /// Return `true` if `other` can be merged into this item. This is generally
-    /// only possible if the item has a compatible item ID and is stackable,
-    /// along with any other similarity checks.
-    pub fn can_merge(&self, other: &Item) -> bool {
-        if self.is_stackable()
-            && let ItemBase::Simple(other_item_def) = &other.item_base
-            && self.is_same_item_def(other_item_def)
-            && u32::from(self.amount)
-                .checked_add(other.amount())
-                .filter(|&amount| amount <= self.max_amount())
-                .is_some()
-        {
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Try to merge `other` into this item. This is generally only possible if
-    /// the item has a compatible item ID and is stackable, along with any
-    /// other similarity checks.
-    pub fn try_merge(&mut self, other: Item) -> Result<(), Item> {
-        if self.can_merge(&other) {
-            self.increase_amount(other.amount())
-                .expect("`can_merge` succeeded but `increase_amount` did not");
-            Ok(())
-        } else {
-            Err(other)
-        }
-    }
-
     pub fn num_slots(&self) -> u16 { self.item_base.num_slots() }
 
     /// NOTE: invariant that amount() ≤ max_amount(), 1 ≤ max_amount(),
@@ -1251,11 +1353,7 @@ impl Item {
 
     pub fn slots_mut(&mut self) -> &mut [InvSlot] { &mut self.slots }
 
-    pub fn item_config_expect(&self) -> &ItemConfig {
-        self.item_config
-            .as_ref()
-            .expect("Item was expected to have an ItemConfig")
-    }
+    pub fn item_config(&self) -> Option<&ItemConfig> { self.item_config.as_deref() }
 
     pub fn free_slots(&self) -> usize { self.slots.iter().filter(|x| x.is_none()).count() }
 
@@ -1305,10 +1403,10 @@ impl Item {
 
     pub fn item_hash(&self) -> u64 { self.hash }
 
-    pub fn persistence_item_id(&self) -> &str {
+    pub fn persistence_item_id(&self) -> String {
         match &self.item_base {
-            ItemBase::Simple(item_def) => &item_def.item_definition_id,
-            ItemBase::Modular(mod_base) => mod_base.pseudo_item_id(),
+            ItemBase::Simple(item_def) => item_def.item_definition_id.clone(),
+            ItemBase::Modular(mod_base) => String::from(mod_base.pseudo_item_id()),
         }
     }
 
@@ -1368,6 +1466,30 @@ impl Item {
         self.update_item_state(ability_map, msm);
     }
 
+    /// If an item is stackable and has an amount greater than 1, creates a new
+    /// item with half the amount (rounded down), and decreases the amount of
+    /// the original item by the same quantity.
+    #[must_use = "Returned items will be lost if not used"]
+    pub fn take_half(
+        &mut self,
+        ability_map: &AbilityMap,
+        msm: &MaterialStatManifest,
+    ) -> Option<Item> {
+        if self.is_stackable() && self.amount() > 1 {
+            let mut return_item = self.duplicate(ability_map, msm);
+            let returning_amount = self.amount() / 2;
+            self.decrease_amount(returning_amount).ok()?;
+            return_item.set_amount(returning_amount).expect(
+                "return_item.amount() = self.amount() / 2 < self.amount() (since self.amount() ≥ \
+                 1) ≤ self.max_amount() = return_item.max_amount(), since return_item is a \
+                 duplicate of item",
+            );
+            Some(return_item)
+        } else {
+            None
+        }
+    }
+
     #[cfg(test)]
     pub fn create_test_item_from_kind(kind: ItemKind) -> Self {
         let ability_map = &AbilityMap::load().read();
@@ -1377,6 +1499,195 @@ impl Item {
             Vec::new(),
             ability_map,
             msm,
+        )
+    }
+
+    /// Checks if this item and another are suitable for grouping into the same
+    /// [`PickItem`].
+    ///
+    /// Also see [`Item::try_merge`].
+    pub fn can_merge(&self, other: &Self) -> bool {
+        if self.amount() > self.max_amount() || other.amount() > other.max_amount() {
+            error!("An item amount is over max_amount!");
+            return false;
+        }
+
+        (self == other)
+            && self.slots().iter().all(Option::is_none)
+            && other.slots().iter().all(Option::is_none)
+            && self.durability_lost() == other.durability_lost()
+    }
+
+    /// Checks if this item and another are suitable for grouping into the same
+    /// [`PickItem`] and combines stackable items if possible.
+    ///
+    /// If the sum of both amounts is larger than their max amount, a remainder
+    /// item is returned as `Ok(Some(remainder))`. A remainder item will
+    /// always be produced for non-stackable items.
+    ///
+    /// If the items are not suitable for grouping `Err(other)` will be
+    /// returned.
+    pub fn try_merge(&mut self, mut other: Self) -> Result<Option<Self>, Self> {
+        if self.can_merge(&other) {
+            let max_amount = self.max_amount();
+            debug_assert_eq!(
+                max_amount,
+                other.max_amount(),
+                "Mergeable items must have the same max_amount()"
+            );
+
+            // Additional amount `self` can hold
+            // For non-stackable items this is always zero
+            let to_fill_self = max_amount
+                .checked_sub(self.amount())
+                .expect("can_merge should ensure that amount() <= max_amount()");
+
+            if let Some(remainder) = other.amount().checked_sub(to_fill_self).filter(|r| *r > 0) {
+                self.set_amount(max_amount)
+                    .expect("max_amount() is always a valid amount.");
+                other.set_amount(remainder).expect(
+                    "We know remainder is more than 0 and less than or equal to max_amount()",
+                );
+                Ok(Some(other))
+            } else {
+                // If there would be no remainder, add the amounts!
+                self.increase_amount(other.amount())
+                    .expect("We know that we can at least add other.amount() to this item");
+                drop(other);
+                Ok(None)
+            }
+        } else {
+            Err(other)
+        }
+    }
+
+    // Probably doesn't need to be limited to persistence, but nothing else should
+    // really need to look at item base
+    pub fn persistence_item_base(&self) -> &ItemBase { &self.item_base }
+}
+
+impl FrontendItem {
+    /// See [`Item::duplicate`], the returned item will still be a
+    /// [`FrontendItem`]
+    #[must_use]
+    pub fn duplicate(&self, ability_map: &AbilityMap, msm: &MaterialStatManifest) -> Self {
+        FrontendItem(self.0.duplicate(ability_map, msm))
+    }
+
+    pub fn set_amount(&mut self, amount: u32) -> Result<(), OperationFailure> {
+        self.0.set_amount(amount)
+    }
+}
+
+impl PickupItem {
+    pub fn new(item: Item, time: ProgramTime) -> Self {
+        Self {
+            items: vec![item],
+            created_at: time,
+            next_merge_check: time,
+        }
+    }
+
+    /// Get a reference to the last item in this stack
+    ///
+    /// The amount of this item should *not* be used.
+    pub fn item(&self) -> &Item {
+        self.items
+            .last()
+            .expect("PickupItem without at least one item is an invariant")
+    }
+
+    pub fn created(&self) -> ProgramTime { self.created_at }
+
+    pub fn next_merge_check(&self) -> ProgramTime { self.next_merge_check }
+
+    pub fn next_merge_check_mut(&mut self) -> &mut ProgramTime { &mut self.next_merge_check }
+
+    // Get the total amount of items in here
+    pub fn amount(&self) -> u32 {
+        self.items
+            .iter()
+            .map(Item::amount)
+            .fold(0, |total, amount| total.saturating_add(amount))
+    }
+
+    /// Remove any debug items if this is a container, used before dropping an
+    /// item from an inventory
+    pub fn remove_debug_items(&mut self) {
+        for item in self.items.iter_mut() {
+            item.slots_mut().iter_mut().for_each(|container_slot| {
+                container_slot
+                    .take_if(|contained_item| matches!(contained_item.quality(), Quality::Debug));
+            });
+        }
+    }
+
+    pub fn can_merge(&self, other: &PickupItem) -> bool {
+        let self_item = self.item();
+        let other_item = other.item();
+
+        self_item.can_merge(other_item)
+    }
+
+    // Attempt to merge another PickupItem into this one, can only fail if
+    // `can_merge` returns false
+    pub fn try_merge(&mut self, mut other: PickupItem) -> Result<(), PickupItem> {
+        if self.can_merge(&other) {
+            // Pop the last item from `self` and `other` to merge them, as only the last
+            // items can have an amount != max_amount()
+            let mut self_last = self
+                .items
+                .pop()
+                .expect("PickupItem without at least one item is an invariant");
+            let other_last = other
+                .items
+                .pop()
+                .expect("PickupItem without at least one item is an invariant");
+
+            // Merge other_last into self_last
+            let merged = self_last
+                .try_merge(other_last)
+                .expect("We know these items can be merged");
+
+            debug_assert!(
+                other
+                    .items
+                    .iter()
+                    .chain(self.items.iter())
+                    .all(|item| item.amount() == item.max_amount()),
+                "All items before the last in `PickupItem` should have a full amount"
+            );
+
+            // We know all items except the last have a full amount, so we can safely append
+            // them here
+            self.items.append(&mut other.items);
+
+            debug_assert!(
+                merged.is_none() || self_last.amount() == self_last.max_amount(),
+                "Merged can only be `Some` if the origin was set to `max_amount()`"
+            );
+
+            // Push the potentially not fully-stacked item at the end
+            self.items.push(self_last);
+
+            // Push the remainder, merged is only `Some` if self_last was set to
+            // `max_amount()`
+            if let Some(remainder) = merged {
+                self.items.push(remainder);
+            }
+
+            Ok(())
+        } else {
+            Err(other)
+        }
+    }
+
+    pub fn pick_up(mut self) -> (Item, Option<Self>) {
+        (
+            self.items
+                .pop()
+                .expect("PickupItem without at least one item is an invariant"),
+            (!self.items.is_empty()).then_some(self),
         )
     }
 }
@@ -1394,7 +1705,9 @@ pub fn flatten_counted_items<'a>(
 /// Provides common methods providing details about an item definition
 /// for either an `Item` containing the definition, or the actual `ItemDef`
 pub trait ItemDesc {
+    #[deprecated = "since item i18n"]
     fn description(&self) -> &str;
+    #[deprecated = "since item i18n"]
     fn name(&self) -> Cow<str>;
     fn kind(&self) -> Cow<ItemKind>;
     fn amount(&self) -> NonZeroU32;
@@ -1415,12 +1728,31 @@ pub trait ItemDesc {
             None
         }
     }
+
+    /// Return name's and description's localization descriptors
+    fn i18n(&self, i18n: &ItemI18n) -> (Content, Content) {
+        let item_key: ItemKey = self.into();
+
+        #[allow(deprecated)]
+        i18n.item_text_opt(item_key).unwrap_or_else(|| {
+            (
+                Content::Plain(self.name().to_string()),
+                Content::Plain(self.description().to_string()),
+            )
+        })
+    }
 }
 
 impl ItemDesc for Item {
-    fn description(&self) -> &str { self.description() }
+    fn description(&self) -> &str {
+        #[allow(deprecated)]
+        self.description()
+    }
 
-    fn name(&self) -> Cow<str> { self.name() }
+    fn name(&self) -> Cow<str> {
+        #[allow(deprecated)]
+        self.name()
+    }
 
     fn kind(&self) -> Cow<ItemKind> { self.kind() }
 
@@ -1447,10 +1779,52 @@ impl ItemDesc for Item {
     }
 }
 
-impl ItemDesc for ItemDef {
-    fn description(&self) -> &str { &self.description }
+impl ItemDesc for FrontendItem {
+    fn description(&self) -> &str {
+        #[allow(deprecated)]
+        self.0.description()
+    }
 
-    fn name(&self) -> Cow<str> { Cow::Borrowed(&self.name) }
+    fn name(&self) -> Cow<str> {
+        #[allow(deprecated)]
+        self.0.name()
+    }
+
+    fn kind(&self) -> Cow<ItemKind> { self.0.kind() }
+
+    fn amount(&self) -> NonZeroU32 { self.0.amount }
+
+    fn quality(&self) -> Quality { self.0.quality() }
+
+    fn num_slots(&self) -> u16 { self.0.num_slots() }
+
+    fn item_definition_id(&self) -> ItemDefinitionId<'_> { self.0.item_definition_id() }
+
+    fn tags(&self) -> Vec<ItemTag> { self.0.tags() }
+
+    fn is_modular(&self) -> bool { self.0.is_modular() }
+
+    fn components(&self) -> &[Item] { self.0.components() }
+
+    fn has_durability(&self) -> bool { self.0.has_durability() }
+
+    fn durability_lost(&self) -> Option<u32> { self.0.durability_lost() }
+
+    fn stats_durability_multiplier(&self) -> DurabilityMultiplier {
+        self.0.stats_durability_multiplier()
+    }
+}
+
+impl ItemDesc for ItemDef {
+    fn description(&self) -> &str {
+        #[allow(deprecated)]
+        &self.description
+    }
+
+    fn name(&self) -> Cow<str> {
+        #[allow(deprecated)]
+        Cow::Borrowed(&self.name)
+    }
 
     fn kind(&self) -> Cow<ItemKind> { Cow::Borrowed(&self.kind) }
 
@@ -1461,7 +1835,7 @@ impl ItemDesc for ItemDef {
     fn num_slots(&self) -> u16 { self.slots }
 
     fn item_definition_id(&self) -> ItemDefinitionId<'_> {
-        ItemDefinitionId::Simple(&self.item_definition_id)
+        ItemDefinitionId::Simple(Cow::Borrowed(&self.item_definition_id))
     }
 
     fn tags(&self) -> Vec<ItemTag> { self.tags.to_vec() }
@@ -1479,8 +1853,42 @@ impl ItemDesc for ItemDef {
     fn stats_durability_multiplier(&self) -> DurabilityMultiplier { DurabilityMultiplier(1.0) }
 }
 
-impl Component for Item {
-    type Storage = DerefFlaggedStorage<Self, DenseVecStorage<Self>>;
+impl ItemDesc for PickupItem {
+    fn description(&self) -> &str {
+        #[allow(deprecated)]
+        self.item().description()
+    }
+
+    fn name(&self) -> Cow<str> {
+        #[allow(deprecated)]
+        self.item().name()
+    }
+
+    fn kind(&self) -> Cow<ItemKind> { self.item().kind() }
+
+    fn amount(&self) -> NonZeroU32 {
+        NonZeroU32::new(self.amount()).expect("Item having amount of 0 is invariant")
+    }
+
+    fn quality(&self) -> Quality { self.item().quality() }
+
+    fn num_slots(&self) -> u16 { self.item().num_slots() }
+
+    fn item_definition_id(&self) -> ItemDefinitionId<'_> { self.item().item_definition_id() }
+
+    fn tags(&self) -> Vec<ItemTag> { self.item().tags() }
+
+    fn is_modular(&self) -> bool { self.item().is_modular() }
+
+    fn components(&self) -> &[Item] { self.item().components() }
+
+    fn has_durability(&self) -> bool { self.item().has_durability() }
+
+    fn durability_lost(&self) -> Option<u32> { self.item().durability_lost() }
+
+    fn stats_durability_multiplier(&self) -> DurabilityMultiplier {
+        self.item().stats_durability_multiplier()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1490,13 +1898,23 @@ impl Component for ItemDrops {
     type Storage = DenseVecStorage<Self>;
 }
 
+impl Component for PickupItem {
+    type Storage = DerefFlaggedStorage<Self, DenseVecStorage<Self>>;
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct DurabilityMultiplier(pub f32);
 
 impl<'a, T: ItemDesc + ?Sized> ItemDesc for &'a T {
-    fn description(&self) -> &str { (*self).description() }
+    fn description(&self) -> &str {
+        #[allow(deprecated)]
+        (*self).description()
+    }
 
-    fn name(&self) -> Cow<str> { (*self).name() }
+    fn name(&self) -> Cow<str> {
+        #[allow(deprecated)]
+        (*self).name()
+    }
 
     fn kind(&self) -> Cow<ItemKind> { (*self).kind() }
 
@@ -1532,8 +1950,67 @@ pub fn all_item_defs_expect() -> Vec<String> {
 
 /// Returns all item asset specifiers
 pub fn try_all_item_defs() -> Result<Vec<String>, Error> {
-    let defs = assets::load_dir::<RawItemDef>("common.items", true)?;
-    Ok(defs.ids().map(|id| id.to_string()).collect())
+    let defs = assets::load_rec_dir::<RawItemDef>("common.items")?;
+    Ok(defs.read().ids().map(|id| id.to_string()).collect())
+}
+
+/// Designed to return all possible items, including modulars.
+/// And some impossible too, like ItemKind::TagExamples.
+pub fn all_items_expect() -> Vec<Item> {
+    let defs = assets::load_rec_dir::<RawItemDef>("common.items")
+        .expect("failed to load item asset directory");
+
+    // Grab all items from assets
+    let mut asset_items: Vec<Item> = defs
+        .read()
+        .ids()
+        .map(|id| Item::new_from_asset_expect(id))
+        .collect();
+
+    let mut material_parse_table = HashMap::new();
+    for mat in Material::iter() {
+        if let Some(id) = mat.asset_identifier() {
+            material_parse_table.insert(id.to_owned(), mat);
+        }
+    }
+
+    let primary_comp_pool = modular::PRIMARY_COMPONENT_POOL.clone();
+
+    // Grab weapon primary components
+    let mut primary_comps: Vec<Item> = primary_comp_pool
+        .values()
+        .flatten()
+        .map(|(item, _hand_rules)| item.clone())
+        .collect();
+
+    // Grab modular weapons
+    let mut modular_items: Vec<Item> = primary_comp_pool
+        .keys()
+        .flat_map(|(tool, mat_id)| {
+            let mat = material_parse_table
+                .get(mat_id)
+                .expect("unexpected material ident");
+
+            // get all weapons without imposing additional hand restrictions
+            modular::generate_weapons(*tool, *mat, None)
+                .expect("failure during modular weapon generation")
+        })
+        .collect();
+
+    // 1. Append asset items, that should include pretty much everything,
+    // except modular items
+    // 2. Append primary weapon components, which are modular as well.
+    // 3. Finally append modular weapons that are made from (1) and (2)
+    // extend when we get some new exotic stuff
+    //
+    // P. s. I still can't wrap my head around the idea that you can put
+    // tag example into your inventory.
+    let mut all = Vec::new();
+    all.append(&mut asset_items);
+    all.append(&mut primary_comps);
+    all.append(&mut modular_items);
+
+    all
 }
 
 impl PartialEq<ItemDefinitionId<'_>> for ItemDefinitionIdOwned {
@@ -1585,6 +2062,31 @@ mod tests {
         let ids = all_item_defs_expect();
         for item in ids.iter().map(|id| Item::new_from_asset_expect(id)) {
             drop(item)
+        }
+    }
+
+    #[test]
+    fn test_item_i18n() { let _ = ItemI18n::new_expect(); }
+
+    #[test]
+    // Probably can't fail, but better safe than crashing production server
+    fn test_all_items() { let _ = all_items_expect(); }
+
+    #[test]
+    // All items in Veloren should have localization.
+    // If no, add some common dummy i18n id.
+    fn ensure_item_localization() {
+        let manifest = ItemI18n::new_expect();
+        let items = all_items_expect();
+        let mut errs = vec![];
+        for item in items {
+            let item_key: ItemKey = (&item).into();
+            if manifest.item_text_opt(item_key.clone()).is_none() {
+                errs.push(item_key)
+            }
+        }
+        if !errs.is_empty() {
+            panic!("item i18n manifest misses translation-id for following items {errs:#?}")
         }
     }
 }

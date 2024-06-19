@@ -5,14 +5,14 @@ use common::{
             TRADE_INTERACTION_TIME,
         },
         dialogue::Subject,
-        Agent, Alignment, BehaviorCapability, BehaviorState, Body, BuffKind, ControlAction,
-        ControlEvent, Controller, InputKind, InventoryEvent, Pos, UtteranceKind,
+        Agent, Alignment, BehaviorCapability, BehaviorState, Body, BuffKind, CharacterState,
+        ControlAction, ControlEvent, Controller, InputKind, InventoryEvent, Pos, UtteranceKind,
     },
-    event::{Emitter, ServerEvent},
     path::TraversalConfig,
     rtsim::{NpcAction, RtSimEntity},
 };
 use rand::{prelude::ThreadRng, thread_rng, Rng};
+use server_agent::data::AgentEmitters;
 use specs::Entity as EcsEntity;
 use vek::{Vec2, Vec3};
 
@@ -39,7 +39,7 @@ pub struct BehaviorData<'a, 'b, 'c> {
     pub agent: &'a mut Agent,
     pub agent_data: AgentData<'a>,
     pub read_data: &'a ReadData<'a>,
-    pub event_emitter: &'a mut Emitter<'c, ServerEvent>,
+    pub emitters: &'a mut AgentEmitters<'c>,
     pub controller: &'a mut Controller,
     pub rng: &'b mut ThreadRng,
 }
@@ -79,6 +79,7 @@ impl BehaviorTree {
     pub fn root() -> Self {
         Self {
             tree: vec![
+                maintain_if_gliding,
                 react_on_dangerous_fall,
                 react_if_on_fire,
                 target_if_attacked,
@@ -177,6 +178,35 @@ impl BehaviorTree {
     }
 }
 
+/// If in gliding, properly maintain it
+/// If on ground, unwield glider
+fn maintain_if_gliding(bdata: &mut BehaviorData) -> bool {
+    let Some(char_state) = bdata.read_data.char_states.get(*bdata.agent_data.entity) else {
+        return false;
+    };
+
+    match char_state {
+        CharacterState::Glide(_) => {
+            bdata
+                .agent_data
+                .glider_flight(bdata.controller, bdata.read_data);
+            true
+        },
+        CharacterState::GlideWield(_) => {
+            if bdata.agent_data.physics_state.on_ground.is_some() {
+                bdata.controller.push_action(ControlAction::Unwield);
+            }
+            // Always stop execution if during GlideWield.
+            // - If on ground, the line above will unwield the glider on next
+            // tick
+            // - If in air, we probably wouldn't want to do anything anyway, as
+            // character state code will shift itself to glide on next tick
+            true
+        },
+        _ => false,
+    }
+}
+
 /// If falling velocity is critical, throw everything
 /// and save yourself!
 ///
@@ -200,7 +230,7 @@ fn react_on_dangerous_fall(bdata: &mut BehaviorData) -> bool {
         } else if bdata.agent_data.glider_equipped {
             bdata
                 .agent_data
-                .glider_fall(bdata.controller, bdata.read_data);
+                .glider_equip(bdata.controller, bdata.read_data);
             return true;
         }
     }
@@ -213,7 +243,7 @@ fn react_if_on_fire(bdata: &mut BehaviorData) -> bool {
         .read_data
         .buffs
         .get(*bdata.agent_data.entity)
-        .map_or(false, |b| b.kinds.contains_key(&BuffKind::Burning));
+        .map_or(false, |b| b.kinds[BuffKind::Burning].is_some());
 
     if is_on_fire
         && bdata.agent_data.body.map_or(false, |b| b.is_humanoid())
@@ -454,7 +484,7 @@ fn attack_if_owner_hurt(bdata: &mut BehaviorData) -> bool {
                     bdata.agent,
                     bdata.read_data,
                     bdata.controller,
-                    bdata.event_emitter,
+                    bdata.emitters,
                     bdata.rng,
                 );
                 return true;
@@ -519,7 +549,7 @@ fn handle_rtsim_actions(bdata: &mut BehaviorData) -> bool {
                         }
                     }
                     bdata.controller.push_utterance(UtteranceKind::Greeting);
-                    bdata.agent_data.chat_npc(msg, bdata.event_emitter);
+                    bdata.agent_data.chat_npc(msg, bdata.emitters);
                 }
             },
             NpcAction::Attack(target) => {
@@ -574,7 +604,7 @@ fn handle_timed_events(bdata: &mut BehaviorData) -> bool {
                     bdata.agent,
                     bdata.controller,
                     bdata.read_data,
-                    bdata.event_emitter,
+                    bdata.emitters,
                     AgentData::is_enemy,
                 );
             } else {
@@ -582,7 +612,7 @@ fn handle_timed_events(bdata: &mut BehaviorData) -> bool {
                     bdata.agent,
                     bdata.controller,
                     bdata.read_data,
-                    bdata.event_emitter,
+                    bdata.emitters,
                     bdata.rng,
                 );
             }
@@ -642,7 +672,7 @@ fn heal_self_if_hurt(bdata: &mut BehaviorData) -> bool {
             .agent_data
             .heal_self(bdata.agent, bdata.controller, false)
     {
-        bdata.agent.action_state.timers
+        bdata.agent.behavior_state.timers
             [ActionStateBehaviorTreeTimers::TimerBehaviorTree as usize] = 0.01;
         return true;
     }
@@ -728,7 +758,7 @@ fn do_combat(bdata: &mut BehaviorData) -> bool {
         agent,
         agent_data,
         read_data,
-        event_emitter,
+        emitters,
         controller,
         rng,
     } = bdata;
@@ -767,18 +797,18 @@ fn do_combat(bdata: &mut BehaviorData) -> bool {
             let aggro_on = *aggro_on;
 
             if agent_data.below_flee_health(agent) {
-                let flee_timer_done = agent.action_state.timers
+                let flee_timer_done = agent.behavior_state.timers
                     [ActionStateBehaviorTreeTimers::TimerBehaviorTree as usize]
                     > FLEE_DURATION;
                 let within_normal_flee_dir_dist = dist_sqrd < NORMAL_FLEE_DIR_DIST.powi(2);
 
                 // FIXME: Using action state timer to see if allowed to speak is a hack.
-                if agent.action_state.timers
+                if agent.behavior_state.timers
                     [ActionStateBehaviorTreeTimers::TimerBehaviorTree as usize]
                     == 0.0
                 {
-                    agent_data.cry_out(agent, event_emitter, read_data);
-                    agent.action_state.timers
+                    agent_data.cry_out(agent, emitters, read_data);
+                    agent.behavior_state.timers
                         [ActionStateBehaviorTreeTimers::TimerBehaviorTree as usize] = 0.01;
                     agent.flee_from_pos = {
                         let random = || thread_rng().gen_range(-1.0..1.0);
@@ -795,20 +825,20 @@ fn do_combat(bdata: &mut BehaviorData) -> bool {
                         agent_data.flee(agent, controller, read_data, tgt_pos);
                     }
 
-                    agent.action_state.timers
+                    agent.behavior_state.timers
                         [ActionStateBehaviorTreeTimers::TimerBehaviorTree as usize] +=
                         read_data.dt.0;
                 } else {
-                    agent.action_state.timers
+                    agent.behavior_state.timers
                         [ActionStateBehaviorTreeTimers::TimerBehaviorTree as usize] = 0.0;
                     agent.target = None;
                     agent.flee_from_pos = None;
-                    agent_data.idle(agent, controller, read_data, event_emitter, rng);
+                    agent_data.idle(agent, controller, read_data, emitters, rng);
                 }
             } else if is_dead(target, read_data) {
-                agent_data.exclaim_relief_about_enemy_dead(agent, event_emitter);
+                agent_data.exclaim_relief_about_enemy_dead(agent, emitters);
                 agent.target = None;
-                agent_data.idle(agent, controller, read_data, event_emitter, rng);
+                agent_data.idle(agent, controller, read_data, emitters, rng);
             } else if is_invulnerable(target, read_data)
                 || stop_pursuing(
                     dist_sqrd,
@@ -820,17 +850,17 @@ fn do_combat(bdata: &mut BehaviorData) -> bool {
                 )
             {
                 agent.target = None;
-                agent_data.idle(agent, controller, read_data, event_emitter, rng);
+                agent_data.idle(agent, controller, read_data, emitters, rng);
             } else {
                 let is_time_to_retarget =
                     read_data.time.0 - selected_at > RETARGETING_THRESHOLD_SECONDS;
 
-                if !in_aggro_range && is_time_to_retarget {
+                if (!agent.psyche.should_stop_pursuing || !in_aggro_range) && is_time_to_retarget {
                     agent_data.choose_target(
                         agent,
                         controller,
                         read_data,
-                        event_emitter,
+                        emitters,
                         AgentData::is_enemy,
                     );
                 }
@@ -849,7 +879,7 @@ fn do_combat(bdata: &mut BehaviorData) -> bool {
                         controller,
                         target,
                         read_data,
-                        event_emitter,
+                        emitters,
                         rng,
                         remembers_fight_with(agent_data.rtsim_entity, read_data, target),
                     );
@@ -858,6 +888,10 @@ fn do_combat(bdata: &mut BehaviorData) -> bool {
                     // target);
                 }
             }
+        }
+        // make sure world bosses and roaming entities stay aware, to continue pursuit
+        if !agent.psyche.should_stop_pursuing {
+            bdata.agent.awareness.set_maximally_aware();
         }
     }
     false
@@ -885,11 +919,7 @@ fn remembers_fight_with(
 //     read_data: &ReadData,
 //     agent: &mut Agent,
 //     target: EcsEntity,
-// ) {
-//     rtsim_entity.is_some().then(|| {
-//         read_data
-//             .stats
-//             .get(target)
-//             .map(|stats| agent.add_fight_to_memory(&stats.name,
+// ) { rtsim_entity.is_some().then(|| { read_data .stats .get(target)
+//   .map(|stats| agent.add_fight_to_memory(&stats.name,
 // read_data.time.0))     });
 // }

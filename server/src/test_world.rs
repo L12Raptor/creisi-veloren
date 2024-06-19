@@ -1,18 +1,20 @@
 use common::{
     calendar::Calendar,
-    generation::{ChunkSupplement, EntityInfo},
+    generation::ChunkSupplement,
     resources::TimeOfDay,
+    rtsim::ChunkResource,
     terrain::{
         Block, BlockKind, MapSizeLg, SpriteKind, TerrainChunk, TerrainChunkMeta, TerrainChunkSize,
     },
-    vol::{ReadVol, RectVolSize, WriteVol},
+    vol::RectVolSize,
 };
+use enum_map::EnumMap;
 use rand::{prelude::*, rngs::SmallRng};
 use std::time::Duration;
 use vek::*;
 
 const DEFAULT_WORLD_CHUNKS_LG: MapSizeLg =
-    if let Ok(map_size_lg) = MapSizeLg::new(Vec2 { x: 1, y: 1 }) {
+    if let Ok(map_size_lg) = MapSizeLg::new(Vec2 { x: 8, y: 8 }) {
         map_size_lg
     } else {
         panic!("Default world chunk size does not satisfy required invariants.");
@@ -24,6 +26,7 @@ pub struct World;
 pub struct IndexOwned;
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct IndexRef<'a>(&'a IndexOwned);
 
 impl IndexOwned {
@@ -37,7 +40,7 @@ impl IndexOwned {
 impl World {
     pub fn generate(_seed: u32) -> (Self, IndexOwned) { (Self, IndexOwned) }
 
-    pub fn tick(&self, dt: Duration) {}
+    pub fn tick(&self, _dt: Duration) {}
 
     #[inline(always)]
     pub const fn map_size_lg(&self) -> MapSizeLg { DEFAULT_WORLD_CHUNKS_LG }
@@ -48,7 +51,9 @@ impl World {
         &self,
         _index: IndexRef,
         chunk_pos: Vec2<i32>,
-        _should_continue: impl FnMut() -> bool,
+        _rtsim_resources: Option<EnumMap<ChunkResource, f32>>,
+        // TODO: misleading name
+        mut _should_continue: impl FnMut() -> bool,
         _time: Option<(TimeOfDay, Calendar)>,
     ) -> Result<(TerrainChunk, ChunkSupplement), ()> {
         let (x, y) = chunk_pos.map(|e| e.to_le_bytes()).into_tuple();
@@ -59,16 +64,27 @@ impl World {
         ]);
         let height = rng.gen::<i32>() % 8;
 
-        let mut supplement = ChunkSupplement::default();
+        let supplement = ChunkSupplement::default();
 
         Ok((
             TerrainChunk::new(
-                256 + if rng.gen::<u8>() < 64 { height } else { 0 },
+                if rng.gen::<u8>() < 64 { height } else { 0 },
                 Block::new(BlockKind::Grass, Rgb::new(11, 102, 35)),
                 Block::air(SpriteKind::Empty),
                 TerrainChunkMeta::void(),
             ),
             supplement,
         ))
+    }
+
+    pub fn get_center(&self) -> Vec2<u32> {
+        // FIXME: Assumes that TerrainChunkSize::RECT_SIZE.x ==
+        // TerrainChunkSize::RECT_SIZE.y
+        DEFAULT_WORLD_CHUNKS_LG.chunks().as_::<u32>() / 2 * TerrainChunkSize::RECT_SIZE.x
+    }
+
+    pub fn get_location_name(&self, _index: IndexRef, _wpos2d: Vec2<i32>) -> Option<String> {
+        // Test world has no locations
+        None
     }
 }

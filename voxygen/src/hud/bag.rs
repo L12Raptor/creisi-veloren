@@ -3,7 +3,7 @@ use super::{
     img_ids::{Imgs, ImgsRot},
     item_imgs::ItemImgs,
     slots::{ArmorSlot, EquipSlot, InventorySlot, SlotManager},
-    HudInfo, Show, CRITICAL_HP_COLOR, LOW_HP_COLOR, TEXT_COLOR, UI_HIGHLIGHT_0, UI_MAIN,
+    util, HudInfo, Show, CRITICAL_HP_COLOR, LOW_HP_COLOR, TEXT_COLOR, UI_HIGHLIGHT_0, UI_MAIN,
 };
 use crate::{
     game_input::GameInput,
@@ -20,8 +20,8 @@ use common::{
     assets::AssetExt,
     combat::{combat_rating, perception_dist_multiplier_from_stealth, Damage},
     comp::{
-        inventory::InventorySortOrder,
-        item::{ItemDef, ItemDesc, MaterialStatManifest, Quality},
+        inventory::{slot::Slot, InventorySortOrder},
+        item::{ItemDef, ItemDesc, ItemI18n, MaterialStatManifest, Quality},
         Body, Energy, Health, Inventory, Poise, SkillSet, Stats,
     },
 };
@@ -81,6 +81,7 @@ pub struct InventoryScroller<'a> {
     slot_manager: &'a mut SlotManager,
     pulse: f32,
     localized_strings: &'a Localization,
+    item_i18n: &'a ItemI18n,
     show_stats: bool,
     show_bag_inv: bool,
     on_right: bool,
@@ -105,6 +106,7 @@ impl<'a> InventoryScroller<'a> {
         slot_manager: &'a mut SlotManager,
         pulse: f32,
         localized_strings: &'a Localization,
+        item_i18n: &'a ItemI18n,
         show_stats: bool,
         show_bag_inv: bool,
         on_right: bool,
@@ -127,6 +129,7 @@ impl<'a> InventoryScroller<'a> {
             slot_manager,
             pulse,
             localized_strings,
+            item_i18n,
             show_stats,
             show_bag_inv,
             on_right,
@@ -196,7 +199,7 @@ impl<'a> InventoryScroller<'a> {
         .set(self.bg_ids.bg_frame, ui);
     }
 
-    fn title(&mut self, state: &mut ConrodState<'_, InventoryScrollerState>, ui: &mut UiCell<'_>) {
+    fn title(&mut self, state: &ConrodState<'_, InventoryScrollerState>, ui: &mut UiCell<'_>) {
         Text::new(
             &self
                 .localized_strings
@@ -305,9 +308,10 @@ impl<'a> InventoryScroller<'a> {
         // Create available inventory slot widgets
         if state.ids.inv_slots.len() < self.inventory.capacity() {
             state.update(|s| {
-                s.ids
-                    .inv_slots
-                    .resize(self.inventory.capacity(), &mut ui.widget_id_generator());
+                s.ids.inv_slots.resize(
+                    self.inventory.capacity() + self.inventory.overflow_items().count(),
+                    &mut ui.widget_id_generator(),
+                );
             });
         }
         if state.ids.inv_slot_names.len() < self.inventory.capacity() {
@@ -360,18 +364,38 @@ impl<'a> InventoryScroller<'a> {
         };
 
         let mut i = 0;
-        let mut items = self.inventory.slots_with_id().collect::<Vec<_>>();
+        let mut items = self
+            .inventory
+            .slots_with_id()
+            .map(|(slot, item)| (Slot::Inventory(slot), item.as_ref()))
+            .chain(
+                self.inventory
+                    .overflow_items()
+                    .enumerate()
+                    .map(|(i, item)| (Slot::Overflow(i), Some(item))),
+            )
+            .collect::<Vec<_>>();
         if self.details_mode && !self.is_us {
             items.sort_by_cached_key(|(_, item)| {
                 (
                     item.is_none(),
-                    item.as_ref()
-                        .map(|i| (std::cmp::Reverse(i.quality()), i.name(), i.amount())),
+                    item.as_ref().map(|i| {
+                        (
+                            std::cmp::Reverse(i.quality()),
+                            {
+                                // TODO: we do double the work here, optimize?
+                                let (name, _) =
+                                    util::item_text(i, self.localized_strings, self.item_i18n);
+                                name
+                            },
+                            i.amount(),
+                        )
+                    }),
                 )
             });
         }
         for (pos, item) in items.into_iter() {
-            if self.details_mode && !self.is_us && matches!(item, None) {
+            if self.details_mode && !self.is_us && item.is_none() {
                 continue;
             }
             let (x, y) = if self.details_mode {
@@ -404,6 +428,11 @@ impl<'a> InventoryScroller<'a> {
 
             if self.show_salvage && item.as_ref().map_or(false, |item| item.is_salvageable()) {
                 slot_widget = slot_widget.with_background_color(Color::Rgba(1.0, 1.0, 1.0, 1.0));
+            }
+
+            // Highlight in red slots that are overflow
+            if matches!(pos, Slot::Overflow(_)) {
+                slot_widget = slot_widget.with_background_color(Color::Rgba(1.0, 0.0, 0.0, 1.0));
             }
 
             if let Some(item) = item {
@@ -457,7 +486,8 @@ impl<'a> InventoryScroller<'a> {
                         .set(state.ids.inv_slots[i], ui);
                 }
                 if self.details_mode {
-                    Text::new(&item.name())
+                    let (name, _) = util::item_text(item, self.localized_strings, self.item_i18n);
+                    Text::new(&name)
                         .top_left_with_margins_on(
                             state.ids.inv_alignment,
                             0.0 + y as f64 * slot_size,
@@ -488,7 +518,7 @@ impl<'a> InventoryScroller<'a> {
 
     fn footer_metrics(
         &mut self,
-        state: &mut ConrodState<'_, InventoryScrollerState>,
+        state: &ConrodState<'_, InventoryScrollerState>,
         ui: &mut UiCell<'_>,
     ) {
         let space_used = self.inventory.populated_slots();
@@ -638,6 +668,7 @@ pub struct Bag<'a> {
     slot_manager: &'a mut SlotManager,
     pulse: f32,
     localized_strings: &'a Localization,
+    item_i18n: &'a ItemI18n,
     stats: &'a Stats,
     skill_set: &'a SkillSet,
     health: &'a Health,
@@ -663,6 +694,7 @@ impl<'a> Bag<'a> {
         slot_manager: &'a mut SlotManager,
         pulse: f32,
         localized_strings: &'a Localization,
+        item_i18n: &'a ItemI18n,
         stats: &'a Stats,
         skill_set: &'a SkillSet,
         health: &'a Health,
@@ -686,6 +718,7 @@ impl<'a> Bag<'a> {
             slot_manager,
             pulse,
             localized_strings,
+            item_i18n,
             stats,
             skill_set,
             energy,
@@ -805,6 +838,7 @@ impl<'a> Widget for Bag<'a> {
             self.pulse,
             self.msm,
             self.localized_strings,
+            self.item_i18n,
         )
         .title_font_size(self.fonts.cyri.scale(20))
         .parent(ui.window)
@@ -821,6 +855,7 @@ impl<'a> Widget for Bag<'a> {
             self.slot_manager,
             self.pulse,
             self.localized_strings,
+            self.item_i18n,
             self.show.stats,
             self.show.bag_inv,
             true,

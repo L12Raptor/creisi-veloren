@@ -1,33 +1,49 @@
 mod adlet;
+mod airship_dock;
 mod bridge;
+mod camp;
 mod castle;
 mod citadel;
 mod cliff_tower;
 mod coastal_house;
 mod coastal_workshop;
+mod cultist;
+mod desert_city_arena;
 mod desert_city_multiplot;
 mod desert_city_temple;
 pub mod dungeon;
 mod dwarven_mine;
 mod giant_tree;
 mod gnarling;
+mod haniwa;
 mod house;
 mod jungle_ruin;
 mod pirate_hideout;
+mod rock_circle;
+mod sahagin;
 mod savannah_hut;
 mod savannah_pit;
 mod savannah_workshop;
 mod sea_chapel;
+pub mod tavern;
+mod terracotta_house;
+mod terracotta_palace;
+mod terracotta_yard;
+mod troll_cave;
 mod workshop;
 
 pub use self::{
-    adlet::AdletStronghold, bridge::Bridge, castle::Castle, citadel::Citadel,
-    cliff_tower::CliffTower, coastal_house::CoastalHouse, coastal_workshop::CoastalWorkshop,
+    adlet::AdletStronghold, airship_dock::AirshipDock, bridge::Bridge, camp::Camp, castle::Castle,
+    citadel::Citadel, cliff_tower::CliffTower, coastal_house::CoastalHouse,
+    coastal_workshop::CoastalWorkshop, cultist::Cultist, desert_city_arena::DesertCityArena,
     desert_city_multiplot::DesertCityMultiPlot, desert_city_temple::DesertCityTemple,
     dungeon::Dungeon, dwarven_mine::DwarvenMine, giant_tree::GiantTree,
-    gnarling::GnarlingFortification, house::House, jungle_ruin::JungleRuin,
-    pirate_hideout::PirateHideout, savannah_hut::SavannahHut, savannah_pit::SavannahPit,
-    savannah_workshop::SavannahWorkshop, sea_chapel::SeaChapel, workshop::Workshop,
+    gnarling::GnarlingFortification, haniwa::Haniwa, house::House, jungle_ruin::JungleRuin,
+    pirate_hideout::PirateHideout, rock_circle::RockCircle, sahagin::Sahagin,
+    savannah_hut::SavannahHut, savannah_pit::SavannahPit, savannah_workshop::SavannahWorkshop,
+    sea_chapel::SeaChapel, tavern::Tavern, terracotta_house::TerracottaHouse,
+    terracotta_palace::TerracottaPalace, terracotta_yard::TerracottaYard, troll_cave::TrollCave,
+    workshop::Workshop,
 };
 
 use super::*;
@@ -69,26 +85,38 @@ impl Plot {
 
 pub enum PlotKind {
     House(House),
+    AirshipDock(AirshipDock),
+    Tavern(Tavern),
     CoastalHouse(CoastalHouse),
     CoastalWorkshop(CoastalWorkshop),
     Workshop(Workshop),
     DesertCityMultiPlot(DesertCityMultiPlot),
     DesertCityTemple(DesertCityTemple),
+    DesertCityArena(DesertCityArena),
     SeaChapel(SeaChapel),
     JungleRuin(JungleRuin),
     Plaza,
     Castle(Castle),
+    Cultist(Cultist),
     Road(Path<Vec2<i32>>),
     Dungeon(Dungeon),
     Gnarling(GnarlingFortification),
     Adlet(AdletStronghold),
+    Haniwa(Haniwa),
     GiantTree(GiantTree),
     CliffTower(CliffTower),
+    Sahagin(Sahagin),
     Citadel(Citadel),
     SavannahPit(SavannahPit),
     SavannahHut(SavannahHut),
     SavannahWorkshop(SavannahWorkshop),
     Bridge(Bridge),
     PirateHideout(PirateHideout),
-    //DwarvenMine(DwarvenMine),
+    RockCircle(RockCircle),
+    TrollCave(TrollCave),
+    Camp(Camp),
+    DwarvenMine(DwarvenMine),
+    TerracottaPalace(TerracottaPalace),
+    TerracottaHouse(TerracottaHouse),
+    TerracottaYard(TerracottaYard),
 }

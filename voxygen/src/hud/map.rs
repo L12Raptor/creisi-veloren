@@ -203,6 +203,22 @@ fn get_site_economy(site_rich: &SiteInfoRich) -> String {
     }
 }
 
+impl From<KeyMouse> for ConrodMouseButton {
+    fn from(key: KeyMouse) -> Self {
+        match key {
+            KeyMouse::Mouse(MouseButton::Left) => ConrodMouseButton::Left,
+            KeyMouse::Mouse(MouseButton::Right) => ConrodMouseButton::Right,
+            KeyMouse::Mouse(MouseButton::Middle) => ConrodMouseButton::Middle,
+            KeyMouse::Mouse(MouseButton::Other(0)) => ConrodMouseButton::X1,
+            KeyMouse::Mouse(MouseButton::Other(1)) => ConrodMouseButton::X2,
+            KeyMouse::Mouse(MouseButton::Other(2)) => ConrodMouseButton::Button6,
+            KeyMouse::Mouse(MouseButton::Other(3)) => ConrodMouseButton::Button7,
+            KeyMouse::Mouse(MouseButton::Other(4)) => ConrodMouseButton::Button8,
+            _ => conrod_core::input::MouseButton::Unknown,
+        }
+    }
+}
+
 impl<'a> Widget for Map<'a> {
     type Event = Vec<Event>;
     type State = State;
@@ -353,21 +369,6 @@ impl<'a> Widget for Map<'a> {
         let max_drag = player_pos_chunks;
         let drag = self.map_drag.clamped(min_drag, max_drag);
 
-        impl From<KeyMouse> for ConrodMouseButton {
-            fn from(key: KeyMouse) -> Self {
-                match key {
-                    KeyMouse::Mouse(MouseButton::Left) => ConrodMouseButton::Left,
-                    KeyMouse::Mouse(MouseButton::Right) => ConrodMouseButton::Right,
-                    KeyMouse::Mouse(MouseButton::Middle) => ConrodMouseButton::Middle,
-                    KeyMouse::Mouse(MouseButton::Other(0)) => ConrodMouseButton::X1,
-                    KeyMouse::Mouse(MouseButton::Other(1)) => ConrodMouseButton::X2,
-                    KeyMouse::Mouse(MouseButton::Other(2)) => ConrodMouseButton::Button6,
-                    KeyMouse::Mouse(MouseButton::Other(3)) => ConrodMouseButton::Button7,
-                    KeyMouse::Mouse(MouseButton::Other(4)) => ConrodMouseButton::Button8,
-                    _ => conrod_core::input::MouseButton::Unknown,
-                }
-            }
-        }
         enum MarkerChange {
             Pos(Vec2<f32>),
             ClickPos,
@@ -922,9 +923,13 @@ impl<'a> Widget for Map<'a> {
                         SiteKind::Cave => i18n.get_msg("hud-map-cave"),
                         SiteKind::Tree => i18n.get_msg("hud-map-tree"),
                         SiteKind::Gnarling => i18n.get_msg("hud-map-gnarling"),
-                        SiteKind::ChapelSite => i18n.get_msg("hud-map-chapel_Site"),
+                        SiteKind::ChapelSite => i18n.get_msg("hud-map-chapel_site"),
+                        SiteKind::Terracotta => i18n.get_msg("hud-map-terracotta"),
                         SiteKind::Bridge => i18n.get_msg("hud-map-bridge"),
                         SiteKind::Adlet => i18n.get_msg("hud-map-adlet"),
+                        SiteKind::Haniwa => i18n.get_msg("hud-map-haniwa"),
+                        SiteKind::Cultist => i18n.get_msg("hud-map-cultist"),
+                        SiteKind::Sahagin => i18n.get_msg("hud-map-sahagin"),
                         SiteKind::DwarvenMine => i18n.get_msg("hud-map-df_mine"),
                     });
             let (difficulty, desc) = match &site.kind {
@@ -950,20 +955,28 @@ impl<'a> Widget for Map<'a> {
                 SiteKind::Cave => (None, i18n.get_msg("hud-map-cave")),
                 SiteKind::Tree => (None, i18n.get_msg("hud-map-tree")),
                 SiteKind::Gnarling => (Some(0), i18n.get_msg("hud-map-gnarling")),
-                SiteKind::ChapelSite => (Some(3), i18n.get_msg("hud-map-chapel_site")),
+                SiteKind::Terracotta => (Some(5), i18n.get_msg("hud-map-terracotta")),
+                SiteKind::ChapelSite => (Some(4), i18n.get_msg("hud-map-chapel_site")),
                 SiteKind::Bridge => (None, i18n.get_msg("hud-map-bridge")),
                 SiteKind::Adlet => (Some(1), i18n.get_msg("hud-map-adlet")),
+                SiteKind::Haniwa => (Some(3), i18n.get_msg("hud-map-haniwa")),
+                SiteKind::Cultist => (Some(5), i18n.get_msg("hud-map-cultist")),
+                SiteKind::Sahagin => (Some(2), i18n.get_msg("hud-map-sahagin")),
                 SiteKind::DwarvenMine => (Some(5), i18n.get_msg("hud-map-df_mine")),
             };
             let desc = desc.into_owned() + &get_site_economy(site_rich);
             let site_btn = Button::image(match &site.kind {
                 SiteKind::Town => self.imgs.mmap_site_town,
                 SiteKind::ChapelSite => self.imgs.mmap_site_sea_chapel,
+                SiteKind::Terracotta => self.imgs.mmap_site_terracotta,
                 SiteKind::Castle => self.imgs.mmap_site_castle,
                 SiteKind::Cave => self.imgs.mmap_site_cave,
                 SiteKind::Tree => self.imgs.mmap_site_tree,
                 SiteKind::Gnarling => self.imgs.mmap_site_gnarling,
                 SiteKind::Adlet => self.imgs.mmap_site_adlet,
+                SiteKind::Haniwa => self.imgs.mmap_site_haniwa,
+                SiteKind::Cultist => self.imgs.mmap_site_cultist,
+                SiteKind::Sahagin => self.imgs.mmap_site_sahagin,
                 SiteKind::DwarvenMine => self.imgs.mmap_site_mine,
                 SiteKind::Dungeon { difficulty } => match difficulty {
                     4 => self.imgs.mmap_site_minotaur,
@@ -981,11 +994,15 @@ impl<'a> Widget for Map<'a> {
             .hover_image(match &site.kind {
                 SiteKind::Town => self.imgs.mmap_site_town_hover,
                 SiteKind::ChapelSite => self.imgs.mmap_site_sea_chapel_hover,
+                SiteKind::Terracotta => self.imgs.mmap_site_terracotta_hover,
                 SiteKind::Castle => self.imgs.mmap_site_castle_hover,
                 SiteKind::Cave => self.imgs.mmap_site_cave_hover,
                 SiteKind::Tree => self.imgs.mmap_site_tree_hover,
                 SiteKind::Gnarling => self.imgs.mmap_site_gnarling_hover,
                 SiteKind::Adlet => self.imgs.mmap_site_adlet_hover,
+                SiteKind::Haniwa => self.imgs.mmap_site_haniwa_hover,
+                SiteKind::Cultist => self.imgs.mmap_site_cultist_hover,
+                SiteKind::Sahagin => self.imgs.mmap_site_sahagin_hover,
                 SiteKind::DwarvenMine => self.imgs.mmap_site_mine_hover,
                 SiteKind::Dungeon { difficulty } => match difficulty {
                     4 => self.imgs.mmap_site_minotaur_hover,
@@ -1004,7 +1021,11 @@ impl<'a> Widget for Map<'a> {
                     SiteKind::Dungeon { .. }
                     | SiteKind::Gnarling
                     | SiteKind::ChapelSite
+                    | SiteKind::Terracotta
                     | SiteKind::Adlet
+                    | SiteKind::Haniwa
+                    | SiteKind::Cultist
+                    | SiteKind::Sahagin
                     | SiteKind::DwarvenMine => match difficulty {
                         Some(0) => QUALITY_LOW,
                         Some(1) => QUALITY_COMMON,
@@ -1032,6 +1053,10 @@ impl<'a> Widget for Map<'a> {
                 | SiteKind::Gnarling
                 | SiteKind::ChapelSite
                 | SiteKind::DwarvenMine
+                | SiteKind::Haniwa
+                | SiteKind::Cultist
+                | SiteKind::Sahagin
+                | SiteKind::Terracotta
                 | SiteKind::Adlet => show_dungeons,
                 SiteKind::Castle => show_castles,
                 SiteKind::Cave => show_caves,
@@ -1092,6 +1117,10 @@ impl<'a> Widget for Map<'a> {
                     SiteKind::Dungeon { .. }
                     | SiteKind::Gnarling
                     | SiteKind::ChapelSite
+                    | SiteKind::Haniwa
+                    | SiteKind::Cultist
+                    | SiteKind::Sahagin
+                    | SiteKind::Terracotta
                     | SiteKind::Adlet => {
                         if show_dungeons {
                             dif_img.set(state.ids.site_difs[i], ui)

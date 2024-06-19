@@ -7,7 +7,7 @@ use vek::*;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct HealthChangeInfo {
     pub amount: f32,
-    pub crit: bool,
+    pub precise: bool,
     pub target: Uid,
     pub by: Option<DamageContributor>,
     pub cause: Option<DamageSource>,
@@ -109,6 +109,15 @@ pub enum Outcome {
     FlamethrowerCharge {
         pos: Vec3<f32>,
     },
+    FuseCharge {
+        pos: Vec3<f32>,
+    },
+    TerracottaStatueCharge {
+        pos: Vec3<f32>,
+    },
+    SurpriseEgg {
+        pos: Vec3<f32>,
+    },
     Utterance {
         pos: Vec3<f32>,
         body: comp::Body,
@@ -119,7 +128,7 @@ pub enum Outcome {
         wielded: bool,
     },
     SpriteDelete {
-        pos: Vec3<f32>,
+        pos: Vec3<i32>,
         sprite: SpriteKind,
     },
     SpriteUnlocked {
@@ -134,6 +143,9 @@ pub enum Outcome {
     Swoosh {
         pos: Vec3<f32>,
     },
+    Slash {
+        pos: Vec3<f32>,
+    },
     FireShockwave {
         pos: Vec3<f32>,
     },
@@ -144,6 +156,18 @@ pub enum Outcome {
         pos: Vec3<f32>,
     },
     TeleportedByPortal {
+        pos: Vec3<f32>,
+    },
+    FromTheAshes {
+        pos: Vec3<f32>,
+    },
+    ClayGolemDash {
+        pos: Vec3<f32>,
+    },
+    Bleep {
+        pos: Vec3<f32>,
+    },
+    Charge {
         pos: Vec3<f32>,
     },
 }
@@ -166,21 +190,29 @@ impl Outcome {
             | Outcome::FlashFreeze { pos }
             | Outcome::Whoosh { pos }
             | Outcome::Swoosh { pos }
+            | Outcome::Slash { pos }
+            | Outcome::Bleep { pos }
+            | Outcome::Charge { pos }
             | Outcome::IceSpikes { pos }
             | Outcome::Steam { pos }
             | Outcome::FireShockwave { pos }
             | Outcome::IceCrack { pos }
             | Outcome::Utterance { pos, .. }
-            | Outcome::SpriteDelete { pos, .. }
             | Outcome::CyclopsCharge { pos }
             | Outcome::FlamethrowerCharge { pos }
+            | Outcome::FuseCharge { pos }
+            | Outcome::TerracottaStatueCharge { pos }
+            | Outcome::SurpriseEgg { pos }
             | Outcome::LaserBeam { pos }
             | Outcome::GroundDig { pos }
             | Outcome::PortalActivated { pos }
             | Outcome::TeleportedByPortal { pos}
+            | Outcome::FromTheAshes { pos }
+            | Outcome::ClayGolemDash { pos }
             | Outcome::Glider { pos, .. } => Some(*pos),
             Outcome::BreakBlock { pos, .. }
             | Outcome::SpriteUnlocked { pos }
+            | Outcome::SpriteDelete { pos, .. }
             | Outcome::FailedSpriteUnlock { pos } => Some(pos.map(|e| e as f32 + 0.5)),
             Outcome::ExpChange { .. }
             | Outcome::ComboChange { .. }

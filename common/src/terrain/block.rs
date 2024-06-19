@@ -1,4 +1,4 @@
-use super::SpriteKind;
+use super::{sprite, SpriteKind};
 use crate::{
     comp::{fluid_dynamics::LiquidKind, tool::ToolKind},
     consts::FRIC_GROUND,
@@ -55,6 +55,7 @@ make_case_elim!(
         Leaves = 0x41,
         GlowingMushroom = 0x42,
         Ice = 0x43,
+        ArtLeaves = 0x44,
         // 0x43 <= x < 0x50 is reserved for future tree parts
         // Covers all other cases (we sometimes have bizarrely coloured misc blocks, and also we
         // often want to experiment with new kinds of block without allocating them a
@@ -114,10 +115,29 @@ impl BlockKind {
     }
 }
 
+/// # Format
+///
+/// ```ignore
+/// BBBBBBBB CCCCCCCC AAAAAIII IIIIIIII
+/// ```
+/// - `0..8`  : BlockKind
+/// - `8..16` : Category
+/// - `16..N` : Attributes (many fields)
+/// - `N..32` : Sprite ID
+///
+/// `N` is per-category. You can match on the category byte to find the length
+/// of the ID field.
+///
+/// Attributes are also per-category. Each category specifies its own list of
+/// attribute fields.
+///
+/// Why is the sprite ID at the end? Simply put, it makes masking faster and
+/// easier, which is important because extracting the `SpriteKind` is a more
+/// commonly performed operation than extracting attributes.
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct Block {
     kind: BlockKind,
-    attr: [u8; 3],
+    data: [u8; 3],
 }
 
 impl FilledVox for Block {
@@ -135,74 +155,130 @@ impl Deref for Block {
 impl Block {
     pub const MAX_HEIGHT: f32 = 3.0;
 
+    /* Constructors */
+
     #[inline]
+    pub const fn from_raw(kind: BlockKind, data: [u8; 3]) -> Self { Self { kind, data } }
+
+    // TODO: Rename to `filled`, make caller guarantees stronger
+    #[inline]
+    #[track_caller]
     pub const fn new(kind: BlockKind, color: Rgb<u8>) -> Self {
-        Self {
-            kind,
-            // Colours are only valid for non-fluids
-            attr: if kind.is_filled() {
-                [color.r, color.g, color.b]
-            } else {
-                [0; 3]
-            },
+        if kind.is_filled() {
+            Self::from_raw(kind, [color.r, color.g, color.b])
+        } else {
+            // Works because `SpriteKind::Empty` has no attributes
+            let data = (SpriteKind::Empty as u32).to_be_bytes();
+            Self::from_raw(kind, [data[1], data[2], data[3]])
         }
     }
 
+    // Only valid if `block_kind` is unfilled, so this is just a private utility
+    // method
     #[inline]
-    pub const fn air(sprite: SpriteKind) -> Self {
-        Self {
-            kind: BlockKind::Air,
-            attr: [sprite as u8, 0, 0],
-        }
+    pub fn unfilled(kind: BlockKind, sprite: SpriteKind) -> Self {
+        #[cfg(debug_assertions)]
+        assert!(!kind.is_filled());
+
+        Self::from_raw(kind, sprite.to_initial_bytes())
     }
 
     #[inline]
-    pub const fn lava(sprite: SpriteKind) -> Self {
-        Self {
-            kind: BlockKind::Lava,
-            attr: [sprite as u8, 0, 0],
-        }
+    pub fn air(sprite: SpriteKind) -> Self { Self::unfilled(BlockKind::Air, sprite) }
+
+    #[inline]
+    pub const fn empty() -> Self {
+        // Works because `SpriteKind::Empty` has no attributes
+        let data = (SpriteKind::Empty as u32).to_be_bytes();
+        Self::from_raw(BlockKind::Air, [data[1], data[2], data[3]])
     }
 
     #[inline]
-    pub const fn empty() -> Self { Self::air(SpriteKind::Empty) }
+    pub fn water(sprite: SpriteKind) -> Self { Self::unfilled(BlockKind::Water, sprite) }
 
-    /// TODO: See if we can generalize this somehow.
-    #[inline]
-    pub const fn water(sprite: SpriteKind) -> Self {
-        Self {
-            kind: BlockKind::Water,
-            attr: [sprite as u8, 0, 0],
+    /* Sprite decoding */
+
+    #[inline(always)]
+    pub const fn get_sprite(&self) -> Option<SpriteKind> {
+        if !self.kind.is_filled() {
+            SpriteKind::from_block(*self)
+        } else {
+            None
         }
+    }
+
+    #[inline(always)]
+    pub(super) const fn sprite_category_byte(&self) -> u8 { self.data[0] }
+
+    #[inline(always)]
+    pub const fn sprite_category(&self) -> Option<sprite::Category> {
+        if self.kind.is_filled() {
+            None
+        } else {
+            sprite::Category::from_block(*self)
+        }
+    }
+
+    /// Build this block with the given sprite attribute set.
+    #[inline]
+    pub fn with_attr<A: sprite::Attribute>(
+        mut self,
+        attr: A,
+    ) -> Result<Self, sprite::AttributeError<core::convert::Infallible>> {
+        match self.sprite_category() {
+            Some(category) => category.write_attr(&mut self, attr)?,
+            None => return Err(sprite::AttributeError::NotPresent),
+        }
+        Ok(self)
+    }
+
+    /// Set the given attribute of this block's sprite.
+    #[inline]
+    pub fn set_attr<A: sprite::Attribute>(
+        &mut self,
+        attr: A,
+    ) -> Result<(), sprite::AttributeError<core::convert::Infallible>> {
+        match self.sprite_category() {
+            Some(category) => category.write_attr(self, attr),
+            None => Err(sprite::AttributeError::NotPresent),
+        }
+    }
+
+    /// Get the given attribute of this block's sprite.
+    #[inline]
+    pub fn get_attr<A: sprite::Attribute>(&self) -> Result<A, sprite::AttributeError<A::Error>> {
+        match self.sprite_category() {
+            Some(category) => category.read_attr(*self),
+            None => Err(sprite::AttributeError::NotPresent),
+        }
+    }
+
+    #[inline(always)]
+    pub(super) const fn data(&self) -> [u8; 3] { self.data }
+
+    #[inline(always)]
+    pub(super) const fn with_data(mut self, data: [u8; 3]) -> Self {
+        self.data = data;
+        self
+    }
+
+    #[inline(always)]
+    pub(super) const fn to_be_u32(self) -> u32 {
+        u32::from_be_bytes([self.kind as u8, self.data[0], self.data[1], self.data[2]])
     }
 
     #[inline]
     pub fn get_color(&self) -> Option<Rgb<u8>> {
         if self.has_color() {
-            Some(self.attr.into())
+            Some(self.data.into())
         } else {
             None
         }
     }
 
+    // TODO: phase out use of this method in favour of `block.get_attr::<Ori>()`
     #[inline]
-    pub fn get_sprite(&self) -> Option<SpriteKind> {
-        if !self.is_filled() {
-            SpriteKind::from_u8(self.attr[0])
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn get_ori(&self) -> Option<u8> {
-        if self.get_sprite()?.has_ori() {
-            // TODO: Formalise this a bit better
-            Some(self.attr[1] & 0b111)
-        } else {
-            None
-        }
-    }
+    pub fn get_ori(&self) -> Option<u8> { self.get_attr::<sprite::Ori>().ok().map(|ori| ori.0) }
 
     /// Returns the rtsim resource, if any, that this block corresponds to. If
     /// you want the scarcity of a block to change with rtsim's resource
@@ -279,7 +355,10 @@ impl Block {
                 | SpriteKind::Turnip => Some(rtsim::ChunkResource::Vegetable),
             SpriteKind::Mushroom
                 | SpriteKind::CaveMushroom
-                | SpriteKind::CeilingMushroom => Some(rtsim::ChunkResource::Mushroom),
+                | SpriteKind::CeilingMushroom
+                | SpriteKind::RockyMushroom
+                | SpriteKind::LushMushroom
+                | SpriteKind::GlowMushroom => Some(rtsim::ChunkResource::Mushroom),
 
             SpriteKind::Chest
                 | SpriteKind::ChestBuried
@@ -291,6 +370,9 @@ impl Block {
                 | SpriteKind::DungeonChest4
                 | SpriteKind::DungeonChest5
                 | SpriteKind::CoralChest
+                | SpriteKind::HaniwaUrn
+                | SpriteKind::TerracottaChest
+                | SpriteKind::SahaginChest
                 | SpriteKind::Crate => Some(rtsim::ChunkResource::Loot),
             _ => None,
         }
@@ -298,35 +380,44 @@ impl Block {
 
     #[inline]
     pub fn get_glow(&self) -> Option<u8> {
-        match self.kind() {
-            BlockKind::Lava => Some(24),
-            BlockKind::GlowingRock | BlockKind::GlowingWeakRock => Some(10),
-            BlockKind::GlowingMushroom => Some(20),
+        let glow_level = match self.kind() {
+            BlockKind::Lava => 24,
+            BlockKind::GlowingRock | BlockKind::GlowingWeakRock => 10,
+            BlockKind::GlowingMushroom => 20,
             _ => match self.get_sprite()? {
-                SpriteKind::StreetLamp | SpriteKind::StreetLampTall => Some(24),
-                SpriteKind::Ember | SpriteKind::FireBlock => Some(20),
+                SpriteKind::StreetLamp | SpriteKind::StreetLampTall => 24,
+                SpriteKind::Ember | SpriteKind::FireBlock => 20,
                 SpriteKind::WallLamp
                 | SpriteKind::WallLampSmall
+                | SpriteKind::WallLampWizard
+                | SpriteKind::WallLampMesa
                 | SpriteKind::WallSconce
                 | SpriteKind::FireBowlGround
+                | SpriteKind::MesaLantern
                 | SpriteKind::ChristmasOrnament
                 | SpriteKind::CliffDecorBlock
                 | SpriteKind::Orb
-                | SpriteKind::Candle => Some(16),
-                SpriteKind::DiamondLight => Some(30),
+                | SpriteKind::Candle => 16,
+                SpriteKind::DiamondLight => 30,
                 SpriteKind::Velorite
                 | SpriteKind::VeloriteFrag
-                | SpriteKind::CavernGrassBlueShort
-                | SpriteKind::CavernGrassBlueMedium
-                | SpriteKind::CavernGrassBlueLong
+                | SpriteKind::GrassBlueShort
+                | SpriteKind::GrassBlueMedium
+                | SpriteKind::GrassBlueLong
                 | SpriteKind::CavernLillypadBlue
-                | SpriteKind::CavernMycelBlue
-                | SpriteKind::CeilingMushroom => Some(6),
+                | SpriteKind::MycelBlue
+                | SpriteKind::Mold
+                | SpriteKind::CeilingMushroom => 6,
                 SpriteKind::CaveMushroom
+                | SpriteKind::GlowMushroom
                 | SpriteKind::CookingPot
                 | SpriteKind::CrystalHigh
-                | SpriteKind::CrystalLow => Some(10),
-                SpriteKind::SewerMushroom => Some(16),
+                | SpriteKind::LanternFlower
+                | SpriteKind::CeilingLanternFlower
+                | SpriteKind::LanternPlant
+                | SpriteKind::CeilingLanternPlant
+                | SpriteKind::CrystalLow => 10,
+                SpriteKind::SewerMushroom => 16,
                 SpriteKind::Amethyst
                 | SpriteKind::Ruby
                 | SpriteKind::Sapphire
@@ -338,14 +429,23 @@ impl Block {
                 | SpriteKind::DiamondSmall
                 | SpriteKind::RubySmall
                 | SpriteKind::EmeraldSmall
-                | SpriteKind::SapphireSmall => Some(3),
-                SpriteKind::Lantern => Some(24),
-                SpriteKind::SeashellLantern | SpriteKind::GlowIceCrystal => Some(16),
-                SpriteKind::SeaDecorEmblem => Some(12),
-                SpriteKind::SeaDecorBlock => Some(10),
-                SpriteKind::Mine => Some(2),
-                _ => None,
+                | SpriteKind::SapphireSmall => 3,
+                SpriteKind::Lantern => 24,
+                SpriteKind::TerracottaStatue => 8,
+                SpriteKind::SeashellLantern | SpriteKind::GlowIceCrystal => 16,
+                SpriteKind::SeaDecorEmblem => 12,
+                SpriteKind::SeaDecorBlock | SpriteKind::HaniwaKeyDoor => 10,
+                _ => return None,
             },
+        };
+
+        if self
+            .get_attr::<sprite::LightEnabled>()
+            .map_or(true, |l| l.0)
+        {
+            Some(glow_level)
+        } else {
+            None
         }
     }
 
@@ -355,6 +455,7 @@ impl Block {
         match self.kind() {
             BlockKind::Water => (0, 0.4),
             BlockKind::Leaves => (9, 255.0),
+            BlockKind::ArtLeaves => (9, 255.0),
             BlockKind::Wood => (6, 2.0),
             BlockKind::Snow => (6, 2.0),
             BlockKind::ArtSnow => (6, 2.0),
@@ -392,10 +493,12 @@ impl Block {
         // so all is good for empty fluids.
         match self.kind() {
             BlockKind::Leaves => Some(0.25),
+            BlockKind::ArtLeaves => Some(0.25),
             BlockKind::Grass => Some(0.5),
             BlockKind::WeakRock => Some(0.75),
             BlockKind::Snow => Some(0.1),
             BlockKind::Ice => Some(0.5),
+            BlockKind::Wood => Some(4.5),
             BlockKind::Lava => None,
             _ => self.get_sprite().and_then(|sprite| match sprite {
                 sprite if sprite.is_container() => None,
@@ -423,7 +526,15 @@ impl Block {
                 | SpriteKind::DungeonChest3
                 | SpriteKind::DungeonChest4
                 | SpriteKind::DungeonChest5
+                | SpriteKind::CoralChest
+                | SpriteKind::HaniwaUrn
+                | SpriteKind::HaniwaKeyDoor
+                | SpriteKind::HaniwaKeyhole
+                | SpriteKind::HaniwaTrap
+                | SpriteKind::HaniwaTrapTriggered
                 | SpriteKind::ChestBuried
+                | SpriteKind::TerracottaChest
+                | SpriteKind::SahaginChest
                 | SpriteKind::SeaDecorBlock
                 | SpriteKind::SeaDecorChain
                 | SpriteKind::SeaDecorWindowHor
@@ -431,8 +542,15 @@ impl Block {
                 | SpriteKind::Rope
                 | SpriteKind::IronSpike
                 | SpriteKind::HotSurface
-                | SpriteKind::FireBlock => None,
-                SpriteKind::GlassBarrier | SpriteKind::GlassKeyhole => None,
+                | SpriteKind::FireBlock
+                | SpriteKind::GlassBarrier
+                | SpriteKind::GlassKeyhole
+                | SpriteKind::SahaginKeyhole
+                | SpriteKind::SahaginKeyDoor
+                | SpriteKind::TerracottaKeyDoor
+                | SpriteKind::TerracottaKeyhole
+                | SpriteKind::TerracottaStatue
+                | SpriteKind::TerracottaBlock => None,
                 SpriteKind::EnsnaringVines
                 | SpriteKind::EnsnaringWeb
                 | SpriteKind::SeaUrchin
@@ -472,11 +590,7 @@ impl Block {
     pub fn is_bonkable(&self) -> bool {
         match self.get_sprite() {
             Some(
-                SpriteKind::Apple
-                | SpriteKind::Beehive
-                | SpriteKind::Coconut
-                | SpriteKind::Bomb
-                | SpriteKind::Mine,
+                SpriteKind::Apple | SpriteKind::Beehive | SpriteKind::Coconut | SpriteKind::Bomb,
             ) => self.is_solid(),
             _ => false,
         }
@@ -538,6 +652,11 @@ impl Block {
         }
     }
 
+    /// Apply a light toggle to this block, if possible
+    pub fn with_toggle_light(self, enable: bool) -> Option<Self> {
+        self.with_attr(sprite::LightEnabled(enable)).ok()
+    }
+
     #[inline]
     pub fn kind(&self) -> BlockKind { self.kind }
 
@@ -546,7 +665,7 @@ impl Block {
     #[must_use]
     pub fn with_sprite(mut self, sprite: SpriteKind) -> Self {
         if !self.is_filled() {
-            self.attr[0] = sprite as u8;
+            self = Self::unfilled(self.kind, sprite);
         }
         self
     }
@@ -554,21 +673,14 @@ impl Block {
     /// If this block can have orientation, give it a new orientation.
     #[inline]
     #[must_use]
-    pub fn with_ori(mut self, ori: u8) -> Option<Self> {
-        if self.get_sprite().map(|s| s.has_ori()).unwrap_or(false) {
-            self.attr[1] = (self.attr[1] & !0b111) | (ori & 0b111);
-            Some(self)
-        } else {
-            None
-        }
-    }
+    pub fn with_ori(self, ori: u8) -> Option<Self> { self.with_attr(sprite::Ori(ori)).ok() }
 
     /// Remove the terrain sprite or solid aspects of a block
     #[inline]
     #[must_use]
     pub fn into_vacant(self) -> Self {
         if self.is_fluid() {
-            Block::new(self.kind(), Rgb::zero())
+            Block::unfilled(self.kind(), SpriteKind::Empty)
         } else {
             // FIXME: Figure out if there's some sensible way to determine what medium to
             // replace a filled block with if it's removed.
@@ -581,41 +693,19 @@ impl Block {
     #[must_use]
     pub fn from_u32(x: u32) -> Option<Self> {
         let [bk, r, g, b] = x.to_le_bytes();
-        Some(Self {
+        let block = Self {
             kind: BlockKind::from_u8(bk)?,
-            attr: [r, g, b],
-        })
+            data: [r, g, b],
+        };
+
+        (block.kind.is_filled() || SpriteKind::from_block(block).is_some()).then_some(block)
     }
 
     #[inline]
-    pub fn to_u32(&self) -> u32 {
-        u32::from_le_bytes([self.kind as u8, self.attr[0], self.attr[1], self.attr[2]])
+    pub fn to_u32(self) -> u32 {
+        u32::from_le_bytes([self.kind as u8, self.data[0], self.data[1], self.data[2]])
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use strum::IntoEnumIterator;
-
-    #[test]
-    fn block_size() {
-        assert_eq!(std::mem::size_of::<BlockKind>(), 1);
-        assert_eq!(std::mem::size_of::<Block>(), 4);
-    }
-
-    #[test]
-    fn convert_u32() {
-        for bk in BlockKind::iter() {
-            let block = Block::new(bk, Rgb::new(165, 90, 204)); // Pretty unique bit patterns
-            if bk.is_filled() {
-                assert_eq!(Block::from_u32(block.to_u32()), Some(block));
-            } else {
-                assert_eq!(
-                    Block::from_u32(block.to_u32()),
-                    Some(Block::new(bk, Rgb::zero())),
-                );
-            }
-        }
-    }
-}
+const _: () = assert!(core::mem::size_of::<BlockKind>() == 1);
+const _: () = assert!(core::mem::size_of::<Block>() == 4);

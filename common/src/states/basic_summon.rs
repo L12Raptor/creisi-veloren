@@ -3,10 +3,13 @@ use crate::{
         self,
         character_state::OutputEvents,
         inventory::loadout_builder::{self, LoadoutBuilder},
-        skillset::skills,
-        Behavior, BehaviorCapability, CharacterState, Projectile, StateUpdate,
+        object::Body::FieryTornado,
+        Behavior, BehaviorCapability,
+        Body::Object,
+        CharacterState, Projectile, StateUpdate,
     },
-    event::{LocalEvent, NpcBuilder, ServerEvent},
+    event::{CreateNpcEvent, LocalEvent, NpcBuilder},
+    npc::NPC_NAMES,
     outcome::Outcome,
     skillset_builder::{self, SkillSetBuilder},
     states::{
@@ -14,6 +17,7 @@ use crate::{
         utils::*,
     },
     terrain::Block,
+    util::Dir,
     vol::ReadVol,
 };
 use rand::Rng;
@@ -111,16 +115,26 @@ impl CharacterBehavior for Data {
                             }
                         };
 
-                        let stats = comp::Stats::new("Summon".to_string(), body);
+                        let stats = comp::Stats::new(
+                            self.static_data
+                                .summon_info
+                                .use_npc_name
+                                .then(|| {
+                                    let all_names = NPC_NAMES.read();
+                                    all_names
+                                        .get_species_meta(&self.static_data.summon_info.body)
+                                        .map(|meta| meta.generic.clone())
+                                })
+                                .flatten()
+                                .unwrap_or_else(|| "Summon".to_string()),
+                            body,
+                        );
 
-                        let health = self.static_data.summon_info.has_health.then(|| {
-                            let health_level = skill_set
-                                .skill_level(skills::Skill::General(
-                                    skills::GeneralSkill::HealthIncrease,
-                                ))
-                                .unwrap_or(0);
-                            comp::Health::new(body, health_level)
-                        });
+                        let health = self
+                            .static_data
+                            .summon_info
+                            .has_health
+                            .then(|| comp::Health::new(body));
 
                         // Ray cast to check where summon should happen
                         let summon_frac =
@@ -129,7 +143,14 @@ impl CharacterBehavior for Data {
                         let length = rand::thread_rng().gen_range(
                             self.static_data.summon_distance.0..=self.static_data.summon_distance.1,
                         );
-
+                        let extra_height =
+                            if self.static_data.summon_info.body == Object(FieryTornado) {
+                                15.0
+                            } else {
+                                0.0
+                            };
+                        let position =
+                            Vec3::new(data.pos.0.x, data.pos.0.y, data.pos.0.z + extra_height);
                         // Summon in a clockwise fashion
                         let ray_vector = Vec3::new(
                             (summon_frac * 2.0 * PI).sin() * length,
@@ -140,16 +161,16 @@ impl CharacterBehavior for Data {
                         // Check for collision on the xy plane, subtract 1 to get point before block
                         let obstacle_xy = data
                             .terrain
-                            .ray(data.pos.0, data.pos.0 + length * ray_vector)
+                            .ray(position, position + length * ray_vector)
                             .until(Block::is_solid)
                             .cast()
                             .0
                             .sub(1.0);
 
                         let collision_vector = Vec3::new(
-                            data.pos.0.x + (summon_frac * 2.0 * PI).sin() * obstacle_xy,
-                            data.pos.0.y + (summon_frac * 2.0 * PI).cos() * obstacle_xy,
-                            data.pos.0.z + data.body.eye_height(data.scale.map_or(1.0, |s| s.0)),
+                            position.x + (summon_frac * 2.0 * PI).sin() * obstacle_xy,
+                            position.y + (summon_frac * 2.0 * PI).cos() * obstacle_xy,
+                            position.z + data.body.eye_height(data.scale.map_or(1.0, |s| s.0)),
                         );
 
                         // Check for collision in z up to 50 blocks
@@ -171,9 +192,11 @@ impl CharacterBehavior for Data {
                             is_point: false,
                         });
 
+                        let mut rng = rand::thread_rng();
                         // Send server event to create npc
-                        output_events.emit_server(ServerEvent::CreateNpc {
+                        output_events.emit_server(CreateNpcEvent {
                             pos: comp::Pos(collision_vector - Vec3::unit_z() * obstacle_z),
+                            ori: comp::Ori::from(Dir::random_2d(&mut rng)),
                             npc: NpcBuilder::new(stats, body, comp::Alignment::Owned(*data.uid))
                                 .with_skill_set(skill_set)
                                 .with_health(health)
@@ -190,6 +213,7 @@ impl CharacterBehavior for Data {
                                         .unwrap_or(comp::Scale(1.0)),
                                 )
                                 .with_projectile(projectile),
+                            rider: None,
                         });
 
                         // Send local event used for frontend shenanigans
@@ -225,7 +249,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recovery
                     update.character = CharacterState::BasicSummon(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {
@@ -248,6 +276,8 @@ pub struct SummonInfo {
     body: comp::Body,
     scale: Option<comp::Scale>,
     has_health: bool,
+    #[serde(default)]
+    use_npc_name: bool,
     // TODO: use assets for specifying skills and loadout?
     loadout_config: Option<loadout_builder::Preset>,
     skillset_config: Option<skillset_builder::Preset>,

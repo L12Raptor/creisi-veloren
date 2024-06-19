@@ -1,5 +1,5 @@
 use crate::{
-    combat::CombatEffect,
+    combat::{self, CombatEffect},
     comp::{character_state::OutputEvents, CharacterState, MeleeConstructor, StateUpdate},
     event::LocalEvent,
     outcome::Outcome,
@@ -32,7 +32,6 @@ pub struct StaticData {
     pub vertical_leap_strength: f32,
     /// What key is used to press ability
     pub ability_info: AbilityInfo,
-    ///
     pub damage_effect: Option<CombatEffect>,
 }
 
@@ -129,25 +128,33 @@ impl CharacterBehavior for Data {
             },
             StageSection::Recover => {
                 if !self.exhausted {
-                    let crit_data = get_crit_data(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     let tool_stats = get_tool_stats(data, self.static_data.ability_info);
 
                     data.updater.insert(
                         data.entity,
                         self.static_data
                             .melee_constructor
-                            .create_melee(crit_data, tool_stats),
+                            .create_melee(precision_mult, tool_stats),
                     );
 
                     update.character = CharacterState::LeapMelee(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         exhausted: true,
                         ..*self
                     });
                 } else if self.timer < self.static_data.recover_duration {
                     // Complete recovery delay before finishing state
                     update.character = CharacterState::LeapMelee(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {

@@ -4,13 +4,12 @@ pub mod site;
 
 use crate::data::{
     faction::Faction,
-    npc::{Npc, Npcs, Profession, Vehicle},
+    npc::{Npc, Npcs, Profession},
     site::Site,
     Data, Nature, CURRENT_VERSION,
 };
 use common::{
     comp::{self, Body},
-    grid::Grid,
     resources::TimeOfDay,
     rtsim::{Personality, Role, WorldSettings},
     terrain::{BiomeKind, CoordinateConversions, TerrainChunkSize},
@@ -32,12 +31,7 @@ impl Data {
         let mut this = Self {
             version: CURRENT_VERSION,
             nature: Nature::generate(world),
-            npcs: Npcs {
-                npcs: Default::default(),
-                vehicles: Default::default(),
-                npc_grid: Grid::new(Vec2::zero(), Default::default()),
-                character_map: Default::default(),
-            },
+            npcs: Npcs::default(),
             sites: Default::default(),
             factions: Default::default(),
             reports: Default::default(),
@@ -94,7 +88,9 @@ impl Data {
                 .faction
                 .and_then(|f| this.factions.get(f))
                 .map(|f| f.good_or_evil)
-            else { continue };
+            else {
+                continue;
+            };
 
             let rand_wpos = |rng: &mut SmallRng, matches_plot: fn(&PlotKind) -> bool| {
                 let wpos2d = site2
@@ -116,6 +112,8 @@ impl Data {
                     kind,
                     PlotKind::House(_)
                         | PlotKind::Workshop(_)
+                        | PlotKind::AirshipDock(_)
+                        | PlotKind::Tavern(_)
                         | PlotKind::Plaza
                         | PlotKind::SavannahPit(_)
                         | PlotKind::SavannahHut(_)
@@ -182,13 +180,22 @@ impl Data {
                 }
             }
 
-            if rng.gen_bool(0.4) {
-                let wpos = rand_wpos(&mut rng, matches_plazas) + Vec3::unit_z() * 50.0;
-                let vehicle_id = this
-                    .npcs
-                    .create_vehicle(Vehicle::new(wpos, comp::body::ship::Body::DefaultAirship));
+            for plot in site2
+                .plots
+                .values()
+                .filter(|plot| matches!(plot.kind(), PlotKind::AirshipDock(_)))
+            {
+                let wpos = site2.tile_center_wpos(plot.root_tile());
+                let wpos = wpos.as_().with_z(world.sim().get_surface_alt_approx(wpos))
+                    + Vec3::unit_z() * 70.0;
+                let vehicle_id = this.npcs.create_npc(Npc::new(
+                    rng.gen(),
+                    wpos,
+                    Body::Ship(comp::body::ship::Body::DefaultAirship),
+                    Role::Vehicle,
+                ));
 
-                this.npcs.create_npc(
+                let npc_id = this.npcs.create_npc(
                     Npc::new(
                         rng.gen(),
                         wpos,
@@ -196,41 +203,61 @@ impl Data {
                         Role::Civilised(Some(Profession::Captain)),
                     )
                     .with_home(site_id)
-                    .with_personality(Personality::random_good(&mut rng))
-                    .steering(vehicle_id),
+                    .with_personality(Personality::random_good(&mut rng)),
                 );
+                this.npcs
+                    .mounts
+                    .steer(vehicle_id, npc_id)
+                    .expect("We just created these npcs");
             }
         }
 
-        for (site_id, site) in this.sites.iter()
-        // TODO: Stupid
-        .filter(|(_, site)| site.world_site.map_or(false, |ws|
-        matches!(&index.sites.get(ws).kind, SiteKind::Dungeon(_))))
-        {
+        for (site_id, site) in this.sites.iter() {
             let rand_wpos = |rng: &mut SmallRng| {
-                let wpos2d = site.wpos.map(|e| e + rng.gen_range(-10..10));
+                // don't spawn in buildings
+                let spread_factor = rng.gen_range(-3..3) * 50;
+                let spread = if spread_factor == 0 {
+                    100
+                } else {
+                    spread_factor
+                };
+                let wpos2d = site.wpos.map(|e| e + spread);
                 wpos2d
                     .map(|e| e as f32 + 0.5)
                     .with_z(world.sim().get_alt_approx(wpos2d).unwrap_or(0.0))
             };
-
-            let species = [
-                comp::body::bird_large::Species::Phoenix,
-                comp::body::bird_large::Species::Cockatrice,
-                comp::body::bird_large::Species::Roc,
-                comp::body::bird_large::Species::FlameWyvern,
-                comp::body::bird_large::Species::CloudWyvern,
-                comp::body::bird_large::Species::FrostWyvern,
-                comp::body::bird_large::Species::SeaWyvern,
-                comp::body::bird_large::Species::WealdWyvern,
+            let site_kind = site.world_site.map(|ws| &index.sites.get(ws).kind);
+            let Some(species) = [
+                Some(comp::body::bird_large::Species::Phoenix)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::DwarvenMine(_)))),
+                Some(comp::body::bird_large::Species::Cockatrice)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::Dungeon(_)))),
+                Some(comp::body::bird_large::Species::Roc)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::Haniwa(_)))),
+                Some(comp::body::bird_large::Species::FlameWyvern)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::Terracotta(_)))),
+                Some(comp::body::bird_large::Species::CloudWyvern)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::Sahagin(_)))),
+                Some(comp::body::bird_large::Species::FrostWyvern)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::Adlet(_)))),
+                Some(comp::body::bird_large::Species::SeaWyvern)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::ChapelSite(_)))),
+                Some(comp::body::bird_large::Species::WealdWyvern)
+                    .filter(|_| matches!(site_kind, Some(SiteKind::GiantTree(_)))),
             ]
-            .choose(&mut rng)
-            .unwrap();
+            .into_iter()
+            .flatten()
+            .choose(&mut rng) else {
+                continue;
+            };
+
             this.npcs.create_npc(
                 Npc::new(
                     rng.gen(),
                     rand_wpos(&mut rng),
-                    Body::BirdLarge(comp::body::bird_large::Body::random_with(&mut rng, species)),
+                    Body::BirdLarge(comp::body::bird_large::Body::random_with(
+                        &mut rng, &species,
+                    )),
                     Role::Wild,
                 )
                 .with_home(site_id),
@@ -257,18 +284,23 @@ impl Data {
                 let Some(species) = [
                     Some(comp::body::biped_large::Species::Ogre),
                     Some(comp::body::biped_large::Species::Cyclops),
-                    Some(comp::body::biped_large::Species::Wendigo).filter(|_| biome == BiomeKind::Taiga),
+                    Some(comp::body::biped_large::Species::Wendigo)
+                        .filter(|_| biome == BiomeKind::Taiga),
                     Some(comp::body::biped_large::Species::Cavetroll),
-                    Some(comp::body::biped_large::Species::Mountaintroll).filter(|_| biome == BiomeKind::Mountain),
-                    Some(comp::body::biped_large::Species::Swamptroll).filter(|_| biome == BiomeKind::Swamp),
+                    Some(comp::body::biped_large::Species::Mountaintroll)
+                        .filter(|_| biome == BiomeKind::Mountain),
+                    Some(comp::body::biped_large::Species::Swamptroll)
+                        .filter(|_| biome == BiomeKind::Swamp),
                     Some(comp::body::biped_large::Species::Blueoni),
                     Some(comp::body::biped_large::Species::Redoni),
-                    Some(comp::body::biped_large::Species::Tursus).filter(|_| chunk.temp < CONFIG.snow_temp),
+                    Some(comp::body::biped_large::Species::Tursus)
+                        .filter(|_| chunk.temp < CONFIG.snow_temp),
                 ]
-                    .into_iter()
-                    .flatten()
-                    .choose(&mut rng)
-                else { continue };
+                .into_iter()
+                .flatten()
+                .choose(&mut rng) else {
+                    continue;
+                };
 
                 this.npcs.create_npc(Npc::new(
                     rng.gen(),
@@ -282,7 +314,7 @@ impl Data {
         }
         // Spawn one monster Gigasfrost into the world
         // Try a few times to find a location that's not underwater
-        if let Some((wpos, chunk)) = (0..10)
+        if let Some((wpos, chunk)) = (0..100)
             .map(|_| world.sim().get_size().map(|sz| rng.gen_range(0..sz as i32)))
             .find_map(|pos| Some((pos, world.sim().get(pos).filter(|c| !c.is_underwater())?)))
             .map(|(pos, chunk)| {

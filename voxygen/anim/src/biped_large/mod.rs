@@ -11,12 +11,12 @@ pub mod idle;
 pub mod jump;
 pub mod leapmelee;
 pub mod leapshockwave;
+pub mod rapidmelee;
 pub mod run;
 pub mod selfbuff;
 pub mod shockwave;
 pub mod shoot;
 pub mod spin;
-pub mod spinmelee;
 pub mod spritesummon;
 pub mod stunned;
 pub mod summon;
@@ -27,9 +27,9 @@ pub use self::{
     alpha::AlphaAnimation, beam::BeamAnimation, beta::BetaAnimation, blink::BlinkAnimation,
     charge::ChargeAnimation, chargemelee::ChargeMeleeAnimation, combomelee::ComboAnimation,
     dash::DashAnimation, equip::EquipAnimation, idle::IdleAnimation, jump::JumpAnimation,
-    leapmelee::LeapAnimation, leapshockwave::LeapShockAnimation, run::RunAnimation,
-    selfbuff::SelfBuffAnimation, shockwave::ShockwaveAnimation, shoot::ShootAnimation,
-    spin::SpinAnimation, spinmelee::SpinMeleeAnimation, spritesummon::SpriteSummonAnimation,
+    leapmelee::LeapAnimation, leapshockwave::LeapShockAnimation, rapidmelee::RapidMeleeAnimation,
+    run::RunAnimation, selfbuff::SelfBuffAnimation, shockwave::ShockwaveAnimation,
+    shoot::ShootAnimation, spin::SpinAnimation, spritesummon::SpriteSummonAnimation,
     stunned::StunnedAnimation, summon::SummonAnimation, wield::WieldAnimation,
 };
 
@@ -266,6 +266,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (-1.5, 5.0),
                 (AdletElder, _) => (-8.0, 10.0),
                 (SeaBishop, _) => (0.0, 9.5),
+                (HaniwaGeneral, _) => (-1.5, 10.0),
+                (TerracottaBesieger, _) => (-2.5, 16.0),
+                (TerracottaDemolisher, _) => (-2.5, 10.0),
+                (TerracottaPunisher, _) => (-2.5, 10.0),
+                (TerracottaPursuer, _) => (-2.0, 13.5),
+                (Cursekeeper, _) => (2.0, 6.5),
+                (Forgemaster, _) => (5.0, 6.0),
             },
             jaw: match (body.species, body.body_type) {
                 (Ogre, _) => (0.0, 0.0),
@@ -293,6 +300,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (-1.0, 5.5),
                 (AdletElder, _) => (10.5, -7.0),
                 (SeaBishop, _) => (5.0, -4.5),
+                (HaniwaGeneral, _) => (10.5, -7.0),
+                (TerracottaBesieger, _) => (10.5, -7.0),
+                (TerracottaDemolisher, _) => (10.5, -7.0),
+                (TerracottaPunisher, _) => (10.5, -7.0),
+                (TerracottaPursuer, _) => (10.5, -7.0),
+                (Cursekeeper, _) => (10.5, -7.0),
+                (Forgemaster, _) => (-1.0, 5.5),
             },
             upper_torso: match (body.species, body.body_type) {
                 (Ogre, Male) => (0.0, 27.5),
@@ -321,6 +335,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (-1.0, 30.0),
                 (AdletElder, _) => (3.0, 19.0),
                 (SeaBishop, _) => (0.0, 15.0),
+                (HaniwaGeneral, _) => (3.0, 16.0),
+                (TerracottaBesieger, _) => (3.0, 21.5),
+                (TerracottaDemolisher, _) => (3.0, 16.5),
+                (TerracottaPunisher, _) => (3.0, 15.5),
+                (TerracottaPursuer, _) => (3.0, 15.5),
+                (Cursekeeper, _) => (-4.0, 20.0),
+                (Forgemaster, _) => (-1.0, 32.0),
             },
             lower_torso: match (body.species, body.body_type) {
                 (Ogre, Male) => (1.0, -7.0),
@@ -349,6 +370,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (0.0, -5.5),
                 (AdletElder, _) => (0.0, -4.0),
                 (SeaBishop, _) => (0.0, -1.0),
+                (HaniwaGeneral, _) => (-1.0, -3.5),
+                (TerracottaBesieger, _) => (-1.0, -4.5),
+                (TerracottaDemolisher, _) => (-2.0, -3.5),
+                (TerracottaPunisher, _) => (-1.5, -2.5),
+                (TerracottaPursuer, _) => (-1.5, -2.5),
+                (Cursekeeper, _) => (-1.5, -4.5),
+                (Forgemaster, _) => (0.0, -5.5),
             },
             tail: match (body.species, body.body_type) {
                 (Werewolf, _) => (-5.5, -2.0),
@@ -386,6 +414,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (10.5, 0.5, 0.0),
                 (AdletElder, _) => (8.5, 1.0, 2.5),
                 (SeaBishop, _) => (7.0, 0.0, 1.0),
+                (HaniwaGeneral, _) => (9.0, -1.0, 4.5),
+                (TerracottaBesieger, _) => (13.0, -1.0, 2.0),
+                (TerracottaDemolisher, _) => (9.0, -1.0, 3.0),
+                (TerracottaPunisher, _) => (9.0, -1.0, 4.0),
+                (TerracottaPursuer, _) => (9.0, -1.0, 4.0),
+                (Cursekeeper, _) => (9.5, -0.5, 2.5),
+                (Forgemaster, _) => (20.0, 4.0, 13.0),
             },
             hand: match (body.species, body.body_type) {
                 (Ogre, Male) => (14.5, 0.0, -4.0),
@@ -414,6 +449,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (17.0, 0.5, -6.0),
                 (AdletElder, _) => (8.0, 1.5, -2.5),
                 (SeaBishop, _) => (10.0, 0.0, -3.0),
+                (HaniwaGeneral, _) => (10.0, -1.0, -3.0),
+                (TerracottaBesieger, _) => (13.5, -1.0, -3.5),
+                (TerracottaDemolisher, _) => (10.0, -1.0, -1.5),
+                (TerracottaPunisher, _) => (10.0, -1.0, -1.5),
+                (TerracottaPursuer, _) => (10.0, -1.0, -1.5),
+                (Cursekeeper, _) => (11.0, -1.0, -4.0),
+                (Forgemaster, _) => (19.0, 4.0, -1.0),
             },
             leg: match (body.species, body.body_type) {
                 (Ogre, Male) => (0.0, 0.0, -4.0),
@@ -442,6 +484,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (6.0, 0.0, -10.0),
                 (AdletElder, _) => (3.0, -1.5, -4.0),
                 (SeaBishop, _) => (3.0, 1.0, -14.0),
+                (HaniwaGeneral, _) => (3.0, 0.0, -5.0),
+                (TerracottaBesieger, _) => (5.0, 0.5, -6.0),
+                (TerracottaDemolisher, _) => (3.5, 1.5, -5.0),
+                (TerracottaPunisher, _) => (3.5, 1.0, -5.0),
+                (TerracottaPursuer, _) => (3.5, 1.0, -5.0),
+                (Cursekeeper, _) => (5.0, 0.5, -6.0),
+                (Forgemaster, _) => (9.0, 0.0, -10.0),
             },
             foot: match (body.species, body.body_type) {
                 (Ogre, Male) => (4.0, 1.0, -12.0),
@@ -470,6 +519,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (6.5, 2.0, -19.5),
                 (AdletElder, _) => (4.0, 3.5, -10.0),
                 (SeaBishop, _) => (5.5, 3.0, -6.5),
+                (HaniwaGeneral, _) => (3.0, 1.0, -10.0),
+                (TerracottaBesieger, _) => (5.5, 2.5, -13.0),
+                (TerracottaDemolisher, _) => (3.5, 3.0, -10.5),
+                (TerracottaPunisher, _) => (3.5, 2.0, -10.5),
+                (TerracottaPursuer, _) => (3.5, 2.5, -10.5),
+                (Cursekeeper, _) => (5.5, 2.5, -13.0),
+                (Forgemaster, _) => (8.5, 2.0, -19.5),
             },
             scaler: match (body.species, body.body_type) {
                 (Ogre, Male) => 1.12,
@@ -498,6 +554,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => 1.7,
                 (AdletElder, _) => 1.0,
                 (SeaBishop, _) => 1.0,
+                (HaniwaGeneral, _) => 1.0,
+                (TerracottaBesieger, _) => 1.0,
+                (TerracottaDemolisher, _) => 1.0,
+                (TerracottaPunisher, _) => 1.0,
+                (TerracottaPursuer, _) => 1.0,
+                (Cursekeeper, _) => 1.0,
+                (Forgemaster, _) => 1.0,
             },
             tempo: match (body.species, body.body_type) {
                 (Ogre, Male) => 0.9,
@@ -508,6 +571,11 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Swamptroll, _) => 0.9,
                 (Dullahan, _) => 0.8,
                 (Minotaur, _) => 0.8,
+                (TerracottaBesieger, _) => 0.7,
+                (TerracottaDemolisher, _) => 0.8,
+                (TerracottaPunisher, _) => 0.8,
+                (TerracottaPursuer, _) => 0.7,
+                (Cursekeeper, _) => 0.8,
                 _ => 1.0,
             },
             grip: match (body.species, body.body_type) {
@@ -537,6 +605,13 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Gigasfrost, _) => (16.0, 0.0),
                 (AdletElder, _) => (10.0, 0.0),
                 (SeaBishop, _) => (6.0, 0.0),
+                (HaniwaGeneral, _) => (10.0, 0.0),
+                (TerracottaBesieger, _) => (5.0, 0.0),
+                (TerracottaDemolisher, _) => (6.0, 0.0),
+                (TerracottaPunisher, _) => (6.0, 0.0),
+                (TerracottaPursuer, _) => (6.0, 0.0),
+                (Cursekeeper, _) => (14.0, 0.0),
+                (Forgemaster, _) => (16.0, 0.0),
             },
             shl: match (body.species, body.body_type) {
                 (Dullahan, _) => (-4.75, -11.0, 8.5, 1.47, -0.2, 0.0),
@@ -596,7 +671,10 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 _ => (-7.0, 3.0, -8.0, 0.0, 0.0, 0.0),
             },
             beast: matches!((body.species, body.body_type), (Werewolf, _)),
-            float: matches!((body.species, body.body_type), (Mindflayer, _)),
+            float: matches!(
+                (body.species, body.body_type),
+                (Mindflayer, _) | (Cursekeeper, _)
+            ),
             height: comp::Body::BipedLarge(*body).dimensions().z,
         }
     }
@@ -630,6 +708,278 @@ fn mount_point(body: &Body) -> Vec3<f32> {
         (Gigasfrost, _) => (1.0, 2.0, 4.0),
         (AdletElder, _) => (0.0, 0.0, -1.0),
         (SeaBishop, _) => (0.0, 0.0, -1.0),
+        (HaniwaGeneral, _) => (0.0, 0.0, -1.0),
+        (TerracottaBesieger, _) => (0.0, 0.0, -1.0),
+        (TerracottaDemolisher, _) => (0.0, 0.0, -1.0),
+        (TerracottaPunisher, _) => (0.0, 0.0, -1.0),
+        (TerracottaPursuer, _) => (0.0, 0.0, -1.0),
+        (Cursekeeper, _) => (0.0, 0.0, -1.0),
+        (Forgemaster, _) => (1.0, 2.0, 4.0),
     }
     .into()
+}
+
+pub fn init_biped_large_alpha(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    speed: f32,
+    acc_vel: f32,
+    move1: f32,
+) -> f32 {
+    let lab: f32 = 0.65 * s_a.tempo;
+    let speednorm = (speed / 12.0).powf(0.4);
+    let foothoril = (acc_vel * lab + PI * 1.45).sin() * speednorm;
+    let foothorir = (acc_vel * lab + PI * (0.45)).sin() * speednorm;
+    let footrotl = ((1.0 / (0.5 + (0.5) * ((acc_vel * lab + PI * 1.4).sin()).powi(2))).sqrt())
+        * ((acc_vel * lab + PI * 1.4).sin());
+
+    let footrotr = ((1.0 / (0.5 + (0.5) * ((acc_vel * lab + PI * 0.4).sin()).powi(2))).sqrt())
+        * ((acc_vel * lab + PI * 0.4).sin());
+    next.second.position = Vec3::new(0.0, 0.0, 0.0);
+    next.second.orientation = Quaternion::rotation_x(0.0);
+    next.shoulder_l.position = Vec3::new(
+        -s_a.shoulder.0,
+        s_a.shoulder.1,
+        s_a.shoulder.2 - foothorir * 1.0,
+    );
+    next.shoulder_l.orientation =
+        Quaternion::rotation_x(move1 * 0.8 + 0.6 * speednorm + (footrotr * -0.2) * speednorm);
+
+    next.shoulder_r.position = Vec3::new(
+        s_a.shoulder.0,
+        s_a.shoulder.1,
+        s_a.shoulder.2 - foothoril * 1.0,
+    );
+    next.shoulder_r.orientation =
+        Quaternion::rotation_x(move1 * 0.8 + 0.6 * speednorm + (footrotl * -0.2) * speednorm);
+
+    next.main.position = Vec3::new(0.0, 0.0, 0.0);
+    next.main.orientation = Quaternion::rotation_x(0.0);
+
+    next.hand_l.position = Vec3::new(0.0, 0.0, s_a.grip.0);
+    next.hand_r.position = Vec3::new(0.0, 0.0, s_a.grip.0);
+
+    next.hand_l.orientation = Quaternion::rotation_x(0.0);
+    next.hand_r.orientation = Quaternion::rotation_x(0.0);
+
+    foothorir
+}
+
+pub fn init_biped_large_beta(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    speed: f32,
+    acc_vel: f32,
+    move1: f32,
+) {
+    let lab: f32 = 0.65 * s_a.tempo;
+    let speednorm = (speed / 12.0).powf(0.4);
+    let foothoril = (acc_vel * lab + PI * 1.45).sin() * speednorm;
+    let foothorir = (acc_vel * lab + PI * (0.45)).sin() * speednorm;
+    let footrotl = ((1.0 / (0.5 + (0.5) * ((acc_vel * lab + PI * 1.4).sin()).powi(2))).sqrt())
+        * ((acc_vel * lab + PI * 1.4).sin());
+
+    let footrotr = ((1.0 / (0.5 + (0.5) * ((acc_vel * lab + PI * 0.4).sin()).powi(2))).sqrt())
+        * ((acc_vel * lab + PI * 0.4).sin());
+
+    next.shoulder_l.position = Vec3::new(
+        -s_a.shoulder.0,
+        s_a.shoulder.1,
+        s_a.shoulder.2 - foothorir * 1.0,
+    );
+    next.shoulder_l.orientation =
+        Quaternion::rotation_x(move1 * 0.8 + 0.6 * speednorm + (footrotr * -0.2) * speednorm);
+
+    next.shoulder_r.position = Vec3::new(
+        s_a.shoulder.0,
+        s_a.shoulder.1,
+        s_a.shoulder.2 - foothoril * 1.0,
+    );
+    next.shoulder_r.orientation =
+        Quaternion::rotation_x(move1 * 0.8 + 0.6 * speednorm + (footrotl * -0.2) * speednorm);
+    next.torso.orientation = Quaternion::rotation_z(0.0);
+
+    next.main.position = Vec3::new(0.0, 0.0, 0.0);
+    next.main.orientation = Quaternion::rotation_x(0.0);
+
+    next.hand_l.position = Vec3::new(0.0, 0.0, s_a.grip.0);
+    next.hand_r.position = Vec3::new(0.0, 0.0, s_a.grip.0);
+
+    next.hand_l.orientation = Quaternion::rotation_x(0.0);
+    next.hand_r.orientation = Quaternion::rotation_x(0.0);
+}
+
+pub fn biped_large_alpha_hammer(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    move1: f32,
+    move2: f32,
+) {
+    next.control_l.position = Vec3::new(-1.0, 2.0, 12.0 + move2 * -10.0);
+    next.control_r.position = Vec3::new(1.0, 2.0, -2.0);
+
+    next.control.position = Vec3::new(
+        4.0 + move1 * -12.0 + move2 * 20.0,
+        (s_a.grip.0 / 1.0) + move1 * -3.0 + move2 * 5.0,
+        (-s_a.grip.0 / 0.8) + move1 * -2.0 + move2 * 8.0,
+    );
+    next.head.orientation =
+        Quaternion::rotation_x(move1 * -0.25) * Quaternion::rotation_z(move1 * -0.2 + move2 * 0.6);
+    next.upper_torso.orientation = Quaternion::rotation_z(move1 * 0.2 + move2 * -0.4);
+    next.lower_torso.orientation = Quaternion::rotation_z(move1 * -0.2 + move2 * 0.2);
+
+    next.control_l.orientation =
+        Quaternion::rotation_x(PI / 2.0 + move2 * 0.8) * Quaternion::rotation_y(-0.0);
+    next.control_r.orientation = Quaternion::rotation_x(PI / 2.0 + 0.2 + move2 * 0.8)
+        * Quaternion::rotation_y(0.0)
+        * Quaternion::rotation_z(0.0);
+
+    next.control.orientation = Quaternion::rotation_x(-1.0 + move1 * -0.5 + move2 * -0.3)
+        * Quaternion::rotation_y(-1.8 + move1 * -0.8 + move2 * 3.0)
+        * Quaternion::rotation_z(move1 * -0.8 + move2 * -0.8);
+}
+
+pub fn biped_large_beta_hammer(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    move1: f32,
+    move2: f32,
+) {
+    next.control_l.position = Vec3::new(-1.0, 2.0, 12.0 + move2 * -10.0);
+    next.control_r.position = Vec3::new(1.0, 2.0, -2.0);
+
+    next.control.position = Vec3::new(
+        4.0 + move1 * -12.0 + move2 * 20.0,
+        (s_a.grip.0 / 1.0) + move1 * -3.0 + move2 * 5.0,
+        (-s_a.grip.0 / 0.8) + move1 * 6.0 + move2 * 8.0,
+    );
+    next.head.orientation =
+        Quaternion::rotation_x(move1 * -0.25) * Quaternion::rotation_z(move1 * -0.2 + move2 * 0.6);
+    next.upper_torso.orientation = Quaternion::rotation_z(move1 * 0.6 + move2 * -1.5);
+    next.lower_torso.orientation = Quaternion::rotation_z(move1 * -0.6 + move2 * 1.5);
+
+    next.control_l.orientation =
+        Quaternion::rotation_x(PI / 2.0 + move2 * 0.8) * Quaternion::rotation_y(-0.0);
+    next.control_r.orientation = Quaternion::rotation_x(PI / 2.0 + 0.2 + move2 * 0.8)
+        * Quaternion::rotation_y(0.0)
+        * Quaternion::rotation_z(0.0);
+
+    next.control.orientation = Quaternion::rotation_x(-1.0 + move1 * -1.5 + move2 * -0.3)
+        * Quaternion::rotation_y(-1.8 + move1 * -0.8 + move2 * 3.0)
+        * Quaternion::rotation_z(move1 * -0.8 + move2 * -0.8);
+}
+
+pub fn biped_large_alpha_sword(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    move1: f32,
+    move2: f32,
+) {
+    next.control_l.position = Vec3::new(-1.0, 1.0, 1.0);
+    next.control_r.position = Vec3::new(0.0, 2.0, -3.0);
+    next.head.orientation =
+        Quaternion::rotation_x(move1 * -0.25) * Quaternion::rotation_z(move1 * -0.2 + move2 * 0.6);
+    next.control.position = Vec3::new(
+        -3.0 + move1 * -4.0 + move2 * 5.0,
+        5.0 + s_a.grip.0 / 1.2 + move1 * -4.0 + move2 * 8.0,
+        -4.0 + -s_a.grip.0 / 2.0 + move2 * -5.0,
+    );
+    next.upper_torso.orientation = Quaternion::rotation_z(move1 * 0.5 + move2 * -0.7);
+    next.lower_torso.orientation = Quaternion::rotation_z(move1 * -0.5 + move2 * 0.7);
+    next.control_l.orientation = Quaternion::rotation_x(PI / 2.0 + move1 * -0.5 + move2 * 1.5)
+        * Quaternion::rotation_y(-0.2);
+    next.control_r.orientation = Quaternion::rotation_x(PI / 2.2 + move1 * -0.5 + move2 * 1.5)
+        * Quaternion::rotation_y(0.2)
+        * Quaternion::rotation_z(0.0);
+
+    next.control.orientation = Quaternion::rotation_x(-0.2 + move1 * 0.5 + move2 * -2.0)
+        * Quaternion::rotation_y(-0.1 + move1 * -0.5 + move2 * 1.0);
+}
+
+pub fn biped_large_beta_sword(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    move1base: f32,
+    move1: f32,
+    move2: f32,
+) {
+    next.control_l.position = Vec3::new(-1.0, 1.0, 1.0);
+    next.control_r.position = Vec3::new(0.0, 2.0, -3.0);
+    next.head.orientation =
+        Quaternion::rotation_x(move1 * -0.25) * Quaternion::rotation_z(move1 * -0.2 + move2 * 0.6);
+    next.control.position = Vec3::new(
+        -3.0 + move1 * -4.0 + move2 * 5.0,
+        5.0 + s_a.grip.0 / 1.2 + move1 * -4.0 + move2 * 8.0,
+        -4.0 + -s_a.grip.0 / 2.0 + move2 * -5.0,
+    );
+    next.upper_torso.orientation = Quaternion::rotation_z(move1base * 0.5 + move2 * -0.7);
+    next.lower_torso.orientation = Quaternion::rotation_z(move1base * -0.5 + move2 * 0.7);
+    next.control_l.orientation = Quaternion::rotation_x(PI / 2.0 + move1 * -0.5 + move2 * 1.5)
+        * Quaternion::rotation_y(-0.2);
+    next.control_r.orientation = Quaternion::rotation_x(PI / 2.2 + move1 * -0.5 + move2 * 1.5)
+        * Quaternion::rotation_y(0.2)
+        * Quaternion::rotation_z(0.0);
+
+    next.control.orientation = Quaternion::rotation_x(-0.2 + move1 * 0.5 + move2 * -1.5)
+        * Quaternion::rotation_y(-0.1 + move1 * -0.5 + move2 * 1.0);
+}
+
+pub fn biped_large_alpha_axe(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    move1: f32,
+    move2: f32,
+) {
+    next.control_l.position = Vec3::new(-1.0, 2.0, 12.0 + move2 * -10.0);
+    next.control_r.position = Vec3::new(1.0, 2.0, -2.0);
+
+    next.control.position = Vec3::new(
+        4.0 + move1 * -12.0 + move2 * 28.0,
+        (s_a.grip.0 / 1.0) + move1 * -3.0 + move2 * -5.0,
+        (-s_a.grip.0 / 0.8) + move1 * 2.0 + move2 * 8.0,
+    );
+    next.head.orientation =
+        Quaternion::rotation_x(move1 * -0.25) * Quaternion::rotation_z(move1 * -0.2 + move2 * 0.6);
+    next.upper_torso.orientation = Quaternion::rotation_z(move1 * 0.6 + move2 * -0.9);
+    next.lower_torso.orientation = Quaternion::rotation_z(move1 * -0.6 + move2 * 0.9);
+
+    next.control_l.orientation =
+        Quaternion::rotation_x(PI / 2.0 + move2 * 0.8) * Quaternion::rotation_y(-0.0);
+    next.control_r.orientation = Quaternion::rotation_x(PI / 2.0 + 0.2 + move2 * 0.8)
+        * Quaternion::rotation_y(0.0)
+        * Quaternion::rotation_z(0.0);
+
+    next.control.orientation = Quaternion::rotation_x(-1.0 + move1 * -0.5 + move2 * -0.3)
+        * Quaternion::rotation_y(-1.8 + move1 * -0.4 + move2 * 3.5)
+        * Quaternion::rotation_z(move1 * -1.0 + move2 * -1.5);
+}
+
+pub fn biped_large_beta_axe(
+    next: &mut BipedLargeSkeleton,
+    s_a: &SkeletonAttr,
+    move1: f32,
+    move2: f32,
+) {
+    next.control_l.position = Vec3::new(-1.0, 2.0, 12.0 + move2 * -10.0);
+    next.control_r.position = Vec3::new(1.0, 2.0, -2.0);
+
+    next.control.position = Vec3::new(
+        4.0 + move1 * -18.0 + move2 * 20.0,
+        (s_a.grip.0 / 1.0) + move1 * -3.0 + move2 * 12.0,
+        (-s_a.grip.0 / 0.8) + move1 * -2.0 + move2 * 4.0,
+    );
+    next.head.orientation =
+        Quaternion::rotation_x(move1 * -0.25) * Quaternion::rotation_z(move1 * -0.9 + move2 * 0.6);
+    next.upper_torso.orientation = Quaternion::rotation_z(move1 * 1.2 + move2 * -1.0);
+    next.lower_torso.orientation = Quaternion::rotation_z(move1 * -1.2 + move2 * 1.0);
+
+    next.control_l.orientation =
+        Quaternion::rotation_x(PI / 2.0 + move2 * 0.8) * Quaternion::rotation_y(-0.0);
+    next.control_r.orientation = Quaternion::rotation_x(PI / 2.0 + 0.2 + move2 * 0.8)
+        * Quaternion::rotation_y(0.0)
+        * Quaternion::rotation_z(0.0);
+
+    next.control.orientation = Quaternion::rotation_x(-1.0 + move1 * 0.0 + move2 * -0.8)
+        * Quaternion::rotation_y(-1.8 + move1 * 3.0 + move2 * -0.9)
+        * Quaternion::rotation_z(move1 * -0.2 + move2 * -1.5);
 }

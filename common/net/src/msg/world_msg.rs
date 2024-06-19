@@ -149,9 +149,13 @@ pub enum SiteKind {
     Tree,
     Gnarling,
     ChapelSite,
+    Terracotta,
     Bridge,
     Adlet,
+    Haniwa,
     DwarvenMine,
+    Cultist,
+    Sahagin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

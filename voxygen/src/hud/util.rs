@@ -5,10 +5,10 @@ use common::{
         item::{
             armor::{Armor, ArmorKind, Protection},
             tool::{Hands, Tool, ToolKind},
-            Effects, Item, ItemDefinitionId, ItemDesc, ItemKind, MaterialKind,
+            Effects, Item, ItemDefinitionId, ItemDesc, ItemI18n, ItemKind, MaterialKind,
             MaterialStatManifest,
         },
-        BuffKind,
+        BuffData, BuffKind,
     },
     effect::Effect,
     trade::{Good, SitePrices},
@@ -61,6 +61,31 @@ pub fn price_desc<'a>(
     Some((buy_string, sell_string, deal_goodness))
 }
 
+pub fn item_text<'a, I: ItemDesc + ?Sized>(
+    item: &I,
+    i18n: &'a Localization,
+    i18n_spec: &'a ItemI18n,
+) -> (String, String) {
+    let (title, desc) = item.i18n(i18n_spec);
+
+    (i18n.get_content(&title), i18n.get_content(&desc))
+}
+
+pub fn describe<'a, I: ItemDesc + ?Sized>(
+    item: &I,
+    i18n: &'a Localization,
+    i18n_spec: &'a ItemI18n,
+) -> String {
+    let (title, _) = item_text(item, i18n, i18n_spec);
+    let amount = item.amount();
+
+    if amount.get() > 1 {
+        format!("{amount} x {title}")
+    } else {
+        title
+    }
+}
+
 pub fn kind_text<'a>(kind: &ItemKind, i18n: &'a Localization) -> Cow<'a, str> {
     match kind {
         ItemKind::Armor(armor) => armor_kind(armor, i18n),
@@ -87,6 +112,7 @@ pub fn kind_text<'a>(kind: &ItemKind, i18n: &'a Localization) -> Cow<'a, str> {
         ItemKind::Ingredient { .. } => i18n.get_msg("common-kind-ingredient"),
         ItemKind::Lantern { .. } => i18n.get_msg("common-kind-lantern"),
         ItemKind::TagExamples { .. } => Cow::Borrowed(""),
+        ItemKind::RecipeGroup { .. } => i18n.get_msg("common-kind-recipegroup"),
     }
 }
 
@@ -108,17 +134,17 @@ pub fn stats_count(item: &dyn ItemDesc, msm: &MaterialStatManifest) -> usize {
             armor_stats.energy_reward.is_some() as usize
                 + armor_stats.energy_max.is_some() as usize
                 + armor_stats.stealth.is_some() as usize
-                + armor_stats.crit_power.is_some() as usize
+                + armor_stats.precision_power.is_some() as usize
                 + armor_stats.poise_resilience.is_some() as usize
                 + armor_stats.protection.is_some() as usize
                 + (item.num_slots() > 0) as usize
         },
-        ItemKind::Tool(_) => 7,
+        ItemKind::Tool(_) => 6,
         ItemKind::Consumable { effects, .. } => match effects {
             Effects::Any(_) | Effects::One(_) => 1,
             Effects::All(effects) => effects.len(),
         },
-        ItemKind::ModularComponent { .. } => 7,
+        ItemKind::ModularComponent { .. } => 6,
         _ => 0,
     };
     if item.has_durability() {
@@ -139,6 +165,79 @@ pub fn line_count(item: &dyn ItemDesc, msm: &MaterialStatManifest, i18n: &Locali
             lines
         },
         _ => stats_count(item, msm),
+    }
+}
+
+/// Returns i18n key for a buff with title, .desc and optionally .stat
+///
+/// NOTE: not to be confused with buff key for buff's kill message
+fn buff_key(buff: BuffKind) -> &'static str {
+    match buff {
+        // Buffs
+        BuffKind::Regeneration => "buff-heal",
+        BuffKind::Saturation => "buff-saturation",
+        BuffKind::Potion => "buff-potion",
+        BuffKind::Agility => "buff-agility",
+        BuffKind::CampfireHeal => "buff-campfire_heal",
+        BuffKind::EnergyRegen => "buff-energy_regen",
+        BuffKind::IncreaseMaxHealth => "buff-increase_max_health",
+        BuffKind::IncreaseMaxEnergy => "buff-increase_max_energy",
+        BuffKind::Invulnerability => "buff-invulnerability",
+        BuffKind::ProtectingWard => "buff-protectingward",
+        BuffKind::Frenzied => "buff-frenzied",
+        BuffKind::Hastened => "buff-hastened",
+        BuffKind::Fortitude => "buff-fortitude",
+        BuffKind::Reckless => "buff-reckless",
+        // BuffKind::SalamanderAspect => "buff-salamanderaspect",
+        BuffKind::Flame => "buff-burn",
+        BuffKind::Frigid => "buff-frigid",
+        BuffKind::Lifesteal => "buff-lifesteal",
+        BuffKind::ImminentCritical => "buff-imminentcritical",
+        BuffKind::Fury => "buff-fury",
+        BuffKind::Sunderer => "buff-sunderer",
+        BuffKind::Defiance => "buff-defiance",
+        BuffKind::Bloodfeast => "buff-bloodfeast",
+        BuffKind::Berserk => "buff-berserk",
+        BuffKind::ScornfulTaunt => "buff-scornfultaunt",
+        BuffKind::Tenacity => "buff-tenacity",
+        BuffKind::Resilience => "buff-resilience",
+        // Debuffs
+        BuffKind::Bleeding => "buff-bleed",
+        BuffKind::Cursed => "buff-cursed",
+        BuffKind::Burning => "buff-burn",
+        BuffKind::Crippled => "buff-crippled",
+        BuffKind::Frozen => "buff-frozen",
+        BuffKind::Wet => "buff-wet",
+        BuffKind::Ensnared => "buff-ensnared",
+        BuffKind::Poisoned => "buff-poisoned",
+        BuffKind::Parried => "buff-parried",
+        BuffKind::PotionSickness => "buff-potionsickness",
+        BuffKind::Heatstroke => "buff-heatstroke",
+        BuffKind::Rooted => "buff-rooted",
+        BuffKind::Winded => "buff-winded",
+        BuffKind::Concussion => "buff-concussion",
+        BuffKind::Staggered => "buff-staggered",
+        // Neutral
+        BuffKind::Polymorphed => "buff-polymorphed",
+    }
+}
+
+/// Returns localized buff title
+pub fn get_buff_title(buff: BuffKind, i18n: &Localization) -> Cow<str> {
+    let key = buff_key(buff);
+
+    i18n.get_msg(key)
+}
+
+/// Returns localized buff description
+pub fn get_buff_desc(buff: BuffKind, data: BuffData, i18n: &Localization) -> Cow<str> {
+    let key = buff_key(buff);
+    if let BuffKind::CampfireHeal = buff {
+        i18n.get_attr_ctx(key, "desc", &i18n::fluent_args! {
+            "rate" => data.strength * 100.0
+        })
+    } else {
+        i18n.get_attr(key, "desc")
     }
 }
 
@@ -165,31 +264,42 @@ pub fn consumable_desc(effects: &Effects, i18n: &Localization) -> Vec<String> {
                         |input: f32| format!("{:.1}", input).trim_end_matches(".0").to_string();
 
                     let buff_desc = match buff.kind {
-                        BuffKind::Saturation | BuffKind::Regeneration | BuffKind::Potion => i18n
-                            .get_msg_ctx("buff-stat-health", &i18n::fluent_args! {
+                        // These share common buff-key and show full possible regen
+                        BuffKind::Saturation | BuffKind::Regeneration | BuffKind::Potion => {
+                            let key = "buff-heal";
+                            i18n.get_attr_ctx(key, "stat", &i18n::fluent_args! {
                                 "str_total" => format_float(str_total),
-                            }),
+                            })
+                        },
+                        // Shows its full possible regen
                         BuffKind::EnergyRegen => {
-                            i18n.get_msg_ctx("buff-stat-energy_regen", &i18n::fluent_args! {
+                            let key = buff_key(buff.kind);
+                            i18n.get_attr_ctx(key, "stat", &i18n::fluent_args! {
                                 "str_total" => format_float(str_total),
                             })
                         },
-                        BuffKind::IncreaseMaxEnergy => {
-                            i18n.get_msg_ctx("buff-stat-increase_max_energy", &i18n::fluent_args! {
+                        // Show buff strength
+                        BuffKind::IncreaseMaxEnergy
+                        | BuffKind::IncreaseMaxHealth => {
+                            let key = buff_key(buff.kind);
+                            i18n.get_attr_ctx(key, "stat", &i18n::fluent_args! {
                                 "strength" => format_float(strength),
                             })
                         },
-                        BuffKind::IncreaseMaxHealth => {
-                            i18n.get_msg_ctx("buff-stat-increase_max_health", &i18n::fluent_args! {
+                        // Show percentage
+                        BuffKind::PotionSickness
+                        | BuffKind::Agility => {
+                            let key = buff_key(buff.kind);
+                            i18n.get_attr_ctx(key, "stat", &i18n::fluent_args! {
                                 "strength" => format_float(strength),
                             })
                         },
-                        BuffKind::PotionSickness => {
-                            i18n.get_msg_ctx("buff-stat-potionsickness", &i18n::fluent_args! {
-                                "strength" => format_float(strength * 100.0),
-                            })
+                        // Independent of strength
+                        BuffKind::Invulnerability => {
+                            let key = buff_key(buff.kind);
+                            i18n.get_attr(key, "stat")
                         },
-                        BuffKind::Invulnerability => i18n.get_msg("buff-stat-invulnerability"),
+                        // Have no stat description
                         BuffKind::Bleeding
                         | BuffKind::Burning
                         | BuffKind::CampfireHeal
@@ -205,7 +315,7 @@ pub fn consumable_desc(effects: &Effects, i18n: &Localization) -> Vec<String> {
                         | BuffKind::Fortitude
                         | BuffKind::Parried
                         | BuffKind::Reckless
-                        | BuffKind::Polymorphed(_)
+                        | BuffKind::Polymorphed
                         | BuffKind::Flame
                         | BuffKind::Frigid
                         | BuffKind::Lifesteal
@@ -215,7 +325,15 @@ pub fn consumable_desc(effects: &Effects, i18n: &Localization) -> Vec<String> {
                         | BuffKind::Sunderer
                         | BuffKind::Defiance
                         | BuffKind::Bloodfeast
-                        | BuffKind::Berserk => Cow::Borrowed(""),
+                        | BuffKind::Berserk
+                        | BuffKind::Heatstroke
+                        | BuffKind::ScornfulTaunt
+                        | BuffKind::Rooted
+                        | BuffKind::Winded
+                        | BuffKind::Concussion
+                        | BuffKind::Staggered
+                        | BuffKind::Tenacity
+                        | BuffKind::Resilience => Cow::Borrowed(""),
                     };
 
                     write!(&mut description, "{}", buff_desc).unwrap();
@@ -230,10 +348,11 @@ pub fn consumable_desc(effects: &Effects, i18n: &Localization) -> Vec<String> {
                                 })
                             },
                             BuffKind::IncreaseMaxEnergy
+                            | BuffKind::Agility
                             | BuffKind::IncreaseMaxHealth
                             | BuffKind::Invulnerability
                             | BuffKind::PotionSickness
-                            | BuffKind::Polymorphed(_) => {
+                            | BuffKind::Polymorphed => {
                                 i18n.get_msg_ctx("buff-text-for_seconds", &i18n::fluent_args! {
                                     "dur_secs" => dur_secs
                                 })
@@ -263,7 +382,15 @@ pub fn consumable_desc(effects: &Effects, i18n: &Localization) -> Vec<String> {
                             | BuffKind::Sunderer
                             | BuffKind::Defiance
                             | BuffKind::Bloodfeast
-                            | BuffKind::Berserk => Cow::Borrowed(""),
+                            | BuffKind::Berserk
+                            | BuffKind::Heatstroke
+                            | BuffKind::ScornfulTaunt
+                            | BuffKind::Rooted
+                            | BuffKind::Winded
+                            | BuffKind::Concussion
+                            | BuffKind::Staggered
+                            | BuffKind::Tenacity
+                            | BuffKind::Resilience => Cow::Borrowed(""),
                         }
                     } else if let BuffKind::Saturation
                     | BuffKind::Regeneration
@@ -293,6 +420,7 @@ fn armor_kind<'a>(armor: &Armor, i18n: &'a Localization) -> Cow<'a, str> {
         ArmorKind::Pants => i18n.get_msg("hud-bag-legs"),
         ArmorKind::Foot => i18n.get_msg("hud-bag-feet"),
         ArmorKind::Back => i18n.get_msg("hud-bag-back"),
+        ArmorKind::Backpack => i18n.get_msg("hud-bag-backpack"),
         ArmorKind::Ring => i18n.get_msg("hud-bag-ring"),
         ArmorKind::Neck => i18n.get_msg("hud-bag-neck"),
         ArmorKind::Head => i18n.get_msg("hud-bag-head"),
@@ -408,6 +536,7 @@ pub fn ability_image(imgs: &img_ids::Imgs, ability_id: &str) -> image::Id {
         "veloren.core.pseudo_abilities.sword.secondary_ability" => imgs.sword_secondary_ability,
         "common.abilities.sword.basic_thrust" => imgs.sword_basic_thrust,
         "common.abilities.sword.heavy_slam" => imgs.sword_heavy_slam,
+        "common.abilities.sword.agile_perforate" => imgs.sword_agile_perforate,
         "common.abilities.sword.agile_dual_perforate" => imgs.sword_agile_perforate,
         "common.abilities.sword.defensive_vital_jab" => imgs.sword_defensive_vital_jab,
         "common.abilities.sword.crippling_deep_rend" => imgs.sword_crippling_deep_rend,
@@ -512,9 +641,31 @@ pub fn ability_image(imgs: &img_ids::Imgs, ability_id: &str) -> image::Id {
         "common.abilities.axe.bulkhead" => imgs.axe_bulkhead,
         "common.abilities.axe.capsize" => imgs.axe_capsize,
         // Hammer
-        "common.abilities.hammer.singlestrike" => imgs.twohhammer_m1,
-        "common.abilities.hammer.charged" => imgs.hammergolf,
-        "common.abilities.hammer.leap" => imgs.hammerleap,
+        "common.abilities.hammer.solid_smash" => imgs.hammer_solid_smash,
+        "common.abilities.hammer.wide_wallop" => imgs.hammer_wide_wallop,
+        "common.abilities.hammer.scornful_swipe" => imgs.hammer_scornful_swipe,
+        "common.abilities.hammer.tremor" => imgs.hammer_tremor,
+        "common.abilities.hammer.vigorous_bash" => imgs.hammer_vigorous_bash,
+        "common.abilities.hammer.heavy_whorl" => imgs.hammer_heavy_whorl,
+        "common.abilities.hammer.dual_heavy_whorl" => imgs.hammer_heavy_whorl,
+        "common.abilities.hammer.intercept" => imgs.hammer_intercept,
+        "common.abilities.hammer.dual_intercept" => imgs.hammer_intercept,
+        "common.abilities.hammer.retaliate" => imgs.hammer_retaliate,
+        "common.abilities.hammer.spine_cracker" => imgs.hammer_spine_cracker,
+        "common.abilities.hammer.breach" => imgs.hammer_breach,
+        "common.abilities.hammer.pile_driver" => imgs.hammer_pile_driver,
+        "common.abilities.hammer.lung_pummel" => imgs.hammer_lung_pummel,
+        "common.abilities.hammer.helm_crusher" => imgs.hammer_helm_crusher,
+        "common.abilities.hammer.iron_tempest" => imgs.hammer_iron_tempest,
+        "common.abilities.hammer.dual_iron_tempest" => imgs.hammer_iron_tempest,
+        "common.abilities.hammer.upheaval" => imgs.hammer_upheaval,
+        "common.abilities.hammer.dual_upheaval" => imgs.hammer_upheaval,
+        "common.abilities.hammer.rampart" => imgs.hammer_rampart,
+        "common.abilities.hammer.tenacity" => imgs.hammer_tenacity,
+        "common.abilities.hammer.thunderclap" => imgs.hammer_thunderclap,
+        "common.abilities.hammer.seismic_shock" => imgs.hammer_seismic_shock,
+        "common.abilities.hammer.earthshaker" => imgs.hammer_earthshaker,
+        "common.abilities.hammer.judgement" => imgs.hammer_judgement,
         // Bow
         "common.abilities.bow.charged" => imgs.bow_m1,
         "common.abilities.bow.repeater" => imgs.bow_m2,
@@ -528,8 +679,8 @@ pub fn ability_image(imgs: &img_ids::Imgs, ability_id: &str) -> image::Id {
         "common.abilities.sceptre.healingaura" => imgs.skill_sceptre_heal,
         "common.abilities.sceptre.wardingaura" => imgs.skill_sceptre_aura,
         // Shield
-        "common.abilities.shield.tempbasic" => imgs.onehshield_m1,
-        "common.abilities.shield.block" => imgs.onehshield_m2,
+        "common.abilities.shield.singlestrike" => imgs.onehshield_m1,
+        "common.abilities.shield.power_guard" => imgs.onehshield_m1,
         // Dagger
         "common.abilities.dagger.tempbasic" => imgs.onehdagger_m1,
         // Pickaxe
@@ -553,6 +704,11 @@ pub fn ability_image(imgs: &img_ids::Imgs, ability_id: &str) -> image::Id {
         "common.abilities.music.wildskin_drum" => imgs.instrument,
         "common.abilities.music.icy_talharpa" => imgs.instrument,
         "common.abilities.music.washboard" => imgs.instrument,
+        "common.abilities.music.steeltonguedrum" => imgs.instrument,
+        "common.abilities.music.shamisen" => imgs.instrument,
+        // Glider
+        "common.abilities.debug.glide_boost" => imgs.flyingrod_m2,
+        "common.abilities.debug.glide_speeder" => imgs.flyingrod_m1,
         _ => imgs.not_found,
     }
 }

@@ -42,6 +42,28 @@ use tracing::{info, warn};
 use veloren_voxygen::ui::egui::EguiState;
 
 fn main() {
+    // Process CLI arguments
+    use clap::Parser;
+    let args = cli::Args::parse();
+
+    if let Some(command) = args.command {
+        match command {
+            cli::Commands::ListWgpuBackends => {
+                #[cfg(target_os = "windows")]
+                let backends = &["opengl", "dx12", "vulkan"];
+                #[cfg(target_os = "linux")]
+                let backends = &["opengl", "vulkan"];
+                #[cfg(target_os = "macos")]
+                let backends = &["metal"];
+
+                for backend in backends {
+                    println!("{backend}");
+                }
+                return;
+            },
+        }
+    }
+
     #[cfg(feature = "tracy")]
     common_base::tracy_client::Client::start();
 
@@ -92,10 +114,6 @@ fn main() {
     }
 
     panic_handler::set_panic_hook(log_filename, logs_dir);
-
-    // Process CLI arguments
-    use clap::Parser;
-    let args = cli::Args::parse();
 
     // Setup tokio runtime
     use common::consts::MIN_RECOMMENDED_TOKIO_THREADS;
@@ -164,7 +182,7 @@ fn main() {
                 ?selected_language,
                 "Impossible to load language: change to the default language (English) instead.",
             );
-            settings.language.selected_language = i18n::REFERENCE_LANG.to_owned();
+            i18n::REFERENCE_LANG.clone_into(&mut settings.language.selected_language);
             LocalizationHandle::load_expect(&settings.language.selected_language)
         });
     i18n.set_english_fallback(settings.language.use_english_fallback);

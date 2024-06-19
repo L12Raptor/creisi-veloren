@@ -294,7 +294,7 @@ pub fn generate_mesh<'a>(
         let d = d + 2;
         let flat = {
             let mut volume = vol.cached();
-            const AIR: Block = Block::air(common::terrain::sprite::SpriteKind::Empty);
+            const AIR: Block = Block::empty();
             // TODO: Once we can manage it sensibly, consider using something like
             // Option<Block> instead of just assuming air.
             let mut flat = vec![AIR; (w * h * d) as usize];
@@ -305,7 +305,7 @@ pub fn generate_mesh<'a>(
                         let wpos = range.min + Vec3::new(x, y, z);
                         let block = volume
                             .get(wpos)
-                            .map(|b| *b)
+                            .copied()
                             // TODO: Replace with None or some other more reasonable value,
                             // since it's not clear this will work properly with liquid.
                             .unwrap_or(AIR);
@@ -529,8 +529,8 @@ pub fn generate_mesh<'a>(
     (
         opaque_deep
             .into_iter()
-            .chain(opaque_shallow.into_iter())
-            .chain(opaque_surface.into_iter())
+            .chain(opaque_shallow)
+            .chain(opaque_surface)
             .collect(),
         fluid_mesh,
         Mesh::new(),

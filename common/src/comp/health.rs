@@ -1,6 +1,4 @@
-use crate::{
-    combat::DamageContributor, comp, consts::HP_PER_LEVEL, resources::Time, uid::Uid, DamageSource,
-};
+use crate::{combat::DamageContributor, comp, resources::Time, uid::Uid, DamageSource};
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use specs::{Component, DerefFlaggedStorage};
@@ -8,6 +6,7 @@ use std::{convert::TryFrom, ops::Mul};
 
 /// Specifies what and how much changed current health
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct HealthChange {
     /// The amount of the health change, negative is damage, positive is healing
     pub amount: f32,
@@ -18,8 +17,8 @@ pub struct HealthChange {
     pub cause: Option<DamageSource>,
     /// The time that the health change occurred at
     pub time: Time,
-    /// A boolean that tells you if the change was a crit
-    pub crit: bool,
+    /// A boolean that tells you if the change was a precsie hit
+    pub precise: bool,
     /// A random ID, used to group up health changes from the same attack
     pub instance: u64,
 }
@@ -116,11 +115,8 @@ impl Health {
         self.current = self.current.min(self.maximum);
     }
 
-    pub fn new(body: comp::Body, level: u16) -> Self {
-        let health = u32::from(
-            body.base_health()
-                .saturating_add(HP_PER_LEVEL.saturating_mul(level)),
-        ) * Self::SCALING_FACTOR_INT;
+    pub fn new(body: comp::Body) -> Self {
+        let health = u32::from(body.base_health()) * Self::SCALING_FACTOR_INT;
         Health {
             current: health,
             base_max: health,
@@ -129,23 +125,13 @@ impl Health {
                 amount: 0.0,
                 by: None,
                 cause: None,
-                crit: false,
+                precise: false,
                 time: Time(0.0),
                 instance: rand::random(),
             },
             is_dead: false,
             damage_contributors: HashMap::new(),
         }
-    }
-
-    // TODO: Delete this once stat points will be a thing
-    pub fn update_max_hp(&mut self, body: comp::Body, level: u16) {
-        let old_max = self.base_max;
-        self.base_max = u32::from(
-            body.base_health()
-                .saturating_add(HP_PER_LEVEL.saturating_mul(level)),
-        ) * Self::SCALING_FACTOR_INT;
-        self.current = (self.current + self.base_max - old_max).min(self.maximum);
     }
 
     /// Returns a boolean if the delta was not zero.
@@ -211,7 +197,7 @@ impl Health {
                 amount: 0.0,
                 by: None,
                 cause: None,
-                crit: false,
+                precise: false,
                 time: Time(0.0),
                 instance: rand::random(),
             },
@@ -246,7 +232,7 @@ mod tests {
             time: Time(123.0),
             by: Some(damage_contrib),
             cause: None,
-            crit: false,
+            precise: false,
             instance: rand::random(),
         };
 
@@ -273,7 +259,7 @@ mod tests {
             time: Time(123.0),
             by: Some(damage_contrib),
             cause: None,
-            crit: false,
+            precise: false,
             instance: rand::random(),
         };
 
@@ -294,7 +280,7 @@ mod tests {
             time: Time(123.0),
             by: Some(damage_contrib),
             cause: None,
-            crit: false,
+            precise: false,
             instance: rand::random(),
         };
         health.change_by(health_change);
@@ -321,7 +307,7 @@ mod tests {
             time: Time(10.0),
             by: Some(damage_contrib1),
             cause: None,
-            crit: false,
+            precise: false,
             instance: rand::random(),
         };
         health.change_by(health_change);
@@ -332,7 +318,7 @@ mod tests {
             time: Time(100.0),
             by: Some(damage_contrib2),
             cause: None,
-            crit: false,
+            precise: false,
             instance: rand::random(),
         };
         health.change_by(health_change);
@@ -347,7 +333,7 @@ mod tests {
             time: Time(620.0),
             by: Some(damage_contrib2),
             cause: None,
-            crit: false,
+            precise: false,
             instance: rand::random(),
         };
         health.change_by(health_change);

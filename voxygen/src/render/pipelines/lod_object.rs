@@ -1,5 +1,6 @@
 use super::super::{AaMode, GlobalsLayouts, Vertex as VertexTrait};
 use bytemuck::{Pod, Zeroable};
+use common::util::srgb_to_linear;
 use std::mem;
 use vek::*;
 
@@ -9,23 +10,30 @@ pub struct Vertex {
     pos: [f32; 3],
     norm: [f32; 3],
     col: [f32; 3],
+    flags: u32,
 }
 
 impl Vertex {
-    pub fn new(pos: Vec3<f32>, norm: Vec3<f32>, col: Rgb<f32>) -> Self {
+    pub fn new(
+        pos: Vec3<f32>,
+        norm: Vec3<f32>,
+        col: Rgb<f32>,
+        flags: crate::scene::lod::VertexFlags,
+    ) -> Self {
         Self {
             pos: pos.into_array(),
             norm: norm.into_array(),
             col: col.into_array(),
+            flags: flags.bits() as u32,
         }
     }
 
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
+        const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Uint32];
         wgpu::VertexBufferLayout {
             array_stride: Self::STRIDE,
-            step_mode: wgpu::InputStepMode::Vertex,
+            step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &ATTRIBUTES,
         }
     }
@@ -40,28 +48,28 @@ impl VertexTrait for Vertex {
 #[derive(Copy, Clone, Debug, Zeroable, Pod)]
 pub struct Instance {
     inst_pos: [f32; 3],
-    inst_col: [u8; 4],
+    inst_col: [f32; 3],
     flags: u32,
 }
 
 impl Instance {
-    pub fn new(inst_pos: Vec3<f32>, col: Rgb<u8>, flags: common::lod::Flags) -> Self {
+    pub fn new(inst_pos: Vec3<f32>, col: Rgb<u8>, flags: common::lod::InstFlags) -> Self {
         Self {
             inst_pos: inst_pos.into_array(),
-            inst_col: Rgba::new(col.r, col.g, col.b, 255).into_array(),
+            inst_col: srgb_to_linear(col.map(|c| c as f32 / 255.0)).into_array(),
             flags: flags.bits() as u32,
         }
     }
 
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-            3 => Float32x3,
-            4 => Uint8x4,
-            5 => Uint32,
+            4 => Float32x3,
+            5 => Float32x3,
+            6 => Uint32,
         ];
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::InputStepMode::Instance,
+            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTRIBUTES,
         }
     }
@@ -85,6 +93,7 @@ impl LodObjectPipeline {
         fs_module: &wgpu::ShaderModule,
         global_layout: &GlobalsLayouts,
         aa_mode: AaMode,
+        format: wgpu::TextureFormat,
     ) -> Self {
         common_base::span!(_guard, "LodObjectPipeline::new");
         let render_pipeline_layout =
@@ -109,7 +118,7 @@ impl LodObjectPipeline {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
-                clamp_depth: false,
+                unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
@@ -121,7 +130,7 @@ impl LodObjectPipeline {
                     front: wgpu::StencilFaceState::IGNORE,
                     back: wgpu::StencilFaceState::IGNORE,
                     read_mask: !0,
-                    write_mask: !0,
+                    write_mask: 0,
                 },
                 bias: wgpu::DepthBiasState {
                     constant: 0,
@@ -138,18 +147,19 @@ impl LodObjectPipeline {
                 module: fs_module,
                 entry_point: "main",
                 targets: &[
-                    wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba16Float,
+                    Some(wgpu::ColorTargetState {
+                        format,
                         blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrite::ALL,
-                    },
-                    wgpu::ColorTargetState {
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8Uint,
                         blend: None,
-                        write_mask: wgpu::ColorWrite::ALL,
-                    },
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
                 ],
             }),
+            multiview: None,
         });
 
         Self {

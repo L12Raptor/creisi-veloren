@@ -56,7 +56,7 @@ impl Asset for MaterialStatManifest {
     const EXTENSION: &'static str = "ron";
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModularBase {
     Tool,
 }
@@ -155,9 +155,11 @@ impl ModularBase {
                                 .components()
                                 .iter()
                                 .find_map(|mat| match mat.kind() {
+                                    #[allow(deprecated)]
                                     Cow::Owned(ItemKind::Ingredient { descriptor, .. }) => {
                                         Some(Cow::Owned(descriptor))
                                     },
+                                    #[allow(deprecated)]
                                     Cow::Borrowed(ItemKind::Ingredient { descriptor, .. }) => {
                                         Some(Cow::Borrowed(descriptor.as_str()))
                                     },
@@ -234,6 +236,7 @@ impl ModularBase {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ModularComponent {
     ToolPrimaryComponent {
         toolkind: ToolKind,
@@ -323,7 +326,7 @@ type PrimaryComponentPool = HashMap<(ToolKind, String), Vec<(Item, Option<Hands>
 type SecondaryComponentPool = HashMap<ToolKind, Vec<(Arc<ItemDef>, Option<Hands>)>>;
 
 lazy_static! {
-    static ref PRIMARY_COMPONENT_POOL: PrimaryComponentPool = {
+    pub static ref PRIMARY_COMPONENT_POOL: PrimaryComponentPool = {
         let mut component_pool = HashMap::new();
 
         // Load recipe book
@@ -509,12 +512,13 @@ pub fn generate_weapons(
                 ability_map,
                 msm,
             );
-            weapons.push(Item::new_from_item_base(
+            let it = Item::new_from_item_base(
                 ItemBase::Modular(ModularBase::Tool),
                 vec![comp.duplicate(ability_map, msm), secondary],
                 ability_map,
                 msm,
-            ));
+            );
+            weapons.push(it);
         }
     }
 
@@ -582,6 +586,7 @@ pub fn modify_name<'a>(item_name: &'a str, item: &'a Item) -> Cow<'a, str> {
             .components()
             .iter()
             .find_map(|comp| match &*comp.kind() {
+                #[allow(deprecated)]
                 ItemKind::Ingredient { descriptor, .. } => Some(descriptor.to_owned()),
                 _ => None,
             })

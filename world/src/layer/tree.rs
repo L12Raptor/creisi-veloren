@@ -47,7 +47,7 @@ pub fn tree_valid_at(
         || col.path.map(|(d, _, _, _)| d < 12.0).unwrap_or(false)
         || info.map_or(false, |info| {
             tunnel_bounds_at(wpos, &info, &info.land())
-                .any(|(_, z_range, _, _)| z_range.contains(&(col.alt as i32 - 2)))
+                .any(|(_, z_range, _, _, _, _)| z_range.contains(&(col.alt as i32 - 2)))
         })
     {
         return false;
@@ -69,12 +69,13 @@ pub fn apply_trees_to(
     #[allow(clippy::large_enum_variant)]
     enum TreeModel {
         Structure(Structure),
-        Procedural(ProceduralTree, StructureBlock),
+        Procedural(ProceduralTree),
     }
 
     struct Tree {
         pos: Vec3<i32>,
         model: TreeModel,
+        leaf_block: StructureBlock,
         seed: u32,
         units: (Vec2<i32>, Vec2<i32>),
         lights: bool,
@@ -95,6 +96,8 @@ pub fn apply_trees_to(
 
             let col = ColumnGen::new(info.chunks()).get((wpos, info.index(), calendar))?;
 
+            let crowding = col.tree_density;
+
             if !tree_valid_at(wpos, &col, Some(info), seed) {
                 return None;
             }
@@ -105,124 +108,103 @@ pub fn apply_trees_to(
                     let models: AssetHandle<_> = match forest_kind {
                         ForestKind::Oak if QUIRKY_RAND.chance(seed + 1, 1.0 / 16.0) => *OAK_STUMPS,
                         ForestKind::Oak if QUIRKY_RAND.chance(seed + 2, 1.0 / 20.0) => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::apple(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::TemperateLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::apple(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Palm => *PALMS,
                         ForestKind::Acacia => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::acacia(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::Acacia,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::acacia(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Baobab => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::baobab(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::Baobab,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::baobab(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Oak => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::oak(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::TemperateLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::oak(&mut RandomPerm::new(seed), scale, crowding),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Dead => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::dead(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::TemperateLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::dead(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Chestnut => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::chestnut(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::Chestnut,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::chestnut(&mut RandomPerm::new(seed), scale, crowding),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Pine => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::pine(&mut RandomPerm::new(seed), scale, calendar),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::PineLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::pine(&mut RandomPerm::new(seed), scale, calendar),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Cedar => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::cedar(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::PineLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::cedar(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Redwood => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::redwood(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::PineLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::redwood(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Birch => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::birch(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::TemperateLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::birch(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Frostpine => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::frostpine(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::FrostpineLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::frostpine(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
 
                         ForestKind::Mangrove => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::jungle(&mut RandomPerm::new(seed), scale),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::Mangrove,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::jungle(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                         ForestKind::Swamp => *SWAMP_TREES,
                         ForestKind::Giant => {
-                            break 'model TreeModel::Procedural(
-                                ProceduralTree::generate(
-                                    TreeConfig::giant(&mut RandomPerm::new(seed), scale, inhabited),
-                                    &mut RandomPerm::new(seed),
-                                ),
-                                StructureBlock::TemperateLeaves,
-                            );
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::giant(&mut RandomPerm::new(seed), scale, inhabited),
+                                &mut RandomPerm::new(seed),
+                            ));
+                        },
+                        ForestKind::Mapletree => {
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::oak(&mut RandomPerm::new(seed), scale, crowding),
+                                &mut RandomPerm::new(seed),
+                            ));
+                        },
+                        ForestKind::Cherry => {
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::cherry(&mut RandomPerm::new(seed), scale),
+                                &mut RandomPerm::new(seed),
+                            ));
+                        },
+                        ForestKind::AutumnTree => {
+                            break 'model TreeModel::Procedural(ProceduralTree::generate(
+                                TreeConfig::oak(&mut RandomPerm::new(seed), scale, crowding),
+                                &mut RandomPerm::new(seed),
+                            ));
                         },
                     };
 
@@ -233,6 +215,7 @@ pub fn apply_trees_to(
                         .clone(),
                     )
                 },
+                leaf_block: forest_kind.leaf_block(),
                 seed,
                 units: UNIT_CHOOSER.get(seed),
                 lights: inhabited,
@@ -242,7 +225,7 @@ pub fn apply_trees_to(
         for tree in trees {
             let bounds = match &tree.model {
                 TreeModel::Structure(s) => s.get_bounds(),
-                TreeModel::Procedural(t, _) => t.get_bounds().map(|e| e as i32),
+                TreeModel::Procedural(t) => t.get_bounds().map(|e| e as i32),
             };
 
             let rpos2d = (wpos2d - tree.pos.xy())
@@ -255,7 +238,7 @@ pub fn apply_trees_to(
 
             let hanging_sprites = match &tree.model {
                 TreeModel::Structure(_) => [(0.0004, SpriteKind::Beehive)].as_ref(),
-                TreeModel::Procedural(t, _) => t.config.hanging_sprites,
+                TreeModel::Procedural(t) => t.config.hanging_sprites,
             };
 
             let mut is_top = true;
@@ -276,7 +259,7 @@ pub fn apply_trees_to(
                     info.index(),
                     if let Some(block) = match &tree.model {
                         TreeModel::Structure(s) => s.get(model_pos).ok(),
-                        TreeModel::Procedural(t, leaf_block) => Some(
+                        TreeModel::Procedural(t) => Some(
                             match t.is_branch_or_leaves_at(model_pos.map(|e| e as f32 + 0.5)) {
                                 (_, _, true, _) => {
                                     sblock = StructureBlock::Filled(
@@ -287,7 +270,7 @@ pub fn apply_trees_to(
                                 },
                                 (_, _, _, true) => &StructureBlock::None,
                                 (true, _, _, _) => &t.config.trunk_block,
-                                (_, true, _, _) => leaf_block,
+                                (_, true, _, _) => &tree.leaf_block,
                                 _ => &StructureBlock::None,
                             },
                         ),
@@ -397,21 +380,21 @@ pub struct TreeConfig {
 }
 
 impl TreeConfig {
-    pub fn oak(rng: &mut impl Rng, scale: f32) -> Self {
+    pub fn oak(rng: &mut impl Rng, scale: f32, crowding: f32) -> Self {
         let scale = scale * (0.8 + rng.gen::<f32>().powi(2) * 0.5);
         let log_scale = 1.0 + scale.log2().max(0.0);
 
         Self {
-            trunk_len: 9.0 * scale,
-            trunk_radius: 2.0 * scale,
-            branch_child_len: 0.9,
+            trunk_len: 11.0 * scale,
+            trunk_radius: 1.5 * scale,
+            branch_child_len: 0.75,
             branch_child_radius: 0.75,
             branch_child_radius_lerp: true,
-            leaf_radius: 2.5 * log_scale..3.25 * log_scale,
+            leaf_radius: 2.0 * log_scale..2.5 * log_scale,
             leaf_radius_scaled: 0.0,
-            straightness: 0.45,
+            straightness: 0.3 + crowding * 0.3,
             max_depth: 4,
-            splits: 2.25..3.25,
+            splits: 4.25..6.25,
             split_range: 0.75..1.5,
             branch_len_bias: 0.0,
             leaf_vertical_scale: 1.0,
@@ -551,20 +534,20 @@ impl TreeConfig {
         let log_scale = 1.0 + scale.log2().max(0.0);
 
         Self {
-            trunk_len: 9.0 * scale,
-            trunk_radius: 2.0 * scale,
-            branch_child_len: 0.9,
-            branch_child_radius: 0.75,
+            trunk_len: 45.0 * scale,
+            trunk_radius: 1.3 * scale,
+            branch_child_len: 0.4,
+            branch_child_radius: 0.6,
             branch_child_radius_lerp: true,
-            leaf_radius: 4.0 * log_scale..5.0 * log_scale,
+            leaf_radius: 2.0 * log_scale..2.5 * log_scale,
             leaf_radius_scaled: 0.0,
-            straightness: 0.4,
-            max_depth: 4,
-            splits: 1.75..2.0,
-            split_range: 0.75..1.5,
-            branch_len_bias: 0.0,
-            leaf_vertical_scale: 0.4,
-            proportionality: 0.0,
+            straightness: 0.3,
+            max_depth: 2,
+            splits: 16.0..18.0,
+            split_range: 0.2..1.2,
+            branch_len_bias: 0.7,
+            leaf_vertical_scale: 0.3,
+            proportionality: 0.7,
             inhabited: false,
             hanging_sprites: &[(0.00007, SpriteKind::Beehive)],
             trunk_block: StructureBlock::Filled(BlockKind::Wood, Rgb::new(110, 68, 65)),
@@ -621,7 +604,7 @@ impl TreeConfig {
         }
     }
 
-    pub fn chestnut(rng: &mut impl Rng, scale: f32) -> Self {
+    pub fn chestnut(rng: &mut impl Rng, scale: f32, crowding: f32) -> Self {
         let scale = scale * (0.85 + rng.gen::<f32>().powi(4) * 0.3);
         let log_scale = 1.0 + scale.log2().max(0.0);
 
@@ -633,7 +616,7 @@ impl TreeConfig {
             branch_child_radius_lerp: true,
             leaf_radius: 1.5 * log_scale..2.0 * log_scale,
             leaf_radius_scaled: 0.0,
-            straightness: 0.3,
+            straightness: 0.25 + crowding * 0.2,
             max_depth: 5,
             splits: 3.5..4.25,
             split_range: 0.5..1.25,
@@ -677,26 +660,25 @@ impl TreeConfig {
 
     pub fn redwood(rng: &mut impl Rng, scale: f32) -> Self {
         let scale = scale * (1.0 + rng.gen::<f32>().powi(4) * 0.5);
-        let log_scale = 1.0 + scale.log2().max(0.0);
 
         Self {
             trunk_len: 80.0 * scale,
-            trunk_radius: 3.25 * scale,
-            branch_child_len: 0.25 / scale,
-            branch_child_radius: 0.0,
+            trunk_radius: 2.75 * scale,
+            branch_child_len: 0.25,
+            branch_child_radius: 0.3,
             branch_child_radius_lerp: false,
-            leaf_radius: 2.0..3.0,
-            leaf_radius_scaled: 1.5 * log_scale,
+            leaf_radius: 1.3..1.5,
+            leaf_radius_scaled: 0.0,
             straightness: -0.3,
-            max_depth: 1,
+            max_depth: 2,
             splits: 45.0 * scale..50.0 * scale,
-            split_range: 0.45..1.2,
+            split_range: 0.4..1.2,
             branch_len_bias: 0.75,
-            leaf_vertical_scale: 0.45,
+            leaf_vertical_scale: 0.6,
             proportionality: 1.0,
             inhabited: false,
             hanging_sprites: &[(0.001, SpriteKind::Beehive)],
-            trunk_block: StructureBlock::Filled(BlockKind::Wood, Rgb::new(110, 55, 10)),
+            trunk_block: StructureBlock::RedwoodWood,
         }
     }
 
@@ -721,6 +703,31 @@ impl TreeConfig {
             inhabited,
             hanging_sprites: &[(0.00025, SpriteKind::Apple), (0.00025, SpriteKind::Beehive)],
             trunk_block: StructureBlock::Filled(BlockKind::Wood, Rgb::new(110, 68, 22)),
+        }
+    }
+
+    pub fn cherry(rng: &mut impl Rng, scale: f32) -> Self {
+        let scale = scale * (0.8 + rng.gen::<f32>().powi(2) * 0.5);
+        let log_scale = 1.0 + scale.log2().max(0.0);
+
+        Self {
+            trunk_len: 7.0 * scale,
+            trunk_radius: 1.27 * scale,
+            branch_child_len: 0.9,
+            branch_child_radius: 0.70,
+            branch_child_radius_lerp: true,
+            leaf_radius: 2.5 * log_scale..3.0 * log_scale,
+            leaf_radius_scaled: 0.0,
+            straightness: 0.55,
+            max_depth: 4,
+            splits: 2.0..3.0,
+            split_range: 0.75..1.3,
+            branch_len_bias: 0.0,
+            leaf_vertical_scale: 1.0,
+            proportionality: 0.0,
+            inhabited: false,
+            hanging_sprites: &[],
+            trunk_block: StructureBlock::Filled(BlockKind::Wood, Rgb::new(69, 37, 17)),
         }
     }
 }

@@ -1,48 +1,34 @@
-use crate::{combat::Attack, uid::Uid};
+use crate::{combat::Attack, resources::Secs};
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
-use specs::{Component, DerefFlaggedStorage};
-use std::time::Duration;
+use specs::{Component, DerefFlaggedStorage, Entity as EcsEntity};
+use vek::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Properties {
-    pub attack: Attack,
-    pub angle: f32,
-    pub speed: f32,
-    pub duration: Duration,
-    pub owner: Option<Uid>,
-    pub specifier: FrontendSpecifier,
-}
-
-// TODO: Separate components out for cheaper network syncing
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BeamSegment {
-    pub properties: Properties,
-    #[serde(skip)]
-    /// Time that the beam segment was created at
-    /// Used to calculate beam propagation
-    /// Deserialized from the network as `None`
-    pub creation: Option<f64>,
-}
-
-impl Component for BeamSegment {
-    type Storage = DerefFlaggedStorage<Self, specs::DenseVecStorage<Self>>;
-}
-
-impl std::ops::Deref for BeamSegment {
-    type Target = Properties;
-
-    fn deref(&self) -> &Properties { &self.properties }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Beam {
-    pub hit_entities: Vec<Uid>,
-    pub tick_dur: Duration,
-    pub timer: Duration,
+    pub attack: Attack,
+    pub end_radius: f32,
+    pub range: f32,
+    pub duration: Secs,
+    pub tick_dur: Secs,
+    pub specifier: FrontendSpecifier,
+    pub bezier: QuadraticBezier3<f32>,
+    #[serde(skip)]
+    pub hit_entities: Vec<EcsEntity>,
+    #[serde(skip)]
+    pub hit_durations: HashMap<EcsEntity, u32>,
+}
+
+impl Beam {
+    pub fn hit_entities_and_durations(
+        &mut self,
+    ) -> (&Vec<EcsEntity>, &mut HashMap<EcsEntity, u32>) {
+        (&self.hit_entities, &mut self.hit_durations)
+    }
 }
 
 impl Component for Beam {
-    type Storage = specs::DenseVecStorage<Self>;
+    type Storage = DerefFlaggedStorage<Self, specs::DenseVecStorage<Self>>;
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,7 +36,7 @@ pub enum FrontendSpecifier {
     Flamethrower,
     LifestealBeam,
     Cultist,
-    ClayGolem,
+    Gravewarden,
     Bubbles,
     Steam,
     Frost,
@@ -58,4 +44,5 @@ pub enum FrontendSpecifier {
     Poison,
     Ink,
     Lightning,
+    PhoenixLaser,
 }

@@ -1,5 +1,9 @@
 //! DB operations and schema migrations
 
+// Touch this comment if changes only include .sql files and no .rs so that
+// migration happens.
+// B
+
 pub(in crate::persistence) mod character;
 pub mod character_loader;
 pub mod character_updater;
@@ -146,6 +150,7 @@ impl core::str::FromStr for SqlLogMode {
     }
 }
 
+#[allow(clippy::to_string_trait_impl)]
 impl ToString for SqlLogMode {
     fn to_string(&self) -> String {
         match self {

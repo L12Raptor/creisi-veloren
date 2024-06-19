@@ -4,7 +4,7 @@ use crate::{
     Canvas,
 };
 use common::{
-    assets::{Asset, AssetExt, AssetHandle, RonLoader},
+    assets::{Asset, AssetCombined, AssetHandle, Concatenate, RonLoader},
     generation::EntityInfo,
     terrain::{BiomeKind, Structure, TerrainChunkSize},
     vol::RectVolSize,
@@ -38,16 +38,12 @@ use vek::*;
 pub enum Spot {
     DwarvenGrave,
     SaurokAltar,
-    RockCircle,
     MyrmidonTemple,
     GnarlingTotem,
     WitchHouse,
     GnomeSpring,
     WolfBurrow,
     Igloo,
-    ForestCamp,
-    SnowCamp,
-    PirateCamp,
     //BanditCamp,
     //EnchantedRock,
     //TowerRuin,
@@ -64,9 +60,6 @@ pub enum Spot {
     Shipwreck,
     Shipwreck2,
     FallenTree,
-    TrollCave,
-    TrollCaveMountain,
-    TrollCaveSwamp,
     GraveSmall,
     JungleTemple,
     SaurokTotem,
@@ -177,19 +170,6 @@ impl Spot {
             false,
         );
         Self::generate_spots(
-            Spot::RockCircle,
-            world,
-            0.5,
-            |g, c| {
-                g < 0.1
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-            },
-            false,
-        );
-        Self::generate_spots(
             Spot::MyrmidonTemple,
             world,
             1.0,
@@ -228,48 +208,6 @@ impl Spot {
                     && !c.path.0.is_way()
                     && c.sites.is_empty()
                     && matches!(c.get_biome(), Forest | Grassland)
-            },
-            false,
-        );
-        Self::generate_spots(
-            Spot::TrollCave,
-            world,
-            1.0,
-            |g, c| {
-                g < 0.25
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-                    && matches!(c.get_biome(), Forest | Grassland)
-            },
-            false,
-        );
-        Self::generate_spots(
-            Spot::TrollCaveSwamp,
-            world,
-            1.0,
-            |g, c| {
-                g < 0.25
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-                    && matches!(c.get_biome(), Jungle)
-            },
-            false,
-        );
-        Self::generate_spots(
-            Spot::TrollCaveMountain,
-            world,
-            1.0,
-            |g, c| {
-                g < 0.25
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-                    && matches!(c.get_biome(), Snowland | Taiga)
             },
             false,
         );
@@ -405,49 +343,6 @@ impl Spot {
             },
             true,
         );
-        Self::generate_spots(
-            Spot::ForestCamp,
-            world,
-            4.0,
-            |g, c| {
-                g < 0.25
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-                    && matches!(c.get_biome(), Forest | Taiga | Jungle | Savannah)
-            },
-            false,
-        );
-        Self::generate_spots(
-            Spot::SnowCamp,
-            world,
-            1.0,
-            |g, c| {
-                g < 0.25
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-                    && matches!(c.get_biome(), Snowland)
-            },
-            false,
-        );
-
-        Self::generate_spots(
-            Spot::PirateCamp,
-            world,
-            1.0,
-            |g, c| {
-                g < 0.25
-                    && !c.near_cliffs()
-                    && !c.river.near_water()
-                    && !c.path.0.is_way()
-                    && c.sites.is_empty()
-                    && matches!(c.get_biome(), Desert | Jungle)
-            },
-            false,
-        );
         // Small Grave
         Self::generate_spots(
             Spot::GraveSmall,
@@ -544,9 +439,9 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
             entity_radius: f32,
             // The entities that should be spawned in the spot, from closest to furthest
             // (count_range, spec)
-            // count_range = number of entities, chosen randomly within this range
+            // count_range = number of entities, chosen randomly within this range (not inclusive!)
             // spec = Manifest spec for the entity kind
-            entities: &'a [(Range<u32>, &'a str)],
+            entities: &'a [(Range<i32>, &'a str)],
         }
 
         let spot_config = match spot {
@@ -586,15 +481,6 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
                     (2..8, "common.entity.wild.aggressive.occult_saurok"),
                     (2..8, "common.entity.wild.aggressive.sly_saurok"),
                     (2..8, "common.entity.wild.aggressive.mighty_saurok"),
-                ],
-            },
-            Spot::RockCircle => SpotConfig {
-                base_structures: Some("spots.rock-circle"),
-                entity_radius: 20.0,
-                entities: &[
-                    (0..2, "common.entity.wild.aggressive.archaeos"),
-                    (0..2, "common.entity.wild.aggressive.ntouka"),
-                    (0..2, "common.entity.wild.aggressive.dreadhorn"),
                 ],
             },
             Spot::MyrmidonTemple => SpotConfig {
@@ -642,23 +528,8 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
                 entities: &[
                     (1..2, "common.entity.dungeon.gnarling.mandragora"),
                     (2..6, "common.entity.wild.aggressive.deadwood"),
-                    (0..1, "common.entity.wild.aggressive.mossdrake"),
+                    (0..2, "common.entity.wild.aggressive.mossdrake"),
                 ],
-            },
-            Spot::TrollCave => SpotConfig {
-                base_structures: Some("spots_general.troll_cave"),
-                entity_radius: 0.0,
-                entities: &[],
-            },
-            Spot::TrollCaveSwamp => SpotConfig {
-                base_structures: Some("spots_general.troll_cave_swamp"),
-                entity_radius: 0.0,
-                entities: &[],
-            },
-            Spot::TrollCaveMountain => SpotConfig {
-                base_structures: Some("spots_general.troll_cave_mountain"),
-                entity_radius: 0.0,
-                entities: &[],
             },
             // Random World Objects
             Spot::LionRock => SpotConfig {
@@ -687,7 +558,7 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
             Spot::Arch => SpotConfig {
                 base_structures: Some("spots.arch"),
                 entity_radius: 50.0,
-                entities: &[(2..3, "common.entity.wild.aggressive.ngoubou")],
+                entities: &[],
             },
             Spot::AirshipCrash => SpotConfig {
                 base_structures: Some("trees.airship_crash"),
@@ -713,31 +584,6 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
                 base_structures: Some("spots.water.shipwreck2"),
                 entity_radius: 20.0,
                 entities: &[(0..3, "common.entity.wild.peaceful.clownfish")],
-            },
-            Spot::ForestCamp => SpotConfig {
-                base_structures: Some("spots.camp_forest"),
-                entity_radius: 2.0,
-                entities: &[
-                    (0..2, "common.entity.village.bowman"),
-                    (0..2, "common.entity.village.skinner"),
-                ],
-            },
-            Spot::SnowCamp => SpotConfig {
-                base_structures: Some("spots.camp_snow"),
-                entity_radius: 2.0,
-                entities: &[
-                    (0..2, "common.entity.village.bowman"),
-                    (0..2, "common.entity.village.skinner"),
-                ],
-            },
-            Spot::PirateCamp => SpotConfig {
-                base_structures: Some("spots.camp_pirate"),
-                entity_radius: 2.0,
-                entities: &[
-                    (1..4, "common.entity.spot.pirate"),
-                    (0..2, "common.entity.wild.peaceful.parrot"),
-                    (0..2, "common.entity.wild.peaceful.rat"),
-                ],
             },
             Spot::GraveSmall => SpotConfig {
                 base_structures: Some("spots.grave_small"),
@@ -773,7 +619,7 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
         // Spawn entities
         const PHI: f32 = 1.618;
         for (spawn_count, spec) in spot_config.entities {
-            let spawn_count = rng.gen_range(spawn_count.clone());
+            let spawn_count = rng.gen_range(spawn_count.clone()).max(0);
 
             let dir_offset = rng.gen::<f32>();
             for i in 0..spawn_count {
@@ -794,7 +640,7 @@ pub fn apply_spots_to(canvas: &mut Canvas, _dynamic_rng: &mut impl Rng) {
                 {
                     canvas.spawn(
                         EntityInfo::at(wpos.map(|e| e as f32) + Vec3::new(0.5, 0.5, 0.0))
-                            .with_asset_expect(spec, &mut rng),
+                            .with_asset_expect(spec, &mut rng, None),
                     );
                 }
             }
@@ -862,9 +708,14 @@ impl Asset for RonSpots {
     const EXTENSION: &'static str = "ron";
 }
 
+impl Concatenate for RonSpots {
+    fn concatenate(self, b: Self) -> Self { Self(self.0.concatenate(b.0)) }
+}
+
 lazy_static! {
     static ref RON_PROPERTIES: RonSpots = {
-        let spots: AssetHandle<RonSpots> = AssetExt::load_expect("world.manifests.spots");
+        let spots: AssetHandle<RonSpots> =
+            RonSpots::load_expect_combined_static("world.manifests.spots");
         RonSpots(spots.read().0.to_vec())
     };
 }

@@ -10,7 +10,7 @@ use common::{
     comp::{
         item::{
             armor::Protection, item_key::ItemKey, modular::ModularComponent, Item, ItemDesc,
-            ItemKind, ItemTag, MaterialStatManifest, Quality,
+            ItemI18n, ItemKind, ItemTag, MaterialStatManifest, Quality,
         },
         Energy,
     },
@@ -274,8 +274,10 @@ const H_PAD: f64 = 10.0;
 const V_PAD_STATS: f64 = 6.0;
 /// Default portion of inner width that goes to an image
 const IMAGE_W_FRAC: f64 = 0.3;
-// Item icon size
+/// Item icon size
 const ICON_SIZE: [f64; 2] = [64.0, 64.0];
+/// Total item tooltip width
+const WIDTH: f64 = 320.0;
 
 /// A widget for displaying tooltips
 #[derive(Clone, WidgetCommon)]
@@ -296,6 +298,7 @@ pub struct ItemTooltip<'a> {
     item_imgs: &'a ItemImgs,
     pulse: f32,
     localized_strings: &'a Localization,
+    item_i18n: &'a ItemI18n,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, WidgetStyle)]
@@ -360,6 +363,7 @@ impl<'a> ItemTooltip<'a> {
         pulse: f32,
         msm: &'a MaterialStatManifest,
         localized_strings: &'a Localization,
+        item_i18n: &'a ItemI18n,
     ) -> Self {
         ItemTooltip {
             common: widget::CommonBuilder::default(),
@@ -377,6 +381,7 @@ impl<'a> ItemTooltip<'a> {
             item_imgs,
             pulse,
             localized_strings,
+            item_i18n,
         }
     }
 
@@ -450,6 +455,7 @@ impl<'a> Widget for ItemTooltip<'a> {
         } = args;
 
         let i18n = &self.localized_strings;
+        let item_i18n = &self.item_i18n;
 
         let inventories = self.client.inventories();
         let inventory = match inventories.get(self.info.viewpoint_entity) {
@@ -465,7 +471,7 @@ impl<'a> Widget for ItemTooltip<'a> {
 
         let equipped_item = inventory.equipped_items_replaceable_by(item_kind).next();
 
-        let (title, desc) = (item.name().to_string(), item.description().to_string());
+        let (title, desc) = util::item_text(item, i18n, item_i18n);
 
         let item_kind = util::kind_text(item_kind, i18n).to_string();
 
@@ -646,16 +652,6 @@ impl<'a> Widget for ItemTooltip<'a> {
                     2,
                 );
 
-                // Crit chance
-                stat_text(
-                    format!(
-                        "{} : {:.1}%",
-                        i18n.get_msg("common-stats-crit_chance"),
-                        stats.crit_chance * 100.0
-                    ),
-                    3,
-                );
-
                 // Range
                 stat_text(
                     format!(
@@ -663,7 +659,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                         i18n.get_msg("common-stats-range"),
                         (stats.range - 1.0) * 100.0
                     ),
-                    4,
+                    3,
                 );
 
                 // Energy Efficiency
@@ -673,7 +669,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                         i18n.get_msg("common-stats-energy_efficiency"),
                         (stats.energy_efficiency - 1.0) * 100.0
                     ),
-                    5,
+                    4,
                 );
 
                 // Buff Strength
@@ -683,7 +679,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                         i18n.get_msg("common-stats-buff_strength"),
                         (stats.buff_strength - 1.0) * 100.0
                     ),
-                    6,
+                    5,
                 );
 
                 if item.has_durability() {
@@ -695,7 +691,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                             durability,
                             Item::MAX_DURABILITY
                         ),
-                        7,
+                        6,
                     )
                 }
 
@@ -712,10 +708,6 @@ impl<'a> Widget for ItemTooltip<'a> {
                         let effect_power_diff = util::comparison(
                             tool_stats.effect_power,
                             equipped_tool_stats.effect_power,
-                        );
-                        let crit_chance_diff = util::comparison(
-                            tool_stats.crit_chance,
-                            equipped_tool_stats.crit_chance,
                         );
                         let range_diff =
                             util::comparison(tool_stats.range, equipped_tool_stats.range);
@@ -762,17 +754,9 @@ impl<'a> Widget for ItemTooltip<'a> {
                             );
                             diff_text(text, effect_power_diff.1, 2)
                         }
-                        if diff.crit_chance.abs() > f32::EPSILON {
-                            let text = format!(
-                                "{} {:.1}%",
-                                &crit_chance_diff.0,
-                                &diff.crit_chance * 100.0
-                            );
-                            diff_text(text, crit_chance_diff.1, 3)
-                        }
                         if diff.range.abs() > f32::EPSILON {
                             let text = format!("{} {:.1}%", &range_diff.0, &diff.range * 100.0);
-                            diff_text(text, range_diff.1, 4)
+                            diff_text(text, range_diff.1, 3)
                         }
                         if diff.energy_efficiency.abs() > f32::EPSILON {
                             let text = format!(
@@ -780,7 +764,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                                 &energy_efficiency_diff.0,
                                 &diff.energy_efficiency * 100.0
                             );
-                            diff_text(text, energy_efficiency_diff.1, 5)
+                            diff_text(text, energy_efficiency_diff.1, 4)
                         }
                         if diff.buff_strength.abs() > f32::EPSILON {
                             let text = format!(
@@ -788,7 +772,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                                 &buff_strength_diff.0,
                                 &diff.buff_strength * 100.0
                             );
-                            diff_text(text, buff_strength_diff.1, 6)
+                            diff_text(text, buff_strength_diff.1, 5)
                         }
                         if tool_durability != equipped_durability && item.has_durability() {
                             let text = format!(
@@ -796,7 +780,7 @@ impl<'a> Widget for ItemTooltip<'a> {
                                 &durability_diff.0,
                                 tool_durability as i32 - equipped_durability as i32
                             );
-                            diff_text(text, durability_diff.1, 7)
+                            diff_text(text, durability_diff.1, 6)
                         }
                     }
                 }
@@ -883,13 +867,13 @@ impl<'a> Widget for ItemTooltip<'a> {
                     index += 1;
                 }
 
-                // Crit Power
-                if armor_stats.crit_power.is_some() {
+                // Precision Power
+                if armor_stats.precision_power.is_some() {
                     stat_text(
                         format!(
                             "{} : {:.3}",
-                            i18n.get_msg("common-stats-crit_power"),
-                            armor_stats.crit_power.unwrap_or(0.0)
+                            i18n.get_msg("common-stats-precision_power"),
+                            armor_stats.precision_power.unwrap_or(0.0)
                         ),
                         index,
                     );
@@ -955,9 +939,9 @@ impl<'a> Widget for ItemTooltip<'a> {
                             &armor_stats.energy_reward,
                             &equipped_stats.energy_reward,
                         );
-                        let crit_power_diff = util::option_comparison(
-                            &armor_stats.crit_power,
-                            &equipped_stats.crit_power,
+                        let precision_power_diff = util::option_comparison(
+                            &armor_stats.precision_power,
+                            &equipped_stats.precision_power,
                         );
                         let stealth_diff =
                             util::option_comparison(&armor_stats.stealth, &equipped_stats.stealth);
@@ -979,7 +963,6 @@ impl<'a> Widget for ItemTooltip<'a> {
                         };
 
                         let mut index = 0;
-
                         if let Some(p_diff) = diff.protection {
                             if p_diff != Protection::Normal(0.0) {
                                 let text = format!(
@@ -1021,13 +1004,13 @@ impl<'a> Widget for ItemTooltip<'a> {
                         }
                         index += armor_stats.energy_reward.is_some() as usize;
 
-                        if let Some(c_p_diff) = diff.crit_power {
-                            if c_p_diff != 0.0_f32 {
-                                let text = format!("{} {:.3}", &crit_power_diff.0, c_p_diff);
-                                diff_text(text, crit_power_diff.1, index);
+                        if let Some(p_p_diff) = diff.precision_power {
+                            if p_p_diff != 0.0_f32 {
+                                let text = format!("{} {:.3}", &precision_power_diff.0, p_p_diff);
+                                diff_text(text, precision_power_diff.1, index);
                             }
                         }
-                        index += armor_stats.crit_power.is_some() as usize;
+                        index += armor_stats.precision_power.is_some() as usize;
 
                         if let Some(s_diff) = diff.stealth {
                             if s_diff != 0.0_f32 {
@@ -1142,28 +1125,6 @@ impl<'a> Widget for ItemTooltip<'a> {
                         .down_from(state.ids.stats[1], V_PAD_STATS)
                         .set(state.ids.stats[2], ui);
 
-                    // Crit chance
-                    let crit_chance_text = if is_primary {
-                        format!(
-                            "{} : {:.1}%",
-                            i18n.get_msg("common-stats-crit_chance"),
-                            stats.crit_chance * 100.0
-                        )
-                    } else {
-                        format!(
-                            "{} : x{:.2}",
-                            i18n.get_msg("common-stats-crit_chance"),
-                            stats.crit_chance
-                        )
-                    };
-                    widget::Text::new(&crit_chance_text)
-                        .graphics_for(id)
-                        .parent(id)
-                        .with_style(self.style.desc)
-                        .color(text_color)
-                        .down_from(state.ids.stats[2], V_PAD_STATS)
-                        .set(state.ids.stats[3], ui);
-
                     // Range
                     let range_text = if is_primary {
                         format!(
@@ -1183,8 +1144,8 @@ impl<'a> Widget for ItemTooltip<'a> {
                         .parent(id)
                         .with_style(self.style.desc)
                         .color(text_color)
-                        .down_from(state.ids.stats[3], V_PAD_STATS)
-                        .set(state.ids.stats[4], ui);
+                        .down_from(state.ids.stats[2], V_PAD_STATS)
+                        .set(state.ids.stats[3], ui);
 
                     // Energy Efficiency
                     let energy_eff_text = if is_primary {
@@ -1205,8 +1166,8 @@ impl<'a> Widget for ItemTooltip<'a> {
                         .parent(id)
                         .with_style(self.style.desc)
                         .color(text_color)
-                        .down_from(state.ids.stats[4], V_PAD_STATS)
-                        .set(state.ids.stats[5], ui);
+                        .down_from(state.ids.stats[3], V_PAD_STATS)
+                        .set(state.ids.stats[4], ui);
 
                     // Buff Strength
                     let buff_str_text = if is_primary {
@@ -1227,8 +1188,8 @@ impl<'a> Widget for ItemTooltip<'a> {
                         .parent(id)
                         .with_style(self.style.desc)
                         .color(text_color)
-                        .down_from(state.ids.stats[5], V_PAD_STATS)
-                        .set(state.ids.stats[6], ui);
+                        .down_from(state.ids.stats[4], V_PAD_STATS)
+                        .set(state.ids.stats[5], ui);
                 }
             },
             _ => (),
@@ -1306,14 +1267,14 @@ impl<'a> Widget for ItemTooltip<'a> {
 
     /// Default width is based on the description font size unless the text is
     /// small enough to fit on a single line
-    fn default_x_dimension(&self, _ui: &Ui) -> Dimension { Dimension::Absolute(260.0) }
+    fn default_x_dimension(&self, _ui: &Ui) -> Dimension { Dimension::Absolute(WIDTH) }
 
     fn default_y_dimension(&self, ui: &Ui) -> Dimension {
         let item = &self.item;
 
-        let desc = item.description().to_string();
+        let (_, desc) = util::item_text(item, self.localized_strings, self.item_i18n);
 
-        let (text_w, _image_w) = self.text_image_width(260.0);
+        let (text_w, _image_w) = self.text_image_width(WIDTH);
 
         // Item frame
         let frame_h = ICON_SIZE[1] + V_PAD;

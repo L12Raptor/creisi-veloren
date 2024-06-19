@@ -32,6 +32,7 @@ use common::{
 };
 use common_net::msg::world_msg::{SiteId, SiteInfo};
 use i18n::{Localization, LocalizationHandle};
+use rand::{thread_rng, Rng};
 //ImageFrame, Tooltip,
 use crate::settings::Settings;
 //use std::time::Duration;
@@ -153,6 +154,7 @@ pub enum Event {
     DeleteCharacter(CharacterId),
     ClearCharacterListError,
     SelectCharacter(Option<CharacterId>),
+    ShowRules,
 }
 
 enum Mode {
@@ -163,6 +165,7 @@ enum Mode {
         character_buttons: Vec<button::State>,
         new_character_button: button::State,
         logout_button: button::State,
+        rule_button: button::State,
         enter_world_button: button::State,
         spectate_button: button::State,
         yes_button: button::State,
@@ -192,7 +195,7 @@ enum Mode {
         /// mode as opposed to create mode.
         // TODO: Something less janky? Express the problem domain better!
         character_id: Option<CharacterId>,
-        start_site_idx: usize,
+        start_site_idx: Option<usize>,
     },
 }
 
@@ -204,6 +207,7 @@ impl Mode {
             character_buttons: Vec::new(),
             new_character_button: Default::default(),
             logout_button: Default::default(),
+            rule_button: Default::default(),
             enter_world_button: Default::default(),
             spectate_button: Default::default(),
             yes_button: Default::default(),
@@ -245,7 +249,7 @@ impl Mode {
             prev_starting_site_button: Default::default(),
             next_starting_site_button: Default::default(),
             character_id: None,
-            start_site_idx: 0,
+            start_site_idx: None,
         }
     }
 
@@ -275,7 +279,7 @@ impl Mode {
             prev_starting_site_button: Default::default(),
             next_starting_site_button: Default::default(),
             character_id: Some(character_id),
-            start_site_idx: 0,
+            start_site_idx: None,
         }
     }
 }
@@ -308,12 +312,14 @@ struct Controls {
     map_img: GraphicId,
     possible_starting_sites: Vec<SiteInfo>,
     world_sz: Vec2<u32>,
+    has_rules: bool,
 }
 
 #[derive(Clone)]
 enum Message {
     Back,
     Logout,
+    ShowRules,
     EnterWorld,
     Spectate,
     Select(CharacterId),
@@ -356,6 +362,7 @@ impl Controls {
         map_img: GraphicId,
         possible_starting_sites: Vec<SiteInfo>,
         world_sz: Vec2<u32>,
+        has_rules: bool,
     ) -> Self {
         let version = common::util::DISPLAY_VERSION_LONG.clone();
         let alpha = format!("Veloren {}", common::util::DISPLAY_VERSION.as_str());
@@ -377,6 +384,7 @@ impl Controls {
             map_img,
             possible_starting_sites,
             world_sz,
+            has_rules,
         }
     }
 
@@ -467,6 +475,7 @@ impl Controls {
                 ref mut character_buttons,
                 ref mut new_character_button,
                 ref mut logout_button,
+                ref mut rule_button,
                 ref mut enter_world_button,
                 ref mut spectate_button,
                 ref mut yes_button,
@@ -490,7 +499,7 @@ impl Controls {
                         self.selected = client
                             .character_list()
                             .characters
-                            .get(0)
+                            .first()
                             .and_then(|i| i.character.id);
                     },
                 }
@@ -738,7 +747,25 @@ impl Controls {
                 ])
                 .height(Length::Fill);
 
-                let left_column = Column::with_children(vec![server.into(), characters.into()])
+                let mut left_column_children = vec![server.into(), characters.into()];
+
+                if self.has_rules {
+                    left_column_children.push(
+                        Container::new(neat_button(
+                            rule_button,
+                            i18n.get_msg("char_selection-rules").into_owned(),
+                            FILL_FRAC_ONE,
+                            button_style,
+                            Some(Message::ShowRules),
+                        ))
+                        .align_y(Align::End)
+                        .width(Length::Fill)
+                        .center_x()
+                        .height(Length::Units(52))
+                        .into(),
+                    );
+                }
+                let left_column = Column::with_children(left_column_children)
                     .spacing(10)
                     .width(Length::Units(322)) // TODO: see if we can get iced to work with settings below
                     // .max_width(360)
@@ -1336,10 +1363,12 @@ impl Controls {
                     //TODO: Add text-outline here whenever we updated iced to a version supporting
                     // this
 
-                    let map = if let Some(info) = self.possible_starting_sites.get(*start_site_idx)
+                    let map = if let Some(info) = self
+                        .possible_starting_sites
+                        .get(start_site_idx.unwrap_or_default())
                     {
                         let site_name = Text::new(
-                            self.possible_starting_sites[*start_site_idx]
+                            self.possible_starting_sites[start_site_idx.unwrap_or_default()]
                                 .name
                                 .as_deref()
                                 .unwrap_or("Unknown"),
@@ -1379,12 +1408,16 @@ impl Controls {
                     if self.possible_starting_sites.is_empty() {
                         vec![map]
                     } else {
+                        let selected = start_site_idx.get_or_insert_with(|| {
+                            thread_rng().gen_range(0..self.possible_starting_sites.len())
+                        });
+
                         let site_slider = starter_slider(
                             i18n.get_msg("char_selection-starting_site").into_owned(),
                             30,
                             &mut sliders.starting_site,
                             self.possible_starting_sites.len() as u32 - 1,
-                            *start_site_idx as u32,
+                            *selected as u32,
                             |x| Message::StartingSite(x as usize),
                             imgs,
                         );
@@ -1670,6 +1703,9 @@ impl Controls {
             Message::Logout => {
                 events.push(Event::Logout);
             },
+            Message::ShowRules => {
+                events.push(Event::ShowRules);
+            },
             Message::ConfirmDeletion => {
                 if let Mode::Select { info_content, .. } = &mut self.mode {
                     if let Some(InfoContent::Deletion(idx)) = info_content {
@@ -1772,7 +1808,7 @@ impl Controls {
                         body: comp::Body::Humanoid(*body),
                         start_site: self
                             .possible_starting_sites
-                            .get(*start_site_idx)
+                            .get(start_site_idx.unwrap_or_default())
                             .map(|info| info.id),
                     });
                     self.mode = Mode::select(Some(InfoContent::CreatingCharacter));
@@ -1834,7 +1870,6 @@ impl Controls {
             //Todo: Add species and body type to randomization.
             Message::RandomizeCharacter => {
                 if let Mode::CreateOrEdit { body, .. } = &mut self.mode {
-                    use rand::Rng;
                     let body_type = body.body_type;
                     let species = body.species;
                     let mut rng = rand::thread_rng();
@@ -1901,24 +1936,30 @@ impl Controls {
             },
             Message::StartingSite(idx) => {
                 if let Mode::CreateOrEdit { start_site_idx, .. } = &mut self.mode {
-                    *start_site_idx = idx;
+                    *start_site_idx = Some(idx);
                 }
             },
             Message::PrevStartingSite => {
                 if let Mode::CreateOrEdit { start_site_idx, .. } = &mut self.mode {
                     if !self.possible_starting_sites.is_empty() {
-                        *start_site_idx = (*start_site_idx + self.possible_starting_sites.len()
-                            - 1)
-                            % self.possible_starting_sites.len();
+                        *start_site_idx = Some(
+                            (start_site_idx.unwrap_or_default()
+                                + self.possible_starting_sites.len()
+                                - 1)
+                                % self.possible_starting_sites.len(),
+                        );
                     }
                 }
             },
             Message::NextStartingSite => {
                 if let Mode::CreateOrEdit { start_site_idx, .. } = &mut self.mode {
                     if !self.possible_starting_sites.is_empty() {
-                        *start_site_idx =
-                            (*start_site_idx + self.possible_starting_sites.len() + 1)
-                                % self.possible_starting_sites.len();
+                        *start_site_idx = Some(
+                            (start_site_idx.unwrap_or_default()
+                                + self.possible_starting_sites.len()
+                                + 1)
+                                % self.possible_starting_sites.len(),
+                        );
                     }
                 }
             },
@@ -1997,6 +2038,7 @@ impl CharSelectionUi {
                 .map(|info| info.site.clone())
                 .collect(),
             client.world_data().chunk_size().as_(),
+            client.server_description().rules.is_some(),
         );
 
         Self {

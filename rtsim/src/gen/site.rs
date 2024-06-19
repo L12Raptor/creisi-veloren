@@ -30,9 +30,16 @@ impl Site {
             // Evil
             SiteKind::Dungeon(_)
             | SiteKind::ChapelSite(_)
+            | SiteKind::Terracotta(_)
             | SiteKind::Gnarling(_)
+            | SiteKind::Cultist(_)
+            | SiteKind::Sahagin(_)
             | SiteKind::PirateHideout(_)
             | SiteKind::JungleRuin(_)
+            | SiteKind::RockCircle(_)
+            | SiteKind::TrollCave(_)
+            | SiteKind::Camp(_)
+            | SiteKind::Haniwa(_)
             | SiteKind::Adlet(_) => Some(false),
             SiteKind::DwarvenMine(_) => Some(false),
             // Neutral

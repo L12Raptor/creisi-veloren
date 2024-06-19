@@ -1,5 +1,8 @@
+use std::ops::RangeInclusive;
+
 use crate::{
     assets::{self, AssetExt, Error},
+    calendar::Calendar,
     comp::{
         self, agent, humanoid,
         inventory::loadout_builder::{LoadoutBuilder, LoadoutSpec},
@@ -8,11 +11,13 @@ use crate::{
     },
     lottery::LootSpec,
     npc::{self, NPC_NAMES},
+    resources::TimeOfDay,
     rtsim,
     trade::SiteInformation,
 };
 use enum_map::EnumMap;
 use serde::Deserialize;
+use tracing::error;
 use vek::*;
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
@@ -97,8 +102,11 @@ pub enum Meta {
 /// let dummy_position = Vec3::new(0.0, 0.0, 0.0);
 /// // rng is required because some elements may be randomly generated
 /// let mut dummy_rng = rand::thread_rng();
-/// let entity =
-///     EntityInfo::at(dummy_position).with_asset_expect("common.entity.template", &mut dummy_rng);
+/// let entity = EntityInfo::at(dummy_position).with_asset_expect(
+///     "common.entity.template",
+///     &mut dummy_rng,
+///     None,
+/// );
 /// ```
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +139,11 @@ pub struct EntityConfig {
     /// Check docs for `InventorySpec` struct in this file.
     pub inventory: InventorySpec,
 
+    /// Pets to spawn with this entity (specified as a list of asset paths).
+    /// The range represents how many pets will be spawned.
+    #[serde(default)]
+    pub pets: Vec<(String, RangeInclusive<usize>)>,
+
     /// Meta Info for optional fields
     /// Possible fields:
     /// SkillSetAsset(String) with asset_specifier for skillset
@@ -160,14 +173,18 @@ impl EntityConfig {
 
 /// Return all entity config specifiers
 pub fn try_all_entity_configs() -> Result<Vec<String>, Error> {
-    let configs = assets::load_dir::<EntityConfig>("common.entity", true)?;
-    Ok(configs.ids().map(|id| id.to_string()).collect())
+    let configs = assets::load_rec_dir::<EntityConfig>("common.entity")?;
+    Ok(configs.read().ids().map(|id| id.to_string()).collect())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SpecialEntity {
     Waypoint,
     Teleporter(PortalData),
+    /// Totem with FriendlyFire and ForcePvP auras
+    ArenaTotem {
+        range: f32,
+    },
 }
 
 #[derive(Clone)]
@@ -189,12 +206,17 @@ pub struct EntityInfo {
     // Loadout
     pub inventory: Vec<(u32, Item)>,
     pub loadout: LoadoutBuilder,
-    pub make_loadout: Option<fn(LoadoutBuilder, Option<&SiteInformation>) -> LoadoutBuilder>,
+    pub make_loadout: Option<
+        fn(
+            LoadoutBuilder,
+            Option<&SiteInformation>,
+            time: Option<&(TimeOfDay, Calendar)>,
+        ) -> LoadoutBuilder,
+    >,
     // Skills
     pub skillset_asset: Option<String>,
 
-    // Not implemented
-    pub pet: Option<Box<EntityInfo>>,
+    pub pets: Vec<EntityInfo>,
 
     // Economy
     // we can't use DHashMap, do we want to move that into common?
@@ -225,7 +247,7 @@ impl EntityInfo {
             loadout: LoadoutBuilder::empty(),
             make_loadout: None,
             skillset_asset: None,
-            pet: None,
+            pets: Vec::new(),
             trading_information: None,
             special_entity: None,
         }
@@ -234,13 +256,18 @@ impl EntityInfo {
     /// Helper function for applying config from asset
     /// with specified Rng for managing loadout.
     #[must_use]
-    pub fn with_asset_expect<R>(self, asset_specifier: &str, loadout_rng: &mut R) -> Self
+    pub fn with_asset_expect<R>(
+        self,
+        asset_specifier: &str,
+        loadout_rng: &mut R,
+        time: Option<&(TimeOfDay, Calendar)>,
+    ) -> Self
     where
         R: rand::Rng,
     {
         let config = EntityConfig::load_expect_cloned(asset_specifier);
 
-        self.with_entity_config(config, Some(asset_specifier), loadout_rng)
+        self.with_entity_config(config, Some(asset_specifier), loadout_rng, time)
     }
 
     /// Evaluate and apply EntityConfig
@@ -250,6 +277,7 @@ impl EntityInfo {
         config: EntityConfig,
         config_asset: Option<&str>,
         loadout_rng: &mut R,
+        time: Option<&(TimeOfDay, Calendar)>,
     ) -> Self
     where
         R: rand::Rng,
@@ -262,6 +290,7 @@ impl EntityInfo {
             inventory,
             loot,
             meta,
+            pets,
         } = config;
 
         match body {
@@ -297,7 +326,27 @@ impl EntityInfo {
         self = self.with_loot_drop(loot);
 
         // NOTE: set loadout after body, as it's used with default equipement
-        self = self.with_inventory(inventory, config_asset, loadout_rng);
+        self = self.with_inventory(inventory, config_asset, loadout_rng, time);
+
+        let mut pet_infos: Vec<EntityInfo> = Vec::new();
+        for (pet_asset, amount) in pets {
+            let config = EntityConfig::load_expect(&pet_asset).read();
+            let (start, mut end) = amount.into_inner();
+            if start > end {
+                error!("Invalid range for pet count start: {start}, end: {end}");
+                end = start;
+            }
+
+            pet_infos.extend((0..loadout_rng.gen_range(start..=end)).map(|_| {
+                EntityInfo::at(self.pos).with_entity_config(
+                    config.clone(),
+                    config_asset,
+                    loadout_rng,
+                    time,
+                )
+            }));
+        }
+        self.pets = pet_infos;
 
         // Prefer the new configuration, if possible
         let AgentConfig {
@@ -330,6 +379,7 @@ impl EntityInfo {
         inventory: InventorySpec,
         config_asset: Option<&str>,
         rng: &mut R,
+        time: Option<&(TimeOfDay, Calendar)>,
     ) -> Self
     where
         R: rand::Rng,
@@ -350,14 +400,14 @@ impl EntityInfo {
                 self = self.with_default_equip();
             },
             LoadoutKind::Asset(loadout) => {
-                let loadout = LoadoutBuilder::from_asset(&loadout, rng).unwrap_or_else(|e| {
+                let loadout = LoadoutBuilder::from_asset(&loadout, rng, time).unwrap_or_else(|e| {
                     panic!("failed to load loadout for {config_asset}: {e:?}");
                 });
                 self.loadout = loadout;
             },
             LoadoutKind::Inline(loadout_spec) => {
-                let loadout =
-                    LoadoutBuilder::from_loadout_spec(*loadout_spec, rng).unwrap_or_else(|e| {
+                let loadout = LoadoutBuilder::from_loadout_spec(*loadout_spec, rng, time)
+                    .unwrap_or_else(|e| {
                         panic!("failed to load loadout for {config_asset}: {e:?}");
                     });
                 self.loadout = loadout;
@@ -436,7 +486,11 @@ impl EntityInfo {
     #[must_use]
     pub fn with_lazy_loadout(
         mut self,
-        creator: fn(LoadoutBuilder, Option<&SiteInformation>) -> LoadoutBuilder,
+        creator: fn(
+            LoadoutBuilder,
+            Option<&SiteInformation>,
+            time: Option<&(TimeOfDay, Calendar)>,
+        ) -> LoadoutBuilder,
     ) -> Self {
         self.make_loadout = Some(creator);
         self
@@ -469,6 +523,7 @@ impl EntityInfo {
             Body::Golem(body) => Some(get_npc_name(&npc_names.golem, body.species)),
             Body::BipedLarge(body) => Some(get_npc_name(&npc_names.biped_large, body.species)),
             Body::Arthropod(body) => Some(get_npc_name(&npc_names.arthropod, body.species)),
+            Body::Crustacean(body) => Some(get_npc_name(&npc_names.crustacean, body.species)),
             _ => None,
         };
         self.name = name.map(|name| {
@@ -652,6 +707,29 @@ mod tests {
         }
     }
 
+    #[cfg(test)]
+    fn validate_pets(pets: Vec<(String, RangeInclusive<usize>)>, config_asset: &str) {
+        for (pet, amount) in pets.into_iter().map(|(pet_asset, amount)| {
+            (
+                EntityConfig::load_cloned(&pet_asset).unwrap_or_else(|_| {
+                    panic!("Pet asset path invalid: \"{pet_asset}\", in {config_asset}")
+                }),
+                amount,
+            )
+        }) {
+            assert!(
+                amount.end() >= amount.start(),
+                "Invalid pet spawn range ({}..={}), in {}",
+                amount.start(),
+                amount.end(),
+                config_asset
+            );
+            if !pet.pets.is_empty() {
+                panic!("Pets must not be owners of pets: {config_asset}");
+            }
+        }
+    }
+
     #[test]
     fn test_all_entity_assets() {
         // Get list of entity configs, load everything, validate content.
@@ -666,6 +744,7 @@ mod tests {
                 loot,
                 meta,
                 alignment: _, // can't fail if serialized, it's a boring enum
+                pets,
             } = EntityConfig::from_asset_expect_owned(&config_asset);
 
             validate_body(&body, &config_asset);
@@ -675,6 +754,7 @@ mod tests {
             // misc
             validate_loot(loot, &config_asset);
             validate_meta(meta, &config_asset);
+            validate_pets(pets, &config_asset);
         }
     }
 }

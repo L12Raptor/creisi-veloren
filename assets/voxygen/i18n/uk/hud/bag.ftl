@@ -1,6 +1,5 @@
 hud-bag-inventory = Інвентар { $playername }
 hud-bag-stats_title = Характеристики { $playername }
-hud-bag-exp = Досвід
 hud-bag-armor = Спорядження
 hud-bag-stats = Характеристики
 hud-bag-head = Голова
@@ -14,6 +13,7 @@ hud-bag-glider = Дельтаплан
 hud-bag-belt = Пояс
 hud-bag-ring = Кільце
 hud-bag-back = Спина
+hud-bag-backpack = Наплічник
 hud-bag-legs = Ноги
 hud-bag-feet = Ступні
 hud-bag-mainhand = Основна рука
@@ -31,11 +31,11 @@ hud-bag-stun_res = Супротив приголомшенню
 hud-bag-stealth = Непомітність
 hud-bag-combat_rating_desc =
     Розрахований з огляду на ваше
-    спорядження і здоров'я
+    спорядження і здоров'я.
 hud-bag-protection_desc = Поглинання ушкоджень через броню.
 hud-bag-stun_res_desc =
-    Супротив до приголомшення
-    Відновлюється подібно до Енергії
+    Стійкість до дезорієнтації від послідовних ударів.
+    Відновлюється подібно до енергії.
 hud-bag-sort_by_name = Сортувати за Назвою
 hud-bag-sort_by_quality = Сортувати за Якістю
 hud-bag-sort_by_category = Сортувати за Категорією

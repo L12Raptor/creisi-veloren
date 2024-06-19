@@ -1,4 +1,5 @@
 use crate::{
+    combat,
     comp::{character_state::OutputEvents, CharacterState, MeleeConstructor, StateUpdate},
     states::{
         behavior::{CharacterBehavior, JoinData},
@@ -17,6 +18,9 @@ pub struct StaticData {
     pub swing_duration: Duration,
     /// How long the state has until exiting
     pub recover_duration: Duration,
+    /// Base value that incoming damage is reduced by and converted to poise
+    /// damage
+    pub block_strength: f32,
     /// Used to construct the Melee attack
     pub melee_constructor: MeleeConstructor,
     /// What key is used to press ability
@@ -64,14 +68,14 @@ impl CharacterBehavior for Data {
                         c.exhausted = true;
                     }
 
-                    let crit_data = get_crit_data(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     let tool_stats = get_tool_stats(data, self.static_data.ability_info);
 
                     data.updater.insert(
                         data.entity,
                         self.static_data
                             .melee_constructor
-                            .create_melee(crit_data, tool_stats),
+                            .create_melee(precision_mult, tool_stats),
                     );
                 } else if self.timer < self.static_data.swing_duration {
                     // Swings
@@ -90,7 +94,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recovery
                     if let CharacterState::RiposteMelee(c) = &mut update.character {
-                        c.timer = tick_attack_or_default(data, self.timer, None);
+                        c.timer = tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        );
                     }
                 } else {
                     // Done

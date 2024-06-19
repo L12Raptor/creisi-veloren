@@ -1,5 +1,6 @@
 pub struct Character {
     pub character_id: i64,
+    #[allow(dead_code)]
     pub player_uuid: String,
     pub alias: String,
     pub waypoint: Option<String>,
@@ -10,12 +11,14 @@ pub struct Item {
     pub item_id: i64,
     pub parent_container_item_id: i64,
     pub item_definition_id: String,
-    pub stack_size: i32,
+    /// `u32::MAX` must fit inside this type
+    pub stack_size: i64,
     pub position: String,
     pub properties: String,
 }
 
 pub struct Body {
+    #[allow(dead_code)]
     pub body_id: i64,
     pub variant: String,
     pub body_data: String,
@@ -38,6 +41,7 @@ pub struct Pet {
 }
 
 pub struct AbilitySets {
+    #[allow(dead_code)]
     pub entity_id: i64,
     pub ability_sets: String,
 }

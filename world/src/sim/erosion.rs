@@ -13,14 +13,12 @@ use itertools::izip;
 use noise::NoiseFn;
 use num::{Float, Zero};
 use ordered_float::NotNan;
-#[cfg(feature = "simd")] use packed_simd::m32;
 use rayon::prelude::*;
 use std::{
     cmp::{Ordering, Reverse},
     collections::BinaryHeap,
-    f32, fmt, mem,
+    fmt, mem,
     time::Instant,
-    u32,
 };
 use vek::*;
 
@@ -322,7 +320,7 @@ pub fn get_rivers<F: fmt::Debug + Float + Into<f64>, G: Float + Into<f64>>(
             let pass_idx = (-indirection_idx) as usize;
             // NOTE: Must exist since this lake had a downhill in the first place.
             let neighbor_pass_idx = downhill[pass_idx] as usize/*downhill_idx*/;
-            let mut lake_neighbor_pass = &mut rivers[neighbor_pass_idx];
+            let lake_neighbor_pass = &mut rivers[neighbor_pass_idx];
             // We definitely shouldn't have encountered this yet!
             debug_assert!(lake_neighbor_pass.velocity == Vec3::zero());
             // TODO: Rethink making the lake neighbor pass always a river or lake, no matter
@@ -388,7 +386,7 @@ pub fn get_rivers<F: fmt::Debug + Float + Into<f64>, G: Float + Into<f64>>(
                         river_spline_derivative,
                     )
                 };
-                let mut lake = &mut rivers[chunk_idx];
+                let lake = &mut rivers[chunk_idx];
                 lake.spline_derivative = river_spline_derivative;
                 lake.river_kind = Some(RiverKind::Lake {
                     neighbor_pass_pos: neighbor_pass_pos
@@ -495,7 +493,7 @@ pub fn get_rivers<F: fmt::Debug + Float + Into<f64>, G: Float + Into<f64>>(
         // CONFIG.river_min_height.
         let river = &rivers[chunk_idx];
         let is_river = river.is_river() || width >= 0.5 && height >= CONFIG.river_min_height as f64;
-        let mut downhill_river = &mut rivers[downhill_idx];
+        let downhill_river = &mut rivers[downhill_idx];
 
         if is_river {
             // Provisionally make the downhill chunk a river as well.
@@ -532,7 +530,7 @@ pub fn get_rivers<F: fmt::Debug + Float + Into<f64>, G: Float + Into<f64>>(
         velocity.normalize();
         velocity *= velocity_magnitude;
 
-        let mut river = &mut rivers[chunk_idx];
+        let river = &mut rivers[chunk_idx];
         // NOTE: Not trying to do this more cleverly because we want to keep the river's
         // neighbors. TODO: Actually put something in the neighbors.
         river.velocity = velocity.map(|e| e as f32);
@@ -608,16 +606,17 @@ fn get_max_slope(
 // simd alternative
 #[cfg(not(feature = "simd"))]
 #[derive(Copy, Clone)]
-#[allow(non_camel_case_types)]
-struct m32(u32);
+struct M32(u32);
 #[cfg(not(feature = "simd"))]
-impl m32 {
+impl M32 {
     #[inline]
-    fn new(x: bool) -> Self { if x { Self(u32::MAX) } else { Self(u32::MIN) } }
+    fn splat(x: bool) -> Self { if x { Self(u32::MAX) } else { Self(u32::MIN) } }
 
     #[inline]
-    fn test(&self) -> bool { self.0 != 0 }
+    fn any(&self) -> bool { self.0 != 0 }
 }
+#[cfg(feature = "simd")]
+type M32 = std::simd::Mask<i32, 1>;
 
 /// Erode all chunks by amount.
 ///
@@ -636,31 +635,31 @@ impl m32 {
 ///
 /// This algorithm does this in four steps:
 ///
-/// 1. Sort the nodes in h by height (so the lowest node by altitude is first
-///    in the list, and the highest node by altitude is last).
+/// 1. Sort the nodes in h by height (so the lowest node by altitude is first in
+///    the list, and the highest node by altitude is last).
 /// 2. Iterate through the list in *reverse.*  For each node, we compute its
 ///    drainage area as the sum of the drainage areas of its "children" nodes
 ///    (i.e. the nodes with directed edges to this node).  To do this
-///    efficiently, we start with the "leaves" (the highest nodes), which
-///    have no neighbors higher than them, hence no directed edges to them.
-///    We add their area to themselves, and then to all neighbors that they
-///    flow into (their "ancestors" in the flow graph); currently, this just
-///    means the node immediately downhill of this node. As we go lower, we
-///    know that all our "children" already had their areas computed, which
-///    means that we can repeat the process in order to derive all the final
-///    areas.
+///    efficiently, we start with the "leaves" (the highest nodes), which have
+///    no neighbors higher than them, hence no directed edges to them. We add
+///    their area to themselves, and then to all neighbors that they flow into
+///    (their "ancestors" in the flow graph); currently, this just means the
+///    node immediately downhill of this node. As we go lower, we know that all
+///    our "children" already had their areas computed, which means that we can
+///    repeat the process in order to derive all the final areas.
 /// 3. Now, iterate through the list in *order.*  Whether we used the filling
 ///    method to compute a "filled" version of each depression, or used the lake
 ///    connection algorithm described in [1], each node is guaranteed to have
 ///    zero or one drainage edges out, representing the direction of water flow
 ///    for that node. For nodes i with zero drainage edges out (boundary nodes
 ///    and lake bottoms) we set the slope to 0 (so the change in altitude is
-///    uplift(i))
-///    For nodes with at least one drainage edge out, we take advantage of the
-///    fact that we are computing new heights in order and rewrite our equation
-///    as (letting j = downhill[i], A[i] be the computed area of point i,
-///    p(i) be the x-y position of point i,
-///    flux(i) = k * A[i]^m / ((p(i) - p(j)).magnitude()), and δt = 1):
+///    uplift(i)).
+///
+///    For nodes with at least one drainage edge out, we take
+///    advantage of the fact that we are computing new heights in order and
+///    rewrite our equation as (letting j = downhill[i], A[i] be the computed
+///    area of point i, p(i) be the x-y position of point i, flux(i) = k *
+///    A[i]^m / ((p(i) - p(j)).magnitude()), and δt = 1):
 ///
 ///    h[i](t + dt) = h[i](t) + δt * (uplift[i] + flux(i) * h[j](t + δt)) / (1 +
 /// flux(i) * δt).
@@ -862,7 +861,7 @@ fn erode(
     let mid_slope = (30.0 / 360.0 * 2.0 * std::f64::consts::PI).tan();
 
     type SimdType = f32;
-    type MaskType = m32;
+    type MaskType = M32;
 
     // Precompute factors for Stream Power Law.
     let czero = <SimdType as Zero>::zero();
@@ -1316,7 +1315,7 @@ fn erode(
                             let tolp = 1.0e-3;
                             let mut errp = 2.0 * tolp;
                             let mut rec_heights = [0.0; 8];
-                            let mut mask = [MaskType::new(false); 8];
+                            let mut mask = [MaskType::splat(false); 8];
                             mrec_downhill(map_size_lg, &mrec, posi).for_each(|(kk, posj)| {
                                 let posj_stack = mstack_inv[posj];
                                 let h_j = h_stack[posj_stack];
@@ -1324,7 +1323,7 @@ fn erode(
                                 // + uplift(posj) as f64
                                 // NOTE: We also considered using old_elev_i > wh[posj] here.
                                 if old_elev_i > h_j {
-                                    mask[kk] = MaskType::new(true);
+                                    mask[kk] = MaskType::splat(true);
                                     rec_heights[kk] = h_j as SimdType;
                                 }
                             });
@@ -1333,7 +1332,7 @@ fn erode(
                                 let mut df = 1.0;
                                 izip!(&mask, &rec_heights, k_fs_fact, k_df_fact).for_each(
                                     |(&mask_kk, &rec_heights_kk, &k_fs_fact_kk, &k_df_fact_kk)| {
-                                        if mask_kk.test() {
+                                        if mask_kk.any() {
                                             let h_j = rec_heights_kk;
                                             let elev_j = h_j;
                                             let dh = 0.0.max(new_h_i as SimdType - elev_j);
@@ -2540,6 +2539,7 @@ pub fn do_erosion(
     k_d_scale: f64,
     k_da_scale: impl Fn(f64) -> f64,
     threadpool: &rayon::ThreadPool,
+    report_progress: &dyn Fn(f64),
 ) -> (Box<[Alt]>, Box<[Alt]> /* , Box<[Alt]> */) {
     debug!("Initializing erosion arrays...");
     let oldh_ = (0..map_size_lg.chunks_len())
@@ -2644,6 +2644,7 @@ pub fn do_erosion(
         // Print out the percentage complete. Do this at most 20 times.
         if i % std::cmp::max(n_steps / 20, 1) == 0 {
             let pct = (i as f64 / n_steps as f64) * 100.0;
+            report_progress(pct);
             info!("{:.2}% complete", pct);
         }
 

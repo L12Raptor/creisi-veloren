@@ -1,7 +1,7 @@
 use crate::util::*;
 use common::{
     comp::{
-        ability::{CharacterAbility, MAX_ABILITIES},
+        ability::{CharacterAbility, BASE_ABILITY_LIMIT},
         buff::{BuffKind, Buffs},
         character_state::AttackFilters,
         group,
@@ -17,6 +17,7 @@ use common::{
         Stats, Vel,
     },
     consts::GRAVITY,
+    event, event_emitters,
     link::Is,
     mounting::{Mount, Rider, VolumeRider},
     path::TraversalConfig,
@@ -26,10 +27,16 @@ use common::{
     terrain::TerrainGrid,
     uid::{IdMaps, Uid},
 };
-use specs::{
-    shred::ResourceId, Entities, Entity as EcsEntity, Read, ReadExpect, ReadStorage, SystemData,
-    World,
-};
+use common_base::dev_panic;
+use specs::{shred, Entities, Entity as EcsEntity, Read, ReadExpect, ReadStorage, SystemData};
+
+event_emitters! {
+    pub struct AgentEvents[AgentEmitters] {
+        chat: event::ChatEvent,
+        sound: event::SoundEvent,
+        process_trade_action: event::ProcessTradeActionEvent,
+    }
+}
 
 // TODO: Move rtsim back into AgentData after rtsim2 when it has a separate
 // crate
@@ -43,7 +50,6 @@ pub struct AgentData<'a> {
     pub body: Option<&'a Body>,
     pub inventory: &'a Inventory,
     pub skill_set: &'a SkillSet,
-    #[allow(dead_code)] // may be useful for pathing
     pub physics_state: &'a PhysicsState,
     pub alignment: Option<&'a Alignment>,
     pub traversal_config: TraversalConfig,
@@ -67,6 +73,7 @@ pub struct AgentData<'a> {
 
 pub struct TargetData<'a> {
     pub pos: &'a Pos,
+    pub ori: Option<&'a Ori>,
     pub body: Option<&'a Body>,
     pub scale: Option<&'a Scale>,
     pub char_state: Option<&'a CharacterState>,
@@ -79,6 +86,7 @@ impl<'a> TargetData<'a> {
     pub fn new(pos: &'a Pos, target: EcsEntity, read_data: &'a ReadData) -> Self {
         Self {
             pos,
+            ori: read_data.orientations.get(target),
             body: read_data.bodies.get(target),
             scale: read_data.scales.get(target),
             char_state: read_data.char_states.get(target),
@@ -177,12 +185,16 @@ pub enum Tactic {
     FixedTurret,
     RotatingTurret,
     RadialTurret,
+    FieryTornado,
     SimpleDouble,
+    ClayGolem,
+    ClaySteed,
+    AncientEffigy,
     // u8s are weights that each ability gets used, if it can be used
     RandomAbilities {
         primary: u8,
         secondary: u8,
-        abilities: [u8; MAX_ABILITIES],
+        abilities: [u8; BASE_ABILITY_LIMIT],
     },
 
     // Tool specific tactics
@@ -221,7 +233,7 @@ pub enum Tactic {
     // Specific species tactics
     Mindflayer,
     Minotaur,
-    ClayGolem,
+    GraveWarden,
     TidalWarrior,
     Yeti,
     Harvester,
@@ -229,12 +241,14 @@ pub enum Tactic {
     Deadwood,
     Mandragora,
     WoodGolem,
+    IronGolem,
     GnarlingChieftain,
     OrganAura,
     Dagon,
-    HermitAlligator,
+    Snaretongue,
     Cardinal,
     SeaBishop,
+    Rocksnapper,
     Roshwalr,
     FrostGigas,
     BorealHammer,
@@ -242,12 +256,24 @@ pub enum Tactic {
     Cyclops,
     IceDrake,
     Flamekeeper,
+    Forgemaster,
 
     // Adlets
     AdletHunter,
     AdletIcepicker,
     AdletTracker,
     AdletElder,
+
+    // Haniwa
+    HaniwaSoldier,
+    HaniwaGuard,
+    HaniwaArcher,
+    // Terracotta
+    TerracottaStatue,
+    Cursekeeper,
+    CursekeeperFake,
+    ShamanicSpirit,
+    Jiangshi,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -320,6 +346,39 @@ impl AxeTactics {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum HammerTactics {
+    Unskilled = 0,
+    Simple = 1,
+    AttackSimple = 2,
+    SupportSimple = 3,
+    AttackIntermediate = 4,
+    SupportIntermediate = 5,
+    AttackAdvanced = 6,
+    SupportAdvanced = 7,
+    AttackExpert = 8,
+    SupportExpert = 9,
+}
+
+impl HammerTactics {
+    pub fn from_u8(x: u8) -> Self {
+        use HammerTactics::*;
+        match x {
+            0 => Unskilled,
+            1 => Simple,
+            2 => AttackSimple,
+            3 => SupportSimple,
+            4 => AttackIntermediate,
+            5 => SupportIntermediate,
+            6 => AttackAdvanced,
+            7 => SupportAdvanced,
+            8 => AttackExpert,
+            9 => SupportExpert,
+            _ => Unskilled,
+        }
+    }
+}
+
 #[derive(SystemData)]
 pub struct ReadData<'a> {
     pub entities: Entities<'a>,
@@ -350,7 +409,7 @@ pub struct ReadData<'a> {
     pub time_of_day: Read<'a, TimeOfDay>,
     pub light_emitter: ReadStorage<'a, LightEmitter>,
     #[cfg(feature = "worldgen")]
-    pub world: ReadExpect<'a, Arc<world::World>>,
+    pub world: ReadExpect<'a, std::sync::Arc<world::World>>,
     pub rtsim_entities: ReadStorage<'a, RtSimEntity>,
     pub buffs: ReadStorage<'a, Buffs>,
     pub combos: ReadStorage<'a, Combo>,
@@ -458,6 +517,17 @@ pub enum AbilityData {
         range: f32,
         angle: f32,
         ori_rate: f32,
+    },
+    Shockwave {
+        energy: f32,
+        angle: f32,
+        range: f32,
+        combo: u32,
+    },
+    // Note, buff check not done as auras could be non-buff and auras could target either in or
+    // out of group
+    StaticAura {
+        energy: f32,
     },
 }
 
@@ -637,7 +707,29 @@ impl AbilityData {
                 ori_rate: *ori_rate,
                 energy_drain: *energy_drain,
             },
-            _ => return None,
+            Shockwave {
+                energy_cost,
+                shockwave_angle,
+                shockwave_speed,
+                shockwave_duration,
+                minimum_combo,
+                ..
+            } => Self::Shockwave {
+                energy: *energy_cost,
+                angle: *shockwave_angle,
+                range: *shockwave_speed * *shockwave_duration,
+                combo: minimum_combo.unwrap_or(0),
+            },
+            StaticAura { energy_cost, .. } => Self::StaticAura {
+                energy: *energy_cost,
+            },
+            _ => {
+                dev_panic!(
+                    "Agent tried to use ability with a character state they haven't learned to \
+                     understand"
+                );
+                return None;
+            },
         };
         Some(inner)
     }
@@ -866,6 +958,17 @@ impl AbilityData {
                 angle,
                 ori_rate,
             } => beam_check(*range, *angle, *ori_rate) && energy_check(*energy_drain * 3.0),
+            Shockwave {
+                energy,
+                range,
+                angle,
+                combo,
+            } => {
+                melee_check(*range, *angle, None)
+                    && energy_check(*energy)
+                    && combo_check(*combo, false)
+            },
+            StaticAura { energy } => energy_check(*energy),
         }
     }
 }

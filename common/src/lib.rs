@@ -12,9 +12,10 @@
     type_alias_impl_trait,
     extend_one,
     arbitrary_self_types,
-    int_roundings
+    int_roundings,
+    hash_extract_if,
+    option_take_if
 )]
-#![feature(hash_drain_filter)]
 
 pub use common_assets as assets;
 pub use uuid;
@@ -57,6 +58,7 @@ pub mod spiral;
 pub mod states;
 pub mod store;
 pub mod terrain;
+pub mod tether;
 pub mod time;
 pub mod trade;
 pub mod util;

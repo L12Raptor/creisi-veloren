@@ -1,12 +1,12 @@
 ItemDef(
-    name: "Flamekeeper Pants",
-    description: "Flamekeeper Pants",
+    legacy_name: "Flamekeeper Pants",
+    legacy_description: "Flamekeeper Pants",
     kind: Armor((
         kind: Pants,
         stats: Direct((
             protection: Some(Normal(9.0)),
             poise_resilience: Some(Normal(3.0)),
-            crit_power: Some(0.032),
+            precision_power: Some(0.032),
         )),
     )),
     quality: Low,

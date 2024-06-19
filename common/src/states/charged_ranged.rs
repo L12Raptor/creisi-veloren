@@ -1,10 +1,10 @@
 use crate::{
-    combat::CombatEffect,
+    combat::{self, CombatEffect},
     comp::{
         character_state::OutputEvents, projectile::ProjectileConstructor, Body, CharacterState,
         LightEmitter, Pos, StateUpdate,
     },
-    event::ServerEvent,
+    event::ShootEvent,
     states::{
         behavior::{CharacterBehavior, JoinData},
         utils::*,
@@ -24,19 +24,8 @@ pub struct StaticData {
     pub recover_duration: Duration,
     /// How much energy is drained per second when charging
     pub energy_drain: f32,
-    /// How much energy is gained with no charge
-    pub initial_regen: f32,
-    /// How much the energy gain scales as it is charged
-    pub scaled_regen: f32,
-    /// How much damage is dealt with no charge
-    pub initial_damage: f32,
-    /// How much the damage scales as it is charged
-    pub scaled_damage: f32,
-    /// How much knockback there is with no charge
-    pub initial_knockback: f32,
-    /// How much the knockback scales as it is charged
-    pub scaled_knockback: f32,
     /// Projectile information
+    pub projectile: ProjectileConstructor,
     pub projectile_body: Body,
     pub projectile_light: Option<LightEmitter>,
     pub initial_projectile_speed: f32,
@@ -101,31 +90,23 @@ impl CharacterBehavior for Data {
             StageSection::Charge => {
                 if !input_is_pressed(data, self.static_data.ability_info.input) && !self.exhausted {
                     let charge_frac = self.charge_frac();
-                    let arrow = ProjectileConstructor::Arrow {
-                        damage: self.static_data.initial_damage
-                            + charge_frac * self.static_data.scaled_damage,
-                        knockback: self.static_data.initial_knockback
-                            + charge_frac * self.static_data.scaled_knockback,
-                        energy_regen: self.static_data.initial_regen
-                            + charge_frac * self.static_data.scaled_regen,
-                    };
                     // Fire
-                    let (crit_chance, crit_mult) =
-                        get_crit_data(data, self.static_data.ability_info);
-                    let tool_stats = get_tool_stats(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     // Gets offsets
                     let body_offsets = data
                         .body
                         .projectile_offsets(update.ori.look_vec(), data.scale.map_or(1.0, |s| s.0));
                     let pos = Pos(data.pos.0 + body_offsets);
-                    let projectile = arrow.create_projectile(
-                        Some(*data.uid),
-                        crit_chance,
-                        crit_mult,
-                        tool_stats,
-                        self.static_data.damage_effect,
-                    );
-                    output_events.emit_server(ServerEvent::Shoot {
+                    let projectile = self
+                        .static_data
+                        .projectile
+                        .handle_scaling(charge_frac)
+                        .create_projectile(
+                            Some(*data.uid),
+                            precision_mult,
+                            self.static_data.damage_effect,
+                        );
+                    output_events.emit_server(ShootEvent {
                         entity: data.entity,
                         pos,
                         dir: data.inputs.look_dir,
@@ -173,7 +154,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recovers
                     update.character = CharacterState::ChargedRanged(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // since item i18n
 #![deny(clippy::clone_on_ref_ptr)]
 #![allow(clippy::expect_fun_call)] //TODO: evaluate to remove this and use `unwrap_or_else(panic!(...))` instead
 
@@ -5,7 +6,7 @@ use clap::Parser;
 use hashbrown::HashMap;
 use ron::ser::{to_string_pretty, PrettyConfig};
 use serde::Serialize;
-use std::{error::Error, fs::File, io::Write};
+use std::{borrow::Cow, error::Error, fs::File, io::Write};
 
 use veloren_common::{
     assets::ASSETS_PATH,
@@ -78,9 +79,9 @@ fn armor_stats() -> Result<(), Box<dyn Error>> {
 
                     if let Ok(ref record) = record {
                         if item.item_definition_id()
-                            == ItemDefinitionId::Simple(
+                            == ItemDefinitionId::Simple(Cow::Borrowed(
                                 record.get(headers["Path"]).expect("No file path in csv?"),
-                            )
+                            ))
                         {
                             let protection =
                                 if let Some(protection_raw) = record.get(headers["Protection"]) {
@@ -148,17 +149,18 @@ fn armor_stats() -> Result<(), Box<dyn Error>> {
                                 None
                             };
 
-                            let crit_power =
-                                if let Some(crit_power_raw) = record.get(headers["Crit Power"]) {
-                                    let value = crit_power_raw.parse().unwrap();
-                                    if value == 0.0 { None } else { Some(value) }
-                                } else {
-                                    eprintln!(
-                                        "Could not unwrap crit power value for {:?}",
-                                        item.item_definition_id()
-                                    );
-                                    None
-                                };
+                            let precision_power = if let Some(precision_power_raw) =
+                                record.get(headers["Precision Power"])
+                            {
+                                let value = precision_power_raw.parse().unwrap();
+                                if value == 0.0 { None } else { Some(value) }
+                            } else {
+                                eprintln!(
+                                    "Could not unwrap precision power value for {:?}",
+                                    item.item_definition_id()
+                                );
+                                None
+                            };
 
                             let stealth = if let Some(stealth_raw) = record.get(headers["Stealth"])
                             {
@@ -178,7 +180,7 @@ fn armor_stats() -> Result<(), Box<dyn Error>> {
                                 poise_resilience,
                                 energy_max,
                                 energy_reward,
-                                crit_power,
+                                precision_power,
                                 stealth,
                                 ground_contact: Default::default(),
                             };
@@ -285,9 +287,9 @@ fn weapon_stats() -> Result<(), Box<dyn Error>> {
             if let ItemKind::Tool(tool) = &*item.kind() {
                 if let Ok(ref record) = record {
                     if item.item_definition_id()
-                        == ItemDefinitionId::Simple(
+                        == ItemDefinitionId::Simple(Cow::Borrowed(
                             record.get(headers["Path"]).expect("No file path in csv?"),
-                        )
+                        ))
                     {
                         let kind = tool.kind;
                         let equip_time_secs: f32 = record
@@ -341,15 +343,6 @@ fn weapon_stats() -> Result<(), Box<dyn Error>> {
                             Hands::Two
                         };
 
-                        let crit_chance: f32 = record
-                            .get(headers["Crit Chance"])
-                            .expect(&format!(
-                                "Error unwrapping crit_chance for {:?}",
-                                item.item_definition_id()
-                            ))
-                            .parse()
-                            .expect(&format!("Not a f32? {:?}", item.item_definition_id()));
-
                         let range: f32 = record
                             .get(headers["Range"])
                             .expect(&format!(
@@ -382,7 +375,6 @@ fn weapon_stats() -> Result<(), Box<dyn Error>> {
                             power,
                             effect_power,
                             speed,
-                            crit_chance,
                             range,
                             energy_efficiency,
                             buff_strength,

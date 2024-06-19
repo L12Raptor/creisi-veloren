@@ -10,12 +10,13 @@ pub use admin::{AdminRecord, Admins};
 pub use banlist::{
     Ban, BanAction, BanEntry, BanError, BanErrorKind, BanInfo, BanKind, BanRecord, Banlist,
 };
-pub use server_description::ServerDescription;
+pub use server_description::ServerDescriptions;
 pub use whitelist::{Whitelist, WhitelistInfo, WhitelistRecord};
 
 use chrono::Utc;
 use common::{
     calendar::{Calendar, CalendarEvent},
+    consts::DAY_LENGTH_DEFAULT,
     resources::BattleMode,
     rtsim::WorldSettings,
 };
@@ -29,9 +30,10 @@ use std::{
     path::{Path, PathBuf},
 };
 use tracing::{error, warn};
-use world::sim::FileOpts;
+use world::sim::{FileOpts, DEFAULT_WORLD_SEED};
 
-const DEFAULT_WORLD_SEED: u32 = 230;
+use self::server_description::ServerDescription;
+
 const CONFIG_DIR: &str = "server_config";
 const SETTINGS_FILENAME: &str = "settings.ron";
 const WHITELIST_FILENAME: &str = "whitelist.ron";
@@ -61,6 +63,20 @@ impl ServerBattleMode {
         match self {
             ServerBattleMode::Global(mode) => *mode,
             ServerBattleMode::PerPlayer { default: mode } => *mode,
+        }
+    }
+}
+
+impl From<ServerBattleMode> for veloren_query_server::proto::ServerBattleMode {
+    fn from(value: ServerBattleMode) -> Self {
+        use veloren_query_server::proto::ServerBattleMode as QueryBattleMode;
+
+        match value {
+            ServerBattleMode::Global(mode) => match mode {
+                BattleMode::PvP => QueryBattleMode::GlobalPvP,
+                BattleMode::PvE => QueryBattleMode::GlobalPvE,
+            },
+            ServerBattleMode::PerPlayer { .. } => QueryBattleMode::PerPlayer,
         }
     }
 }
@@ -160,8 +176,8 @@ impl CalendarMode {
 #[serde(default)]
 pub struct Settings {
     pub gameserver_protocols: Vec<Protocol>,
-    pub metrics_address: SocketAddr,
     pub auth_server_address: Option<String>,
+    pub query_address: Option<SocketAddr>,
     pub max_players: u16,
     pub world_seed: u32,
     pub server_name: String,
@@ -202,12 +218,12 @@ impl Default for Settings {
                     address: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14004)),
                 },
             ],
-            metrics_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 14005)),
             auth_server_address: Some("https://auth.veloren.net".into()),
+            query_address: Some(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14006))),
             world_seed: DEFAULT_WORLD_SEED,
             server_name: "Veloren Server".into(),
             max_players: 100,
-            day_length: 30.0,
+            day_length: DAY_LENGTH_DEFAULT,
             start_time: 9.0 * 3600.0,
             map_file: None,
             max_view_distance: Some(65),
@@ -285,10 +301,6 @@ impl Settings {
                     pick_unused_port().expect("Failed to find unused port!"),
                 )),
             }],
-            metrics_address: SocketAddr::from((
-                Ipv4Addr::LOCALHOST,
-                pick_unused_port().expect("Failed to find unused port!"),
-            )),
             auth_server_address: None,
             // If loading the default map file, make sure the seed is also default.
             world_seed: if load.map_file.is_some() {
@@ -367,7 +379,7 @@ const MIGRATION_UPGRADE_GUARANTEE: &str = "Any valid file of an old verison shou
 pub struct EditableSettings {
     pub whitelist: Whitelist,
     pub banlist: Banlist,
-    pub server_description: ServerDescription,
+    pub server_description: ServerDescriptions,
     pub admins: Admins,
 }
 
@@ -376,7 +388,7 @@ impl EditableSettings {
         Self {
             whitelist: Whitelist::load(data_dir),
             banlist: Banlist::load(data_dir),
-            server_description: ServerDescription::load(data_dir),
+            server_description: ServerDescriptions::load(data_dir),
             admins: Admins::load(data_dir),
         }
     }
@@ -384,8 +396,13 @@ impl EditableSettings {
     pub fn singleplayer(data_dir: &Path) -> Self {
         let load = Self::load(data_dir);
 
-        let mut server_description = ServerDescription::default();
-        *server_description = "Who needs friends anyway?".into();
+        let mut server_description = ServerDescriptions::default();
+        server_description
+            .descriptions
+            .insert("en".to_string(), ServerDescription {
+                motd: "Who needs friends anyway?".to_string(),
+                rules: None,
+            });
 
         let mut admins = Admins::default();
         // TODO: Let the player choose if they want to use admin commands or not

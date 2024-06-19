@@ -9,6 +9,7 @@ pub mod lod_terrain;
 pub mod particle;
 pub mod postprocess;
 pub mod rain_occlusion;
+pub mod rope;
 pub mod shadow;
 pub mod skybox;
 pub mod sprite;
@@ -19,7 +20,7 @@ pub mod ui;
 use super::{Consts, Renderer, Texture};
 use crate::scene::camera::CameraMode;
 use bytemuck::{Pod, Zeroable};
-use common::terrain::BlockKind;
+use common::{resources::TimeOfDay, terrain::BlockKind, util::srgb_to_linear};
 use std::marker::PhantomData;
 use vek::*;
 
@@ -91,6 +92,8 @@ pub struct Shadow {
     pos_radius: [f32; 4],
 }
 
+pub const TIME_OVERFLOW: f64 = 300000.0;
+
 impl Globals {
     /// Create global consts from the provided parameters.
     #[allow(clippy::too_many_arguments)]
@@ -104,6 +107,7 @@ impl Globals {
         map_bounds: Vec2<f32>,
         time_of_day: f64,
         tick: f64,
+        client_tick: f64,
         screen_res: Vec2<u16>,
         shadow_planes: Vec2<f32>,
         light_count: usize,
@@ -127,10 +131,27 @@ impl Globals {
             focus_off: Vec4::from(focus_pos).map(|e: f32| e.trunc()).into_array(),
             focus_pos: Vec4::from(focus_pos).map(|e: f32| e.fract()).into_array(),
             view_distance: [view_distance, tgt_detail, map_bounds.x, map_bounds.y],
-            time_of_day: [time_of_day as f32; 4],
-            sun_dir: Vec4::from_direction(Self::get_sun_dir(time_of_day)).into_array(),
-            moon_dir: Vec4::from_direction(Self::get_moon_dir(time_of_day)).into_array(),
-            tick: [tick as f32; 4],
+            time_of_day: [
+                (time_of_day % (3600.0 * 24.0)) as f32,
+                // TODO: Find a better way than just pure repetition. A solution like
+                // the one applied to `tick` could work, but it would be used in hot
+                // shader_code. So we might not want to use that method there.
+                //
+                // Repeats every 1000 ingame days. This increases by dt * (1 / 3600)
+                // per tick on defualt server settings. So those per tick changes can't
+                // really be fully represented at a value above `50.0`.
+                (time_of_day / (3600.0 * 24.0) % 1000.0) as f32,
+                0.0,
+                0.0,
+            ],
+            sun_dir: Vec4::from_direction(TimeOfDay::new(time_of_day).get_sun_dir()).into_array(),
+            moon_dir: Vec4::from_direction(TimeOfDay::new(time_of_day).get_moon_dir()).into_array(),
+            tick: [
+                (tick % TIME_OVERFLOW) as f32,
+                (tick / TIME_OVERFLOW).floor() as f32,
+                client_tick as f32,
+                0.0,
+            ],
             // Provide the shadow map far plane as well.
             screen_res: [
                 screen_res.x as f32,
@@ -165,7 +186,7 @@ impl Globals {
             gamma_exposure: [gamma, exposure, 0.0, 0.0],
             last_lightning: last_lightning
                 .0
-                .with_w(last_lightning.1 as f32)
+                .with_w((last_lightning.1 % TIME_OVERFLOW) as f32)
                 .into_array(),
             wind_vel: wind_vel.into_array(),
             ambiance: ambiance.clamped(0.0, 1.0),
@@ -173,23 +194,6 @@ impl Globals {
             sprite_render_distance,
             globals_dummy: [0.0; 3],
         }
-    }
-
-    fn get_angle_rad(time_of_day: f64) -> f32 {
-        const TIME_FACTOR: f32 = (std::f32::consts::PI * 2.0) / (3600.0 * 24.0);
-        time_of_day as f32 * TIME_FACTOR
-    }
-
-    /// Computes the direction of light from the sun based on the time of day.
-    pub fn get_sun_dir(time_of_day: f64) -> Vec3<f32> {
-        let angle_rad = Self::get_angle_rad(time_of_day);
-        Vec3::new(-angle_rad.sin(), 0.0, angle_rad.cos())
-    }
-
-    /// Computes the direction of light from the moon based on the time of day.
-    pub fn get_moon_dir(time_of_day: f64) -> Vec3<f32> {
-        let angle_rad = Self::get_angle_rad(time_of_day);
-        -Vec3::new(-angle_rad.sin(), 0.0, angle_rad.cos() - 0.5).normalized()
     }
 }
 
@@ -203,6 +207,7 @@ impl Default for Globals {
             0.0,
             100.0,
             Vec2::new(140.0, 2048.0),
+            0.0,
             0.0,
             0.0,
             Vec2::new(800, 500),
@@ -225,9 +230,12 @@ impl Default for Globals {
 
 impl Light {
     pub fn new(pos: Vec3<f32>, col: Rgb<f32>, strength: f32) -> Self {
+        let linearized_col = srgb_to_linear(col);
+
         Self {
             pos: Vec4::from(pos).into_array(),
-            col: (Rgba::new(col.r, col.g, col.b, 0.0) * strength).into_array(),
+            col: (Rgba::new(linearized_col.r, linearized_col.g, linearized_col.b, 0.0) * strength)
+                .into_array(),
         }
     }
 
@@ -358,7 +366,8 @@ pub trait AtlasData {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: fmt,
-                usage: wgpu::TextureUsage::SAMPLED | wgpu::TextureUsage::COPY_DST,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
             };
 
             let sampler_info = wgpu::SamplerDescriptor {
@@ -395,7 +404,7 @@ impl GlobalsLayouts {
             // Global uniform
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -406,7 +415,7 @@ impl GlobalsLayouts {
             // Noise tex
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
@@ -416,17 +425,14 @@ impl GlobalsLayouts {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                ty: wgpu::BindingType::Sampler {
-                    filtering: true,
-                    comparison: false,
-                },
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
             // Light uniform
             wgpu::BindGroupLayoutEntry {
                 binding: 3,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -437,7 +443,7 @@ impl GlobalsLayouts {
             // Shadow uniform
             wgpu::BindGroupLayoutEntry {
                 binding: 4,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -448,7 +454,7 @@ impl GlobalsLayouts {
             // Alt texture
             wgpu::BindGroupLayoutEntry {
                 binding: 5,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
@@ -458,17 +464,14 @@ impl GlobalsLayouts {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 6,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                ty: wgpu::BindingType::Sampler {
-                    filtering: true,
-                    comparison: false,
-                },
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
             // Horizon texture
             wgpu::BindGroupLayoutEntry {
                 binding: 7,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
@@ -478,17 +481,14 @@ impl GlobalsLayouts {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 8,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                ty: wgpu::BindingType::Sampler {
-                    filtering: true,
-                    comparison: false,
-                },
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
             // light shadows (ie shadows from a light?)
             wgpu::BindGroupLayoutEntry {
                 binding: 9,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 // TODO: is this relevant?
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
@@ -500,7 +500,7 @@ impl GlobalsLayouts {
             // lod map (t_map)
             wgpu::BindGroupLayoutEntry {
                 binding: 10,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
@@ -510,17 +510,14 @@ impl GlobalsLayouts {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 11,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                ty: wgpu::BindingType::Sampler {
-                    filtering: true,
-                    comparison: false,
-                },
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
             // clouds t_weather
             wgpu::BindGroupLayoutEntry {
                 binding: 12,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
@@ -530,17 +527,14 @@ impl GlobalsLayouts {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 13,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                ty: wgpu::BindingType::Sampler {
-                    filtering: true,
-                    comparison: false,
-                },
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
             // rain occlusion
             wgpu::BindGroupLayoutEntry {
                 binding: 14,
-                visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -563,7 +557,7 @@ impl GlobalsLayouts {
                 // point shadow_maps
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
                         view_dimension: wgpu::TextureViewDimension::Cube,
@@ -573,17 +567,14 @@ impl GlobalsLayouts {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler {
-                        filtering: true,
-                        comparison: true,
-                    },
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
                 // directed shadow maps
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -593,17 +584,14 @@ impl GlobalsLayouts {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler {
-                        filtering: true,
-                        comparison: true,
-                    },
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
                 // Rain occlusion maps
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
-                    visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -613,11 +601,8 @@ impl GlobalsLayouts {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
-                    visibility: wgpu::ShaderStage::VERTEX | wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler {
-                        filtering: true,
-                        comparison: true,
-                    },
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
             ],

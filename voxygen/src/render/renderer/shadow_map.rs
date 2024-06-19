@@ -1,7 +1,4 @@
-use super::{
-    super::{pipelines::shadow, texture::Texture, RenderError, ShadowMapMode},
-    Renderer,
-};
+use super::super::{pipelines::shadow, texture::Texture, RenderError, ShadowMapMode};
 use vek::*;
 
 /// A type that holds shadow map data.  Since shadow mapping may not be
@@ -15,7 +12,6 @@ pub struct ShadowMapRenderer {
     pub terrain_directed_pipeline: shadow::ShadowPipeline,
     pub figure_directed_pipeline: shadow::ShadowFigurePipeline,
     pub debug_directed_pipeline: shadow::ShadowDebugPipeline,
-    pub layout: shadow::ShadowLayout,
 }
 
 pub enum ShadowMap {
@@ -46,8 +42,6 @@ impl ShadowMap {
         {
             let (point_depth, directed_depth) = shadow_views;
 
-            let layout = shadow::ShadowLayout::new(device);
-
             Self::Enabled(ShadowMapRenderer {
                 directed_depth,
                 point_depth,
@@ -56,8 +50,6 @@ impl ShadowMap {
                 terrain_directed_pipeline,
                 figure_directed_pipeline,
                 debug_directed_pipeline,
-
-                layout,
             })
         } else {
             let (dummy_point, dummy_directed) = Self::create_dummy_shadow_tex(device, queue);
@@ -81,7 +73,9 @@ impl ShadowMap {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth24Plus,
-                usage: wgpu::TextureUsage::SAMPLED | wgpu::TextureUsage::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
             };
 
             let view = wgpu::TextureViewDescriptor {
@@ -125,10 +119,12 @@ impl ShadowMap {
                     view: &tex.view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
         };
         clear(&cube_tex);
@@ -146,11 +142,11 @@ impl ShadowMap {
         device: &wgpu::Device,
         size: (u32, u32),
         mode: &ShadowMapMode,
+        max_texture_size: u32,
     ) -> Result<(Texture, Texture), RenderError> {
         // (Attempt to) apply resolution factor to shadow map resolution.
         let resolution_factor = mode.resolution.clamped(0.25, 4.0);
 
-        let max_texture_size = Renderer::max_texture_size_raw(device);
         // Limit to max texture size, rather than erroring.
         let size = Vec2::new(size.0, size.1).map(|e| {
             let size = e as f32 * resolution_factor;
@@ -208,7 +204,8 @@ impl ShadowMap {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24Plus,
-            usage: wgpu::TextureUsage::SAMPLED | wgpu::TextureUsage::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
         };
 
         let point_shadow_view = wgpu::TextureViewDescriptor {
@@ -233,7 +230,8 @@ impl ShadowMap {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24Plus,
-            usage: wgpu::TextureUsage::SAMPLED | wgpu::TextureUsage::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
         };
 
         let directed_shadow_view = wgpu::TextureViewDescriptor {

@@ -2,29 +2,34 @@
 use crate::{
     combat::{
         AttackEffect, CombatBuff, CombatBuffStrength, CombatEffect, CombatRequirement,
-        DamagedEffect,
+        DamagedEffect, DeathEffect,
     },
-    comp::{aura::AuraKey, Health, Stats},
+    comp::{aura::AuraKey, Mass, Stats},
     resources::{Secs, Time},
     uid::Uid,
 };
 
 use core::cmp::Ordering;
-use hashbrown::HashMap;
+use enum_map::{Enum, EnumMap};
 use itertools::Either;
 use serde::{Deserialize, Serialize};
+use slotmap::{new_key_type, SlotMap};
 use specs::{Component, DerefFlaggedStorage, VecStorage};
 use strum::EnumIter;
 
 use super::Body;
 
+new_key_type! { pub struct BuffKey; }
+
 /// De/buff Kind.
 /// This is used to determine what effects a buff will have
 #[derive(
-    Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord, EnumIter,
+    Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, PartialOrd, Ord, EnumIter, Enum,
 )]
 pub enum BuffKind {
-    // Buffs
+    // =================
+    //       BUFFS
+    // =================
     /// Restores health/time for some period.
     /// Strength should be the healing per second.
     Regeneration,
@@ -34,6 +39,11 @@ pub enum BuffKind {
     /// Applied when drinking a potion.
     /// Strength should be the healing per second.
     Potion,
+    /// Increases movement speed and vulnerability to damage as well as
+    /// decreases the amount of damage dealt.
+    /// Movement speed increases linearly with strength 1.0 is an 100% increase
+    /// Damage vulnerability and damage reduction are both hard set to 100%
+    Agility,
     /// Applied when sitting at a campfire.
     /// Strength is fraction of health restored per second.
     CampfireHeal,
@@ -62,12 +72,12 @@ pub enum BuffKind {
     /// 50% increase, 1.0 is a 100% increase.
     Hastened,
     /// Increases resistance to incoming poise, and poise damage dealt as health
-    /// is lost from the time the buff activated.
+    /// is lost.
     /// Strength scales the resistance non-linearly. 0.5 provides 50%, 1.0
     /// provides 67%.
     /// Strength scales the poise damage increase linearly, a strength of 1.0
-    /// and n health less from activation will cause poise damage to increase by
-    /// n%.
+    /// and n health less from maximum health will cause poise damage to
+    /// increase by n%.
     Fortitude,
     /// Increases both attack damage and vulnerability to damage.
     /// Damage increases linearly with strength, 1.0 is a 100% increase.
@@ -90,9 +100,10 @@ pub enum BuffKind {
     /// Your attacks against bleeding targets have lifesteal
     /// Strength increases the fraction of damage restored as life
     Bloodfeast,
-    /// Guarantees that the next attack is a critical hit. Does this kind of
-    /// hackily by adding 100% to the crit, will need to be adjusted if we ever
-    /// allow double crits instead of treating 100 as a ceiling.
+    /// Guarantees that the next attack is a precise hit. Does this kind of
+    /// hackily by adding 100% to the precision, will need to be adjusted if we
+    /// ever allow double precision hits instead of treating 100 as a
+    /// ceiling.
     ImminentCritical,
     /// Increases combo gain, every 1 strength increases combo per strike by 1,
     /// rounds to nearest integer
@@ -106,9 +117,9 @@ pub enum BuffKind {
     /// generated when damaged, and decreases movement speed.
     /// Damage resistance increases non-linearly with strength, 0.5 is 50% and
     /// 1.0 is 67%. Poise resistance increases non-linearly with strength, 0.5
-    /// is 50% and 1.0 is 67%. Movement speed decreases linearly with strength,
-    /// 0.5 is 50% and 1.0 is 33%. Combo generation is linear with strength, 1.0
-    /// is 5 combo generated on being hit.
+    /// is 50% and 1.0 is 67%. Movement speed is decreased to 50%. Combo
+    /// generation is linear with strength, 1.0 is 5 combo generated on being
+    /// hit.
     Defiance,
     /// Increases both attack damage, vulnerability to damage, attack speed, and
     /// movement speed Damage increases linearly with strength, 1.0 is a
@@ -118,7 +129,27 @@ pub enum BuffKind {
     /// non-linearly with strength, 0.5 is a 12.5% increase, 1.0 is a 16.7%
     /// increase decrease.
     Berserk,
-    // Debuffs
+    /// Increases poise resistance and energy reward. However if killed, buffs
+    /// killer with Reckless buff. Poise resistance scales non-linearly with
+    /// strength, 0.5 is 50% and 1.0 is 67%. Energy reward scales linearly with
+    /// strength, 0.5 is +50% and 1.0 is +100% strength. Reckless buff reward
+    /// strength is equal to scornful taunt buff strength.
+    ScornfulTaunt,
+    /// Increases damage resistance, causes energy to be generated when damaged,
+    /// and decreases movement speed. Damage resistance increases non-linearly
+    /// with strength, 0.5 is 50% and 1.0 is 67%. Energy generation is linear
+    /// with strength, 1.0 is 10 energy per hit. Movement speed is decreased to
+    /// 70%.
+    Tenacity,
+    /// Applies to some debuffs that have strong CC effects. Automatically
+    /// gained upon receiving those debuffs, and causes future instances of
+    /// those debuffs to be applied with reduced duration.
+    /// Strength linearly decreases the duration of newly applied, affected
+    /// debuffs, 0.5 is a 50% reduction.
+    Resilience,
+    // =================
+    //      DEBUFFS
+    // =================
     /// Does damage to a creature over time.
     /// Strength should be the DPS of the debuff.
     Burning,
@@ -156,17 +187,65 @@ pub enum BuffKind {
     /// Results from drinking a potion.
     /// Decreases the health gained from subsequent potions.
     PotionSickness,
-    // Changed into another body.
-    Polymorphed(Body),
+    /// Slows movement speed and reduces energy reward.
+    /// Both scales non-linearly to strength, 0.5 lead to movespeed reduction
+    /// by 25% and energy reward reduced by 150%, 1.0 lead to MS reduction by
+    /// 33.3% and energy reward reduced by 200%. Energy reward can't be
+    /// reduced by more than 200%, to a minimum value of -100%.
+    Heatstroke,
+    /// Reduces movement speed to 0.
+    /// Strength increases the relative mass of the creature that can be
+    /// targeted. A strength of 1.0 means that a creature of the same mass gets
+    /// rooted for the full duration. A strength of 2.0 means a creature of
+    /// twice the mass gets rooted for the full duration. If the target's mass
+    /// is higher than the strength allows for, duration gets reduced using a
+    /// mutiplier from the ratio of masses.
+    Rooted,
+    /// Slows movement speed and reduces energy reward
+    /// Both scale non-linearly with strength, 0.5 leads to 50% reduction of
+    /// energy reward and 33% reduction of move speed. 1.0 leads to 67%
+    /// reduction of energy reward and 50% reduction of move speed.
+    Winded,
+    /// Prevents use of auxiliary abilities.
+    /// Does not scale with strength
+    Concussion,
+    /// Increases amount of poise damage received
+    /// Scales linearly with strength, 1.0 leads to 100% more poise damage
+    /// received
+    Staggered,
+    // =================
+    //      COMPLEX
+    // =================
+    /// Changed into another body.
+    Polymorphed,
+}
+
+/// Tells a little more about the buff kind than simple buff/debuff
+pub enum BuffDescriptor {
+    /// Simple positive buffs, like `BuffKind::Saturation`
+    SimplePositive,
+    /// Simple negative buffs, like `BuffKind::Bleeding`
+    SimpleNegative,
+    /// Buffs that require unusual data that can't be governed just by strength
+    /// and duration, like `BuffKind::Polymorhped`
+    Complex,
+    // For future additions, we may want to tell about non-obvious buffs,
+    // like Agility.
+    // Also maybe extend Complex to differentiate between Positive, Negative
+    // and Neutral buffs?
+    // For now, Complex is assumed to be neutral/non-obvious.
 }
 
 impl BuffKind {
-    /// Checks if buff is buff or debuff.
-    pub fn is_buff(self) -> bool {
+    /// Tells a little more about buff kind than simple buff/debuff
+    ///
+    /// Read more in [BuffDescriptor].
+    pub fn differentiate(self) -> BuffDescriptor {
         match self {
             BuffKind::Regeneration
             | BuffKind::Saturation
             | BuffKind::Potion
+            | BuffKind::Agility
             | BuffKind::CampfireHeal
             | BuffKind::Frenzied
             | BuffKind::EnergyRegen
@@ -186,7 +265,10 @@ impl BuffKind {
             | BuffKind::Sunderer
             | BuffKind::Defiance
             | BuffKind::Bloodfeast
-            | BuffKind::Berserk => true,
+            | BuffKind::Berserk
+            | BuffKind::ScornfulTaunt
+            | BuffKind::Tenacity
+            | BuffKind::Resilience => BuffDescriptor::SimplePositive,
             BuffKind::Bleeding
             | BuffKind::Cursed
             | BuffKind::Burning
@@ -197,7 +279,27 @@ impl BuffKind {
             | BuffKind::Poisoned
             | BuffKind::Parried
             | BuffKind::PotionSickness
-            | BuffKind::Polymorphed(_) => false,
+            | BuffKind::Heatstroke
+            | BuffKind::Rooted
+            | BuffKind::Winded
+            | BuffKind::Concussion
+            | BuffKind::Staggered => BuffDescriptor::SimpleNegative,
+            BuffKind::Polymorphed => BuffDescriptor::Complex,
+        }
+    }
+
+    /// Checks if buff is buff or debuff.
+    pub fn is_buff(self) -> bool {
+        match self.differentiate() {
+            BuffDescriptor::SimplePositive => true,
+            BuffDescriptor::SimpleNegative | BuffDescriptor::Complex => false,
+        }
+    }
+
+    pub fn is_simple(self) -> bool {
+        match self.differentiate() {
+            BuffDescriptor::SimplePositive | BuffDescriptor::SimpleNegative => true,
+            BuffDescriptor::Complex => false,
         }
     }
 
@@ -215,16 +317,14 @@ impl BuffKind {
 
     /// Checks if multiple instances of the buff should be processed, instead of
     /// only the strongest.
-    pub fn stacks(self) -> bool { matches!(self, BuffKind::PotionSickness) }
+    pub fn stacks(self) -> bool { matches!(self, BuffKind::PotionSickness | BuffKind::Resilience) }
 
-    pub fn effects(
-        &self,
-        data: &BuffData,
-        stats: Option<&Stats>,
-        health: Option<&Health>,
-    ) -> Vec<BuffEffect> {
+    pub fn effects(&self, data: &BuffData, stats: Option<&Stats>) -> Vec<BuffEffect> {
         // Normalized nonlinear scaling
+        // TODO: Do we want to make denominator term parameterized. Come back to if we
+        // add nn_scaling3.
         let nn_scaling = |a| a / (a + 0.5);
+        let nn_scaling2 = |a| a / (a + 1.0);
         let instance = rand::random();
         match self {
             BuffKind::Bleeding => vec![BuffEffect::HealthChangeOverTime {
@@ -253,6 +353,13 @@ impl BuffKind {
                     tick_dur: Secs(0.1),
                 }]
             },
+            BuffKind::Agility => vec![
+                BuffEffect::MovementSpeed(
+                    1.0 + data.strength * stats.map_or(1.0, |s| s.move_speed_multiplier),
+                ),
+                BuffEffect::DamageReduction(-1.0),
+                BuffEffect::AttackDamage(0.0),
+            ],
             BuffKind::CampfireHeal => vec![BuffEffect::HealthChangeOverTime {
                 rate: data.strength,
                 kind: ModifierKind::Multiplicative,
@@ -330,25 +437,32 @@ impl BuffKind {
             BuffKind::Hastened => vec![
                 BuffEffect::MovementSpeed(1.0 + data.strength),
                 BuffEffect::AttackSpeed(1.0 + data.strength),
-                BuffEffect::CriticalChance {
-                    kind: ModifierKind::Multiplicative,
-                    val: 0.0,
-                },
+                BuffEffect::PrecisionOverride(0.0),
             ],
             BuffKind::Fortitude => vec![
                 BuffEffect::PoiseReduction(nn_scaling(data.strength)),
-                BuffEffect::PoiseDamageFromLostHealth {
-                    initial_health: health.map_or(0.0, |h| h.current()),
-                    strength: data.strength,
-                },
+                BuffEffect::PoiseDamageFromLostHealth(data.strength),
             ],
-            BuffKind::Parried => vec![BuffEffect::AttackSpeed(0.5)],
-            BuffKind::PotionSickness => vec![BuffEffect::HealReduction(data.strength)],
+            BuffKind::Parried => vec![
+                BuffEffect::RecoverySpeed(0.25),
+                BuffEffect::PrecisionVulnerabilityOverride(1.0),
+            ],
+            //TODO: Handle potion sickness in a more general way.
+            BuffKind::PotionSickness => vec![
+                BuffEffect::HealReduction(data.strength),
+                BuffEffect::MoveSpeedReduction(data.strength),
+            ],
             BuffKind::Reckless => vec![
                 BuffEffect::DamageReduction(-data.strength),
                 BuffEffect::AttackDamage(1.0 + data.strength),
             ],
-            BuffKind::Polymorphed(body) => vec![BuffEffect::BodyChange(*body)],
+            BuffKind::Polymorphed => {
+                let mut effects = Vec::new();
+                if let Some(MiscBuffData::Body(body)) = data.misc_data {
+                    effects.push(BuffEffect::BodyChange(body));
+                }
+                effects
+            },
             BuffKind::Flame => vec![BuffEffect::AttackEffect(AttackEffect::new(
                 None,
                 CombatEffect::Buff(CombatBuff {
@@ -379,10 +493,7 @@ impl BuffKind {
                 AttackEffect::new(None, CombatEffect::Lifesteal(data.strength))
                     .with_requirement(CombatRequirement::TargetHasBuff(BuffKind::Bleeding)),
             )],
-            BuffKind::ImminentCritical => vec![BuffEffect::CriticalChance {
-                kind: ModifierKind::Additive,
-                val: 1.0,
-            }],
+            BuffKind::ImminentCritical => vec![BuffEffect::PrecisionOverride(1.0)],
             BuffKind::Fury => vec![BuffEffect::AttackEffect(
                 AttackEffect::new(None, CombatEffect::Combo(data.strength.round() as i32))
                     .with_requirement(CombatRequirement::AnyDamage),
@@ -394,7 +505,7 @@ impl BuffKind {
             BuffKind::Defiance => vec![
                 BuffEffect::DamageReduction(nn_scaling(data.strength)),
                 BuffEffect::PoiseReduction(nn_scaling(data.strength)),
-                BuffEffect::MovementSpeed(1.0 - nn_scaling(data.strength)),
+                BuffEffect::MovementSpeed(0.5),
                 BuffEffect::DamagedEffect(DamagedEffect::Combo(
                     (data.strength * 5.0).round() as i32
                 )),
@@ -405,6 +516,32 @@ impl BuffKind {
                 BuffEffect::AttackSpeed(1.0 + nn_scaling(data.strength) / 2.0),
                 BuffEffect::MovementSpeed(1.0 + nn_scaling(data.strength) / 4.0),
             ],
+            BuffKind::Heatstroke => vec![
+                BuffEffect::MovementSpeed(1.0 - nn_scaling(data.strength) * 0.5),
+                BuffEffect::EnergyReward((1.0 - nn_scaling(data.strength) * 3.0).max(-1.0)),
+            ],
+            BuffKind::ScornfulTaunt => vec![
+                BuffEffect::PoiseReduction(nn_scaling(data.strength)),
+                BuffEffect::EnergyReward(1.0 + data.strength),
+                BuffEffect::DeathEffect(DeathEffect::AttackerBuff {
+                    kind: BuffKind::Reckless,
+                    strength: data.strength,
+                    duration: data.duration,
+                }),
+            ],
+            BuffKind::Rooted => vec![BuffEffect::MovementSpeed(0.0)],
+            BuffKind::Winded => vec![
+                BuffEffect::MovementSpeed(1.0 - nn_scaling2(data.strength)),
+                BuffEffect::EnergyReward(1.0 - nn_scaling(data.strength)),
+            ],
+            BuffKind::Concussion => vec![BuffEffect::DisableAuxiliaryAbilities],
+            BuffKind::Staggered => vec![BuffEffect::PoiseReduction(-data.strength)],
+            BuffKind::Tenacity => vec![
+                BuffEffect::DamageReduction(nn_scaling(data.strength)),
+                BuffEffect::MovementSpeed(0.7),
+                BuffEffect::DamagedEffect(DamagedEffect::Energy(data.strength * 10.0)),
+            ],
+            BuffKind::Resilience => vec![BuffEffect::CrowdControlResistance(data.strength)],
         }
     }
 
@@ -419,6 +556,42 @@ impl BuffKind {
         }
         cat_ids
     }
+
+    fn modify_data(
+        &self,
+        mut data: BuffData,
+        source_mass: Option<&Mass>,
+        dest_info: DestInfo,
+    ) -> BuffData {
+        // TODO: Remove clippy allow after another buff needs this
+        #[allow(clippy::single_match)]
+        match self {
+            BuffKind::Rooted => {
+                let source_mass = source_mass.map_or(50.0, |m| m.0 as f64);
+                let dest_mass = dest_info.mass.map_or(50.0, |m| m.0 as f64);
+                let ratio = (source_mass / dest_mass).min(1.0);
+                data.duration = data.duration.map(|dur| Secs(dur.0 * ratio));
+            },
+            _ => {},
+        }
+        if self.resilience_ccr_strength(data).is_some() {
+            let dur_mult = dest_info
+                .stats
+                .map_or(1.0, |s| (1.0 - s.crowd_control_resistance).max(0.0));
+            data.duration = data.duration.map(|dur| dur * dur_mult as f64);
+        }
+        data
+    }
+
+    /// If a buff kind should also give resilience when applied, return the
+    /// strength that resilience should have, otherwise return None
+    pub fn resilience_ccr_strength(&self, data: BuffData) -> Option<f32> {
+        match self {
+            BuffKind::Concussion => Some(0.3),
+            BuffKind::Frozen => Some(data.strength),
+            _ => None,
+        }
+    }
 }
 
 // Struct used to store data relevant to a buff
@@ -428,8 +601,15 @@ pub struct BuffData {
     pub strength: f32,
     pub duration: Option<Secs>,
     pub delay: Option<Secs>,
-    // Used for buffs that have rider buffs (e.g. Flame, Frigid)
+    /// Used for buffs that have rider buffs (e.g. Flame, Frigid)
     pub secondary_duration: Option<Secs>,
+    /// Used to add random data to buffs if needed (e.g. polymorphed)
+    pub misc_data: Option<MiscBuffData>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MiscBuffData {
+    Body(Body),
 }
 
 impl BuffData {
@@ -439,6 +619,7 @@ impl BuffData {
             duration,
             delay: None,
             secondary_duration: None,
+            misc_data: None,
         }
     }
 
@@ -449,6 +630,11 @@ impl BuffData {
 
     pub fn with_secondary_duration(mut self, sec_dur: Secs) -> Self {
         self.secondary_duration = Some(sec_dur);
+        self
+    }
+
+    pub fn with_misc_data(mut self, misc_data: MiscBuffData) -> Self {
+        self.misc_data = Some(misc_data);
         self
     }
 }
@@ -466,16 +652,17 @@ pub enum BuffCategory {
     FromActiveAura(Uid, AuraKey),
     RemoveOnAttack,
     RemoveOnLoadoutChange,
+    SelfBuff,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum ModifierKind {
     Additive,
     Multiplicative,
 }
 
 /// Data indicating and configuring behaviour of a de/buff.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum BuffEffect {
     /// Periodically damages or heals entity
     HealthChangeOverTime {
@@ -512,24 +699,24 @@ pub enum BuffEffect {
     MovementSpeed(f32),
     /// Modifies attack speed of target
     AttackSpeed(f32),
+    /// Modifies recovery speed of target
+    RecoverySpeed(f32),
     /// Modifies ground friction of target
     GroundFriction(f32),
     /// Reduces poise damage taken after armor is accounted for by this fraction
     PoiseReduction(f32),
     /// Reduces amount healed by consumables
     HealReduction(f32),
+    /// Reduces amount of speed increase by consumables
+    MoveSpeedReduction(f32),
     /// Increases poise damage dealt when health is lost
-    PoiseDamageFromLostHealth {
-        initial_health: f32,
-        strength: f32,
-    },
+    PoiseDamageFromLostHealth(f32),
     /// Modifier to the amount of damage dealt with attacks
     AttackDamage(f32),
-    /// Multiplies crit chance of attacks
-    CriticalChance {
-        kind: ModifierKind,
-        val: f32,
-    },
+    /// Overrides the precision multiplier applied to an attack
+    PrecisionOverride(f32),
+    /// Overrides the precision multiplier applied to an incoming attack
+    PrecisionVulnerabilityOverride(f32),
     /// Changes body.
     BodyChange(Body),
     BuffImmunity(BuffKind),
@@ -544,6 +731,12 @@ pub enum BuffEffect {
     EnergyReward(f32),
     /// Add an effect to the entity when damaged by an attack
     DamagedEffect(DamagedEffect),
+    /// Add an effect to the entity when killed
+    DeathEffect(DeathEffect),
+    /// Prevents use of auxiliary abilities
+    DisableAuxiliaryAbilities,
+    /// Reduces duration of crowd control debuffs
+    CrowdControlResistance(f32),
 }
 
 /// Actual de/buff.
@@ -577,9 +770,8 @@ pub enum BuffChange {
     RemoveByKind(BuffKind),
     /// Removes all buffs with this ID, but not debuffs.
     RemoveFromController(BuffKind),
-    /// Removes buffs of these indices (first vec is for active buffs, second is
-    /// for inactive buffs), should only be called when buffs expire
-    RemoveById(Vec<BuffId>),
+    /// Removes buffs of these indices, should only be called when buffs expire
+    RemoveByKey(Vec<BuffKey>),
     /// Removes buffs of these categories (first vec is of categories of which
     /// all are required, second vec is of categories of which at least one is
     /// required, third vec is of categories that will not be removed)
@@ -600,10 +792,12 @@ impl Buff {
         cat_ids: Vec<BuffCategory>,
         source: BuffSource,
         time: Time,
-        stats: Option<&Stats>,
-        health: Option<&Health>,
+        dest_info: DestInfo,
+        // Create source_info if we need more parameters from source
+        source_mass: Option<&Mass>,
     ) -> Self {
-        let effects = kind.effects(&data, stats, health);
+        let data = kind.modify_data(data, source_mass, dest_info);
+        let effects = kind.effects(&data, dest_info.stats);
         let cat_ids = kind.extend_cat_ids(cat_ids);
         let start_time = Time(time.0 + data.delay.map_or(0.0, |delay| delay.0));
         let end_time = if cat_ids
@@ -693,93 +887,122 @@ pub enum BuffSource {
 /// would be probably an undesired effect).
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Buffs {
-    /// Uid used for synchronization
-    id_counter: u64,
-    /// Maps Kinds of buff to Id's of currently applied buffs of that kind and
+    /// Maps kinds of buff to currently applied buffs of that kind and
     /// the time that the first buff was added (time gets reset if entity no
     /// longer has buffs of that kind)
-    pub kinds: HashMap<BuffKind, (Vec<BuffId>, Time)>,
-    // All currently applied buffs stored by Id
-    pub buffs: HashMap<BuffId, Buff>,
+    pub kinds: EnumMap<BuffKind, Option<(Vec<BuffKey>, Time)>>,
+    // All buffs currently present on an entity
+    pub buffs: SlotMap<BuffKey, Buff>,
 }
 
 impl Buffs {
     fn sort_kind(&mut self, kind: BuffKind) {
-        if let Some(buff_order) = self.kinds.get_mut(&kind) {
+        if let Some(buff_order) = self.kinds[kind].as_mut() {
             if buff_order.0.is_empty() {
-                self.kinds.remove(&kind);
+                self.kinds[kind] = None;
             } else {
                 let buffs = &self.buffs;
                 // Intentionally sorted in reverse so that the strongest buffs are earlier in
                 // the vector
                 buff_order
                     .0
-                    .sort_by(|a, b| buffs[b].partial_cmp(&buffs[a]).unwrap_or(Ordering::Equal));
+                    .sort_by(|a, b| buffs[*b].partial_cmp(&buffs[*a]).unwrap_or(Ordering::Equal));
             }
         }
     }
 
     pub fn remove_kind(&mut self, kind: BuffKind) {
-        if let Some(buff_ids) = self.kinds.get_mut(&kind) {
-            for id in &buff_ids.0 {
-                self.buffs.remove(id);
+        if let Some((buff_keys, _)) = self.kinds[kind].as_ref() {
+            for key in buff_keys {
+                self.buffs.remove(*key);
             }
-            self.kinds.remove(&kind);
+            self.kinds[kind] = None;
         }
     }
 
-    fn force_insert(&mut self, id: BuffId, buff: Buff, current_time: Time) -> BuffId {
+    pub fn insert(&mut self, buff: Buff, current_time: Time) -> BuffKey {
         let kind = buff.kind;
-        self.kinds
-            .entry(kind)
-            .or_insert((Vec::new(), current_time))
-            .0
-            .push(id);
-        self.buffs.insert(id, buff);
+        // Try to find another overlaping non-queueable buff with same data, cat_ids and
+        // source.
+        let other_key = if kind.queues() {
+            None
+        } else {
+            self.kinds[kind].as_ref().and_then(|(keys, _)| {
+                keys.iter()
+                    .find(|key| {
+                        self.buffs.get(**key).map_or(false, |other_buff| {
+                            other_buff.data == buff.data
+                                && other_buff.cat_ids == buff.cat_ids
+                                && other_buff.source == buff.source
+                                && other_buff
+                                    .end_time
+                                    .map_or(true, |end_time| end_time.0 >= buff.start_time.0)
+                        })
+                    })
+                    .copied()
+            })
+        };
+
+        // If another buff with the same fields is found, update end_time and effects
+        let key = if !kind.stacks()
+            && let Some((other_buff, key)) =
+                other_key.and_then(|key| Some((self.buffs.get_mut(key)?, key)))
+        {
+            other_buff.end_time = buff.end_time;
+            other_buff.effects = buff.effects;
+            key
+        // Otherwise, insert a new buff
+        } else {
+            let key = self.buffs.insert(buff);
+            self.kinds[kind]
+                .get_or_insert_with(|| (Vec::new(), current_time))
+                .0
+                .push(key);
+            key
+        };
+
         self.sort_kind(kind);
         if kind.queues() {
             self.delay_queueable_buffs(kind, current_time);
         }
-        id
+        key
     }
 
-    pub fn insert(&mut self, buff: Buff, current_time: Time) -> BuffId {
-        self.id_counter += 1;
-        self.force_insert(self.id_counter, buff, current_time)
-    }
-
-    pub fn contains(&self, kind: BuffKind) -> bool { self.kinds.contains_key(&kind) }
+    pub fn contains(&self, kind: BuffKind) -> bool { self.kinds[kind].is_some() }
 
     // Iterate through buffs of a given kind in effect order (most powerful first)
-    pub fn iter_kind(&self, kind: BuffKind) -> impl Iterator<Item = (BuffId, &Buff)> + '_ {
-        self.kinds
-            .get(&kind)
-            .map(|ids| ids.0.iter())
+    pub fn iter_kind(&self, kind: BuffKind) -> impl Iterator<Item = (BuffKey, &Buff)> + '_ {
+        self.kinds[kind]
+            .as_ref()
+            .map(|keys| keys.0.iter())
             .unwrap_or_else(|| [].iter())
-            .map(move |id| (*id, &self.buffs[id]))
+            .map(move |&key| (key, &self.buffs[key]))
     }
 
     // Iterates through all active buffs (the most powerful buff of each
     // non-stacking kind, and all of the stacking ones)
     pub fn iter_active(&self) -> impl Iterator<Item = impl Iterator<Item = &Buff>> + '_ {
-        self.kinds.iter().map(move |(kind, ids)| {
-            if kind.stacks() {
-                // Iterate stackable buffs in reverse order to show the timer of the soonest one
-                // to expire
-                Either::Left(ids.0.iter().filter_map(|id| self.buffs.get(id)).rev())
-            } else {
-                Either::Right(self.buffs.get(&ids.0[0]).into_iter())
-            }
-        })
+        self.kinds
+            .iter()
+            .filter_map(|(kind, keys)| keys.as_ref().map(|keys| (kind, keys)))
+            .map(move |(kind, keys)| {
+                if kind.stacks() {
+                    // Iterate stackable buffs in reverse order to show the timer of the soonest one
+                    // to expire
+                    Either::Left(keys.0.iter().filter_map(|key| self.buffs.get(*key)).rev())
+                } else {
+                    Either::Right(self.buffs.get(keys.0[0]).into_iter())
+                }
+            })
     }
 
     // Gets most powerful buff of a given kind
-    pub fn remove(&mut self, buff_id: BuffId) {
-        if let Some(kind) = self.buffs.remove(&buff_id) {
-            let kind = kind.kind;
-            self.kinds
-                .get_mut(&kind)
-                .map(|ids| ids.0.retain(|id| *id != buff_id));
+    pub fn remove(&mut self, buff_key: BuffKey) {
+        if let Some(buff) = self.buffs.remove(buff_key) {
+            let kind = buff.kind;
+            self.kinds[kind]
+                .as_mut()
+                .map(|keys| keys.0.retain(|key| *key != buff_key));
             self.sort_kind(kind);
         }
     }
@@ -787,9 +1010,9 @@ impl Buffs {
     fn delay_queueable_buffs(&mut self, kind: BuffKind, current_time: Time) {
         let mut next_start_time: Option<Time> = None;
         debug_assert!(kind.queues());
-        if let Some(buffs) = self.kinds.get(&kind) {
-            buffs.0.iter().for_each(|id| {
-                if let Some(buff) = self.buffs.get_mut(id) {
+        if let Some(buffs) = self.kinds[kind].as_mut() {
+            buffs.0.iter().for_each(|key| {
+                if let Some(buff) = self.buffs.get_mut(*key) {
                     // End time only being updated when there is some next_start_time will
                     // technically cause buffs to "end early" if they have a weaker strength than a
                     // buff with an infinite duration, but this is fine since those buffs wouldn't
@@ -815,10 +1038,14 @@ impl Buffs {
     }
 }
 
-pub type BuffId = u64;
-
 impl Component for Buffs {
     type Storage = DerefFlaggedStorage<Self, VecStorage<Self>>;
+}
+
+#[derive(Default, Copy, Clone)]
+pub struct DestInfo<'a> {
+    pub stats: Option<&'a Stats>,
+    pub mass: Option<&'a Mass>,
 }
 
 #[cfg(test)]
@@ -836,7 +1063,7 @@ pub mod tests {
             Vec::new(),
             BuffSource::Unknown,
             time,
-            None,
+            DestInfo::default(),
             None,
         )
     }

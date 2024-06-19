@@ -1,22 +1,26 @@
 use crate::{
     combat::{
-        Attack, AttackDamage, AttackEffect, CombatEffect, CombatRequirement, Damage, DamageKind,
-        DamageSource, GroupTarget,
+        self, Attack, AttackDamage, AttackEffect, CombatEffect, CombatRequirement, Damage,
+        DamageKind, DamageSource, GroupTarget,
     },
     comp::{
-        beam, body::biped_large, character_state::OutputEvents, object::Body::Flamethrower, Body,
-        CharacterState, Ori, Pos, StateUpdate,
+        beam,
+        body::{biped_large, bird_large, golem},
+        character_state::OutputEvents,
+        object::Body::{Flamethrower, Lavathrower},
+        Body, CharacterState, Ori, StateUpdate,
     },
-    event::{LocalEvent, ServerEvent},
+    event::LocalEvent,
     outcome::Outcome,
+    resources::Secs,
     states::{
         behavior::{CharacterBehavior, JoinData},
         utils::*,
     },
     terrain::Block,
-    uid::Uid,
     util::Dir,
 };
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use vek::*;
@@ -28,16 +32,17 @@ pub struct StaticData {
     pub buildup_duration: Duration,
     /// How long the state has until exiting
     pub recover_duration: Duration,
-    /// How long each beam segment persists for
-    pub beam_duration: Duration,
+    /// Time required for beam to travel from start pos to end pos
+    pub beam_duration: Secs,
     /// Base damage per tick
     pub damage: f32,
     /// Ticks per second
     pub tick_rate: f32,
     /// Max range
     pub range: f32,
-    /// Max angle (45.0 will give you a 90.0 angle window)
-    pub max_angle: f32,
+    /// The radius at the far distance of the beam. Radius linearly increases
+    /// from 0 moving from start pos to end po.
+    pub end_radius: f32,
     /// Adds an effect onto the main damage of the attack
     pub damage_effect: Option<CombatEffect>,
     /// Energy regenerated per tick
@@ -61,6 +66,10 @@ pub struct Data {
     pub timer: Duration,
     /// What section the character stage is in
     pub stage_section: StageSection,
+    /// Direction that beam should be aimed in
+    pub aim_dir: Dir,
+    /// Offset for beam start pos
+    pub beam_offset: Vec3<f32>,
 }
 
 impl CharacterBehavior for Data {
@@ -73,6 +82,17 @@ impl CharacterBehavior for Data {
         handle_move(data, &mut update, 0.4);
         handle_jump(data, output_events, &mut update, 1.0);
 
+        // Velocity relative to the current ground
+        let rel_vel = data.vel.0 - data.physics.ground_vel;
+        // Gets offsets
+        let body_offsets = beam_offsets(
+            data.body,
+            data.inputs.look_dir,
+            update.ori.look_vec(),
+            rel_vel,
+            data.physics.on_ground,
+        );
+
         match self.stage_section {
             StageSection::Buildup => {
                 if self.timer < self.static_data.buildup_duration {
@@ -81,26 +101,61 @@ impl CharacterBehavior for Data {
                         timer: tick_attack_or_default(data, self.timer, None),
                         ..*self
                     });
-                    if let Body::Object(object) = data.body {
-                        if object == &Flamethrower {
-                            // Send local event used for frontend shenanigans
-                            output_events.emit_local(LocalEvent::CreateOutcome(
-                                Outcome::FlamethrowerCharge {
-                                    pos: data.pos.0
-                                        + *data.ori.look_dir() * (data.body.max_radius()),
-                                },
-                            ));
-                        }
-                    };
+                    if matches!(data.body, Body::Object(Flamethrower | Lavathrower)) {
+                        // Send local event used for frontend shenanigans
+                        output_events.emit_local(LocalEvent::CreateOutcome(
+                            Outcome::FlamethrowerCharge {
+                                pos: data.pos.0 + *data.ori.look_dir() * (data.body.max_radius()),
+                            },
+                        ));
+                    }
                 } else {
+                    let attack = {
+                        let energy = AttackEffect::new(
+                            None,
+                            CombatEffect::EnergyReward(self.static_data.energy_regen),
+                        )
+                        .with_requirement(CombatRequirement::AnyDamage);
+                        let mut damage = AttackDamage::new(
+                            Damage {
+                                source: DamageSource::Energy,
+                                kind: DamageKind::Energy,
+                                value: self.static_data.damage,
+                            },
+                            Some(GroupTarget::OutOfGroup),
+                            rand::random(),
+                        );
+                        if let Some(effect) = self.static_data.damage_effect {
+                            damage = damage.with_effect(effect);
+                        }
+                        let precision_mult =
+                            combat::compute_precision_mult(data.inventory, data.msm);
+                        Attack::default()
+                            .with_damage(damage)
+                            .with_precision(precision_mult)
+                            .with_effect(energy)
+                            .with_combo_increment()
+                    };
+
                     // Creates beam
                     data.updater.insert(data.entity, beam::Beam {
-                        hit_entities: Vec::<Uid>::new(),
-                        tick_dur: Duration::from_secs_f32(1.0 / self.static_data.tick_rate),
-                        timer: Duration::default(),
+                        attack,
+                        end_radius: self.static_data.end_radius,
+                        range: self.static_data.range,
+                        duration: self.static_data.beam_duration,
+                        tick_dur: Secs(1.0 / self.static_data.tick_rate as f64),
+                        hit_entities: Vec::new(),
+                        hit_durations: HashMap::new(),
+                        specifier: self.static_data.specifier,
+                        bezier: QuadraticBezier3 {
+                            start: data.pos.0 + body_offsets,
+                            ctrl: data.pos.0 + body_offsets,
+                            end: data.pos.0 + body_offsets,
+                        },
                     });
                     // Build up
                     update.character = CharacterState::BasicBeam(Data {
+                        beam_offset: body_offsets,
                         timer: Duration::default(),
                         stage_section: StageSection::Action,
                         ..*self
@@ -112,42 +167,6 @@ impl CharacterBehavior for Data {
                     && (self.static_data.energy_drain <= f32::EPSILON
                         || update.energy.current() > 0.0)
                 {
-                    let speed =
-                        self.static_data.range / self.static_data.beam_duration.as_secs_f32();
-
-                    let energy = AttackEffect::new(
-                        None,
-                        CombatEffect::EnergyReward(self.static_data.energy_regen),
-                    )
-                    .with_requirement(CombatRequirement::AnyDamage);
-                    let mut damage = AttackDamage::new(
-                        Damage {
-                            source: DamageSource::Energy,
-                            kind: DamageKind::Energy,
-                            value: self.static_data.damage,
-                        },
-                        Some(GroupTarget::OutOfGroup),
-                        rand::random(),
-                    );
-                    if let Some(effect) = self.static_data.damage_effect {
-                        damage = damage.with_effect(effect);
-                    }
-                    let (crit_chance, crit_mult) =
-                        get_crit_data(data, self.static_data.ability_info);
-                    let attack = Attack::default()
-                        .with_damage(damage)
-                        .with_crit(crit_chance, crit_mult)
-                        .with_effect(energy)
-                        .with_combo_increment();
-
-                    let properties = beam::Properties {
-                        attack,
-                        angle: self.static_data.max_angle.to_radians(),
-                        speed,
-                        duration: self.static_data.beam_duration,
-                        owner: Some(*data.uid),
-                        specifier: self.static_data.specifier,
-                    };
                     let beam_ori = {
                         // We want Beam to use Ori of owner.
                         // But we also want beam to use Z part of where owner looks.
@@ -174,25 +193,10 @@ impl CharacterBehavior for Data {
                         ))
                         .prerotated(pitch)
                     };
-                    // Velocity relative to the current ground
-                    let rel_vel = data.vel.0 - data.physics.ground_vel;
-                    // Gets offsets
-                    let body_offsets = beam_offsets(
-                        data.body,
-                        data.inputs.look_dir,
-                        update.ori.look_vec(),
-                        rel_vel,
-                        data.physics.on_ground,
-                    );
-                    let pos = Pos(data.pos.0 + body_offsets);
 
-                    // Create beam segment
-                    output_events.emit_server(ServerEvent::BeamSegment {
-                        properties,
-                        pos,
-                        ori: beam_ori,
-                    });
                     update.character = CharacterState::BasicBeam(Data {
+                        beam_offset: body_offsets,
+                        aim_dir: beam_ori.look_dir(),
                         timer: tick_attack_or_default(data, self.timer, None),
                         ..*self
                     });
@@ -212,7 +216,11 @@ impl CharacterBehavior for Data {
             StageSection::Recover => {
                 if self.timer < self.static_data.recover_duration {
                     update.character = CharacterState::BasicBeam(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {
@@ -240,21 +248,31 @@ impl CharacterBehavior for Data {
 fn height_offset(body: &Body, look_dir: Dir, velocity: Vec3<f32>, on_ground: Option<Block>) -> f32 {
     match body {
         // Hack to make the beam offset correspond to the animation
-        Body::BirdLarge(_) => {
-            body.height() * 0.3
+        Body::BirdLarge(b) => {
+            let height_factor = match b.species {
+                bird_large::Species::Phoenix => 0.5,
+                bird_large::Species::Cockatrice => 0.4,
+                _ => 0.3,
+            };
+            body.height() * height_factor
                 + if on_ground.is_none() {
                     (2.0 - velocity.xy().magnitude() * 0.25).max(-1.0)
                 } else {
                     0.0
                 }
         },
-        Body::Golem(_) => {
+        Body::Golem(b) => {
+            let height_factor = match b.species {
+                golem::Species::Mogwai => 0.4,
+                _ => 0.9,
+            };
             const DIR_COEFF: f32 = 2.0;
-            body.height() * 0.9 + look_dir.z * DIR_COEFF
+            body.height() * height_factor + look_dir.z * DIR_COEFF
         },
         Body::BipedLarge(b) => match b.species {
             biped_large::Species::Mindflayer => body.height() * 0.6,
             biped_large::Species::SeaBishop => body.height() * 0.4,
+            biped_large::Species::Cursekeeper => body.height() * 0.8,
             _ => body.height() * 0.5,
         },
         _ => body.height() * 0.5,

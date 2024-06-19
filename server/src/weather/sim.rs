@@ -1,12 +1,9 @@
 use common::{
-    event::EventBus,
     grid::Grid,
-    outcome::Outcome,
     resources::TimeOfDay,
     weather::{Weather, WeatherGrid, CELL_SIZE, CHUNKS_PER_CELL},
 };
 use noise::{NoiseFn, SuperSimplex, Turbulence};
-use rand::prelude::*;
 use vek::*;
 use world::World;
 
@@ -29,6 +26,12 @@ pub struct WeatherSim {
     size: Vec2<u32>,
     consts: Grid<CellConsts>,
     zones: Grid<Option<WeatherZone>>,
+}
+
+/// A list of weather cells where lightning has a chance to strike.
+#[derive(Default)]
+pub struct LightningCells {
+    pub cells: Vec<Vec2<i32>>,
 }
 
 impl WeatherSim {
@@ -85,14 +88,8 @@ impl WeatherSim {
         }
     }
 
-    // Time step is cell size / maximum wind speed
-    pub fn tick(
-        &mut self,
-        time_of_day: &TimeOfDay,
-        outcomes: &EventBus<Outcome>,
-        out: &mut WeatherGrid,
-        world: &World,
-    ) {
+    // Time step is cell size / maximum wind speed.
+    pub fn tick(&mut self, time_of_day: TimeOfDay, out: &mut WeatherGrid) -> LightningCells {
         let time = time_of_day.0;
 
         let base_nz = Turbulence::new(
@@ -105,6 +102,7 @@ impl WeatherSim {
 
         let rain_nz = SuperSimplex::new();
 
+        let mut lightning_cells = Vec::new();
         for (point, cell) in out.iter_mut() {
             if let Some(zone) = &mut self.zones[point] {
                 *cell = zone.weather;
@@ -121,7 +119,7 @@ impl WeatherSim {
                 let time_scale = 100_000.0;
                 let spos = (pos / space_scale).with_z(time / time_scale);
 
-                let avg_scale = 20_000.0;
+                let avg_scale = 30_000.0;
                 let avg_delay = 250_000.0;
                 let pressure = ((base_nz
                     .get((pos / avg_scale).with_z(time / avg_delay).into_array())
@@ -137,7 +135,7 @@ impl WeatherSim {
                     - self.consts[point].humidity * 0.6;
 
                 const RAIN_CLOUD_THRESHOLD: f32 = 0.25;
-                cell.cloud = (1.0 - pressure).max(0.0) * 0.5;
+                cell.cloud = (1.0 - pressure).max(0.0).powi(2) * 4.0;
                 cell.rain = ((1.0 - pressure - RAIN_CLOUD_THRESHOLD).max(0.0)
                     * self.consts[point].humidity
                     * 2.5)
@@ -147,16 +145,14 @@ impl WeatherSim {
                     rain_nz.get((spos + 1.0).into_array()).powi(3) as f32,
                 ) * 200.0
                     * (1.0 - pressure);
-
-                if cell.rain > 0.2 && cell.cloud > 0.15 && thread_rng().gen_bool(0.01) {
-                    let wpos = wpos.map(|e| {
-                        e as f32 + thread_rng().gen_range(-1.0..1.0) * CELL_SIZE as f32 * 0.5
-                    });
-                    outcomes.emit_now(Outcome::Lightning {
-                        pos: wpos.with_z(world.sim().get_alt_approx(wpos.as_()).unwrap_or(0.0)),
-                    });
-                }
             }
+
+            if cell.rain > 0.2 && cell.cloud > 0.15 {
+                lightning_cells.push(point);
+            }
+        }
+        LightningCells {
+            cells: lightning_cells,
         }
     }
 

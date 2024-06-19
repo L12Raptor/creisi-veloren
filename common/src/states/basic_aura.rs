@@ -5,7 +5,7 @@ use crate::{
         character_state::OutputEvents,
         CharacterState, StateUpdate,
     },
-    event::ServerEvent,
+    event::{AuraEvent, ComboChangeEvent},
     resources::Secs,
     states::{
         behavior::{CharacterBehavior, JoinData},
@@ -29,7 +29,7 @@ pub struct StaticData {
     /// Has information used to construct the auras
     pub auras: Vec<AuraBuffConstructor>,
     /// How long aura lasts
-    pub aura_duration: Secs,
+    pub aura_duration: Option<Secs>,
     /// Radius of aura
     pub range: f32,
     /// What key is used to press ability
@@ -78,7 +78,8 @@ impl CharacterBehavior for Data {
                         let mut aura = aura_data.to_aura(
                             data.uid,
                             self.static_data.range,
-                            Some(self.static_data.aura_duration),
+                            // check for indefinite aura
+                            self.static_data.aura_duration,
                             targets,
                             *data.time,
                         );
@@ -93,13 +94,14 @@ impl CharacterBehavior for Data {
                                     data.strength *=
                                         (self.static_data.combo_at_cast.max(1) as f32).sqrt();
                                 },
+                                AuraKind::FriendlyFire | AuraKind::ForcePvP => {},
                             }
-                            output_events.emit_server(ServerEvent::ComboChange {
+                            output_events.emit_server(ComboChangeEvent {
                                 entity: data.entity,
                                 change: -(self.static_data.combo_at_cast as i32),
                             });
                         }
-                        output_events.emit_server(ServerEvent::Aura {
+                        output_events.emit_server(AuraEvent {
                             entity: data.entity,
                             aura_change: AuraChange::Add(aura),
                         });
@@ -132,7 +134,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     update.character = CharacterState::BasicAura(Data {
                         static_data: self.static_data.clone(),
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {

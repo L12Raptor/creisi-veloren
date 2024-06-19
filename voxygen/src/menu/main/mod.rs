@@ -1,8 +1,7 @@
 mod client_init;
-mod scene;
 mod ui;
 
-use super::char_selection::CharSelectionState;
+use super::{char_selection::CharSelectionState, dummy_scene::Scene, server_info::ServerInfoState};
 #[cfg(feature = "singleplayer")]
 use crate::singleplayer::SingleplayerState;
 use crate::{
@@ -14,20 +13,35 @@ use crate::{
 use client::{
     addr::ConnectionArgs,
     error::{InitProtocolError, NetworkConnectError, NetworkError},
-    Client, ServerInfo,
+    Client, ClientInitStage, ServerInfo,
 };
 use client_init::{ClientInit, Error as InitError, Msg as InitMsg};
 use common::comp;
 use common_base::span;
+#[cfg(feature = "plugins")]
+use common_state::plugin::PluginMgr;
 use i18n::LocalizationHandle;
-use scene::Scene;
-use std::sync::Arc;
+#[cfg(feature = "singleplayer")]
+use server::ServerInitStage;
+use specs::WorldExt;
+use std::{path::Path, sync::Arc};
 use tokio::runtime;
 use tracing::error;
 use ui::{Event as MainMenuEvent, MainMenuUi};
 
-// TODO: show status messages for waiting on server creation, client init, and
-// pipeline creation (we can show progress of pipeline creation)
+pub use ui::rand_bg_image_spec;
+
+#[derive(Debug)]
+pub enum DetailedInitializationStage {
+    #[cfg(feature = "singleplayer")]
+    Singleplayer,
+    #[cfg(feature = "singleplayer")]
+    SingleplayerServer(ServerInitStage),
+    StartingMultiplayer,
+    Client(ClientInitStage),
+    CreatingRenderPipeline(usize, usize),
+}
+
 enum InitState {
     None,
     // Waiting on the client initialization
@@ -98,6 +112,12 @@ impl PlayState for MainMenuState {
         #[cfg(feature = "singleplayer")]
         {
             if let Some(singleplayer) = global_state.singleplayer.as_running() {
+                if let Ok(stage_update) = singleplayer.init_stage_receiver.try_recv() {
+                    self.main_menu_ui.update_stage(
+                        DetailedInitializationStage::SingleplayerServer(stage_update),
+                    );
+                }
+
                 match singleplayer.receiver.try_recv() {
                     Ok(Ok(())) => {
                         // Attempt login after the server is finished initializing
@@ -108,7 +128,11 @@ impl PlayState for MainMenuState {
                             ConnectionArgs::Mpsc(14004),
                             &mut self.init,
                             &global_state.tokio_runtime,
+                            global_state.settings.language.send_to_server.then_some(
+                                global_state.settings.language.selected_language.clone(),
+                            ),
                             &global_state.i18n,
+                            &global_state.config_dir,
                         );
                     },
                     Ok(Err(e)) => {
@@ -187,9 +211,27 @@ impl PlayState for MainMenuState {
                 _ => {},
             }
         }
+
+        if let Some(client_stage_update) = self.init.client().and_then(|init| init.stage_update()) {
+            self.main_menu_ui
+                .update_stage(DetailedInitializationStage::Client(client_stage_update));
+        }
+
         // Poll client creation.
         match self.init.client().and_then(|init| init.poll()) {
             Some(InitMsg::Done(Ok(mut client))) => {
+                // load local plugins needed by the server
+                #[cfg(feature = "plugins")]
+                for path in client.take_local_plugins().drain(..) {
+                    if let Err(e) = client
+                        .state_mut()
+                        .ecs_mut()
+                        .write_resource::<PluginMgr>()
+                        .load_server_plugin(path)
+                    {
+                        tracing::error!(?e, "load local plugin");
+                    }
+                }
                 // Register voxygen components / resources
                 crate::ecs::init(client.state_mut().ecs_mut());
                 self.init = InitState::Pipeline(Box::new(client));
@@ -228,11 +270,7 @@ impl PlayState for MainMenuState {
 
         // Tick the client to keep the connection alive if we are waiting on pipelines
         if let InitState::Pipeline(client) = &mut self.init {
-            match client.tick(
-                comp::ControllerInputs::default(),
-                global_state.clock.dt(),
-                |_| {},
-            ) {
+            match client.tick(comp::ControllerInputs::default(), global_state.clock.dt()) {
                 Ok(events) => {
                     for event in events {
                         match event {
@@ -244,6 +282,29 @@ impl PlayState for MainMenuState {
                                         .into_owned(),
                                 );
                                 self.init = InitState::None;
+                            },
+                            client::Event::PluginDataReceived(data) => {
+                                #[cfg(feature = "plugins")]
+                                {
+                                    tracing::info!("plugin data {}", data.len());
+                                    if let InitState::Pipeline(client) = &mut self.init {
+                                        let hash = client
+                                            .state()
+                                            .ecs()
+                                            .write_resource::<PluginMgr>()
+                                            .cache_server_plugin(&global_state.config_dir, data);
+                                        match hash {
+                                            Ok(hash) => {
+                                                if client.plugin_received(hash) == 0 {
+                                                    // now load characters (plugins might contain
+                                                    // items)
+                                                    client.load_character_list();
+                                                }
+                                            },
+                                            Err(e) => tracing::error!(?e, "cache_server_plugin"),
+                                        }
+                                    }
+                                }
                             },
                             _ => {},
                         }
@@ -263,22 +324,39 @@ impl PlayState for MainMenuState {
 
         // Poll renderer pipeline creation
         if let InitState::Pipeline(..) = &self.init {
-            // If not complete go to char select screen
-            if global_state
-                .window
-                .renderer()
-                .pipeline_creation_status()
-                .is_none()
+            if let Some((done, total)) = &global_state.window.renderer().pipeline_creation_status()
             {
+                self.main_menu_ui.update_stage(
+                    DetailedInitializationStage::CreatingRenderPipeline(*done, *total),
+                );
+            // If complete go to char select screen
+            } else {
                 // Always succeeds since we check above
                 if let InitState::Pipeline(client) =
                     core::mem::replace(&mut self.init, InitState::None)
                 {
                     self.main_menu_ui.connected();
-                    return PlayStateResult::Push(Box::new(CharSelectionState::new(
+
+                    let server_info = client.server_info().clone();
+                    let server_description = client.server_description().clone();
+
+                    let char_select = CharSelectionState::new(
                         global_state,
                         std::rc::Rc::new(std::cell::RefCell::new(*client)),
-                    )));
+                    );
+
+                    let new_state = ServerInfoState::try_from_server_info(
+                        global_state,
+                        self.main_menu_ui.bg_img_spec(),
+                        char_select,
+                        server_info,
+                        server_description,
+                        false,
+                    )
+                    .map(|s| Box::new(s) as _)
+                    .unwrap_or_else(|s| Box::new(s) as _);
+
+                    return PlayStateResult::Push(new_state);
                 }
             }
         }
@@ -294,10 +372,12 @@ impl PlayState for MainMenuState {
                     password,
                     server_address,
                 } => {
-                    let mut net_settings = &mut global_state.settings.networking;
+                    let net_settings = &mut global_state.settings.networking;
+                    let use_srv = net_settings.use_srv;
                     let use_quic = net_settings.use_quic;
-                    net_settings.username = username.clone();
-                    net_settings.default_server = server_address.clone();
+                    let validate_tls = net_settings.validate_tls;
+                    net_settings.username.clone_from(&username);
+                    net_settings.default_server.clone_from(&server_address);
                     if !net_settings.servers.contains(&server_address) {
                         net_settings.servers.push(server_address.clone());
                     }
@@ -305,10 +385,18 @@ impl PlayState for MainMenuState {
                         .settings
                         .save_to_file_warn(&global_state.config_dir);
 
-                    let connection_args = if use_quic {
+                    let connection_args = if use_srv {
+                        ConnectionArgs::Srv {
+                            hostname: server_address,
+                            prefer_ipv6: false,
+                            validate_tls,
+                            use_quic,
+                        }
+                    } else if use_quic {
                         ConnectionArgs::Quic {
                             hostname: server_address,
                             prefer_ipv6: false,
+                            validate_tls,
                         }
                     } else {
                         ConnectionArgs::Tcp {
@@ -323,7 +411,13 @@ impl PlayState for MainMenuState {
                         connection_args,
                         &mut self.init,
                         &global_state.tokio_runtime,
+                        global_state
+                            .settings
+                            .language
+                            .send_to_server
+                            .then_some(global_state.settings.language.selected_language.clone()),
                         &global_state.i18n,
+                        &global_state.config_dir,
                     );
                 },
                 MainMenuEvent::CancelLoginAttempt => {
@@ -523,6 +617,16 @@ fn get_client_msg_error(
                     localization.get_msg("main-login-failed_sending_request"),
                     e
                 ),
+                client::AuthClientError::ResponseError(e) => format!(
+                    "{}: {}",
+                    localization.get_msg("main-login-failed_sending_request"),
+                    e
+                ),
+                client::AuthClientError::CertificateLoad(e) => format!(
+                    "{}: {}",
+                    localization.get_msg("main-login-failed_sending_request"),
+                    e
+                ),
                 client::AuthClientError::JsonError(e) => format!(
                     "{}: {}",
                     localization.get_msg("main-login-failed_sending_request"),
@@ -553,7 +657,9 @@ fn attempt_login(
     connection_args: ConnectionArgs,
     init: &mut InitState,
     runtime: &Arc<runtime::Runtime>,
+    locale: Option<String>,
     localized_strings: &LocalizationHandle,
+    config_dir: &Path,
 ) {
     let localization = localized_strings.read();
     if let Err(err) = comp::Player::alias_validate(&username) {
@@ -585,6 +691,8 @@ fn attempt_login(
             username,
             password,
             Arc::clone(runtime),
+            locale,
+            config_dir,
         ));
     }
 }

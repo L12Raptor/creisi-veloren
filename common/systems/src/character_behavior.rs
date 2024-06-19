@@ -1,18 +1,17 @@
 use specs::{
-    shred::ResourceId, Entities, Join, LazyUpdate, Read, ReadExpect, ReadStorage, SystemData,
-    World, WriteStorage,
+    shred, Entities, LazyUpdate, LendJoin, Read, ReadExpect, ReadStorage, SystemData, WriteStorage,
 };
 
 use common::{
     comp::{
         self,
-        character_state::OutputEvents,
+        character_state::{CharacterStateEvents, OutputEvents},
         inventory::item::{tool::AbilityMap, MaterialStatManifest},
         ActiveAbilities, Beam, Body, CharacterActivity, CharacterState, Combo, Controller, Density,
         Energy, Health, Inventory, InventoryManip, Mass, Melee, Ori, PhysicsState, Poise, Pos,
-        Scale, SkillSet, Stance, StateUpdate, Stats, Vel,
+        PreviousPhysCache, Scale, SkillSet, Stance, StateUpdate, Stats, Vel,
     },
-    event::{EventBus, LocalEvent, ServerEvent},
+    event::{self, EventBus, KnockbackEvent, LocalEvent},
     link::Is,
     mounting::{Rider, VolumeRider},
     outcome::Outcome,
@@ -22,14 +21,14 @@ use common::{
         idle,
     },
     terrain::TerrainGrid,
-    uid::Uid,
+    uid::{IdMaps, Uid},
 };
 use common_ecs::{Job, Origin, Phase, System};
 
 #[derive(SystemData)]
 pub struct ReadData<'a> {
     entities: Entities<'a>,
-    server_bus: Read<'a, EventBus<ServerEvent>>,
+    events: CharacterStateEvents<'a>,
     local_bus: Read<'a, EventBus<LocalEvent>>,
     dt: Read<'a, DeltaTime>,
     time: Read<'a, Time>,
@@ -54,6 +53,7 @@ pub struct ReadData<'a> {
     terrain: ReadExpect<'a, TerrainGrid>,
     inventories: ReadStorage<'a, Inventory>,
     stances: ReadStorage<'a, Stance>,
+    prev_phys_caches: ReadStorage<'a, PreviousPhysCache>,
 }
 
 /// ## Character Behavior System
@@ -75,6 +75,7 @@ impl<'a> System<'a> for Sys {
         WriteStorage<'a, Controller>,
         WriteStorage<'a, Poise>,
         Read<'a, EventBus<Outcome>>,
+        Read<'a, IdMaps>,
     );
 
     const NAME: &'static str = "character_behavior";
@@ -95,34 +96,17 @@ impl<'a> System<'a> for Sys {
             mut controllers,
             mut poises,
             outcomes,
+            id_maps,
         ): Self::SystemData,
     ) {
-        let mut server_emitter = read_data.server_bus.emitter();
         let mut local_emitter = read_data.local_bus.emitter();
         let mut outcomes_emitter = outcomes.emitter();
+        let mut emitters = read_data.events.get_emitters();
 
         let mut local_events = Vec::new();
-        let mut server_events = Vec::new();
-        let mut output_events = OutputEvents::new(&mut local_events, &mut server_events);
+        let mut output_events = OutputEvents::new(&mut local_events, &mut emitters);
 
-        for (
-            entity,
-            uid,
-            mut char_state,
-            character_activity,
-            pos,
-            vel,
-            ori,
-            mass,
-            density,
-            energy,
-            inventory,
-            controller,
-            health,
-            body,
-            (physics, scale, stat, skill_set, active_abilities, is_rider),
-            combo,
-        ) in (
+        let join = (
             &read_data.entities,
             &read_data.uids,
             &mut character_states,
@@ -147,12 +131,38 @@ impl<'a> System<'a> for Sys {
             ),
             read_data.combos.maybe(),
         )
-            .join()
-        {
+            .lend_join();
+        join.for_each(|comps| {
+            let (
+                entity,
+                uid,
+                mut char_state,
+                character_activity,
+                pos,
+                vel,
+                ori,
+                mass,
+                density,
+                energy,
+                inventory,
+                controller,
+                health,
+                body,
+                (physics, scale, stat, skill_set, active_abilities, is_rider),
+                combo,
+            ) = comps;
             // Being dead overrides all other states
             if health.map_or(false, |h| h.is_dead) {
                 // Do nothing
-                continue;
+                return;
+            }
+
+            // Remove components that entity should not have if not in relevant char state
+            if !char_state.is_melee_attack() {
+                read_data.lazy_update.remove::<Melee>(entity);
+            }
+            if !char_state.is_beam_attack() {
+                read_data.lazy_update.remove::<Beam>(entity);
             }
 
             // Enter stunned state if poise damage is enough
@@ -171,7 +181,7 @@ impl<'a> System<'a> for Sys {
                         state: poise_state,
                     });
                     if let Some(impulse_strength) = impulse_strength {
-                        server_emitter.emit(ServerEvent::Knockback {
+                        output_events.emit_server(KnockbackEvent {
                             entity,
                             impulse: impulse_strength * *poise.knockback(),
                         });
@@ -210,6 +220,9 @@ impl<'a> System<'a> for Sys {
                 mount_data: read_data.is_riders.get(entity),
                 volume_mount_data: read_data.is_volume_riders.get(entity),
                 stance: read_data.stances.get(entity),
+                id_maps: &id_maps,
+                alignments: &read_data.alignments,
+                prev_phys_caches: &read_data.prev_phys_caches,
             };
 
             for action in actions {
@@ -230,7 +243,7 @@ impl<'a> System<'a> for Sys {
             if is_rider.is_some() && !join_struct.char_state.can_perform_mounted() {
                 // TODO: A better way to swap between mount inputs and rider inputs
                 *join_struct.char_state = CharacterState::Idle(idle::Data::default());
-                continue;
+                return;
             }
 
             let j = JoinData::new(
@@ -244,10 +257,9 @@ impl<'a> System<'a> for Sys {
 
             let state_update = j.character.behavior(&j, &mut output_events);
             Self::publish_state_update(&mut join_struct, state_update, &mut output_events);
-        }
+        });
 
         local_emitter.append_vec(local_events);
-        server_emitter.append_vec(server_events);
     }
 }
 
@@ -289,7 +301,7 @@ impl Sys {
             join.controller.queued_inputs.remove(&input);
         }
         if state_update.swap_equipped_weapons {
-            output_events.emit_server(ServerEvent::InventoryManip(
+            output_events.emit_server(event::InventoryManipEvent(
                 join.entity,
                 InventoryManip::SwapEquippedWeapons,
             ));

@@ -2,10 +2,16 @@ use common::{
     combat::{self, AttackOptions, AttackSource, AttackerInfo, TargetInfo},
     comp::{
         agent::{Sound, SoundKind},
+        aura::EnteredAuras,
         projectile, Alignment, Body, Buffs, CharacterState, Combo, Energy, Group, Health,
-        Inventory, Ori, PhysicsState, Player, Pos, Projectile, Stats, Vel,
+        Inventory, Mass, Ori, PhysicsState, Player, Pos, Projectile, Stats, Vel,
     },
-    event::{Emitter, EventBus, ServerEvent},
+    event::{
+        BonkEvent, BuffEvent, ComboChangeEvent, DeleteEvent, EmitExt, Emitter, EnergyChangeEvent,
+        EntityAttackedHookEvent, EventBus, ExplosionEvent, HealthChangeEvent, KnockbackEvent,
+        ParryHookEvent, PoiseChangeEvent, PossessEvent, SoundEvent,
+    },
+    event_emitters,
     outcome::Outcome,
     resources::{DeltaTime, Time},
     uid::{IdMaps, Uid},
@@ -17,13 +23,31 @@ use common::vol::ReadVol;
 use common_ecs::{Job, Origin, Phase, System};
 use rand::Rng;
 use specs::{
-    shred::ResourceId, Entities, Entity as EcsEntity, Join, Read, ReadExpect, ReadStorage,
-    SystemData, World, WriteStorage,
+    shred, Entities, Entity as EcsEntity, Join, Read, ReadExpect, ReadStorage, SystemData,
+    WriteStorage,
 };
 use std::time::Duration;
 use vek::*;
 
 use common::terrain::TerrainGrid;
+
+event_emitters! {
+    struct Events[Emitters] {
+        sound: SoundEvent,
+        delete: DeleteEvent,
+        explosion: ExplosionEvent,
+        health_change: HealthChangeEvent,
+        energy_change: EnergyChangeEvent,
+        poise_change: PoiseChangeEvent,
+        parry_hook: ParryHookEvent,
+        kockback: KnockbackEvent,
+        entity_attack_hoow: EntityAttackedHookEvent,
+        combo_change: ComboChangeEvent,
+        buff: BuffEvent,
+        bonk: BonkEvent,
+        possess: PossessEvent,
+    }
+}
 
 #[derive(SystemData)]
 pub struct ReadData<'a> {
@@ -32,7 +56,7 @@ pub struct ReadData<'a> {
     players: ReadStorage<'a, Player>,
     dt: Read<'a, DeltaTime>,
     id_maps: Read<'a, IdMaps>,
-    server_bus: Read<'a, EventBus<ServerEvent>>,
+    events: Events<'a>,
     uids: ReadStorage<'a, Uid>,
     positions: ReadStorage<'a, Pos>,
     alignments: ReadStorage<'a, Alignment>,
@@ -48,6 +72,8 @@ pub struct ReadData<'a> {
     character_states: ReadStorage<'a, CharacterState>,
     terrain: ReadExpect<'a, TerrainGrid>,
     buffs: ReadStorage<'a, Buffs>,
+    entered_auras: ReadStorage<'a, EnteredAuras>,
+    masses: ReadStorage<'a, Mass>,
 }
 
 /// This system is responsible for handling projectile effect triggers
@@ -69,12 +95,12 @@ impl<'a> System<'a> for Sys {
         _job: &mut Job<Self>,
         (read_data, mut orientations, mut projectiles, outcomes): Self::SystemData,
     ) {
-        let mut server_emitter = read_data.server_bus.emitter();
+        let mut emitters = read_data.events.get_emitters();
         let mut outcomes_emitter = outcomes.emitter();
         let mut rng = rand::thread_rng();
 
         // Attacks
-        'projectile_loop: for (entity, pos, physics, vel, mut projectile) in (
+        'projectile_loop: for (entity, pos, physics, vel, projectile) in (
             &read_data.entities,
             &read_data.positions,
             &read_data.physics_states,
@@ -88,7 +114,7 @@ impl<'a> System<'a> for Sys {
                 .and_then(|uid| read_data.id_maps.uid_entity(uid));
 
             if physics.on_surface().is_none() && rng.gen_bool(0.05) {
-                server_emitter.emit(ServerEvent::Sound {
+                emitters.emit(SoundEvent {
                     sound: Sound::new(SoundKind::Projectile, pos.0, 4.0, read_data.time.0),
                 });
             }
@@ -115,7 +141,20 @@ impl<'a> System<'a> for Sys {
                     GroupTarget::OutOfGroup
                 };
 
-                if projectile.ignore_group && same_group {
+                if projectile.ignore_group
+                    && same_group
+                    && projectile
+                        .owner
+                        .and_then(|owner| {
+                            read_data
+                                .id_maps
+                                .uid_entity(owner)
+                                .zip(read_data.id_maps.uid_entity(other))
+                        })
+                        .map_or(true, |(owner, other)| {
+                            !combat::allow_friendly_fire(&read_data.entered_auras, owner, other)
+                        })
+                {
                     continue;
                 }
 
@@ -157,6 +196,7 @@ impl<'a> System<'a> for Sys {
                         owner,
                         ori: orientations.get(entity),
                         pos,
+                        vel,
                     };
 
                     let target = entity_of(other);
@@ -173,7 +213,7 @@ impl<'a> System<'a> for Sys {
                         &read_data,
                         &mut projectile_vanished,
                         &mut outcomes_emitter,
-                        &mut server_emitter,
+                        &mut emitters,
                         &mut rng,
                     );
                 }
@@ -199,18 +239,18 @@ impl<'a> System<'a> for Sys {
                                 .get(entity)
                                 .map_or_else(Vec3::zero, |ori| ori.look_vec());
                             let offset = -0.2 * projectile_direction;
-                            server_emitter.emit(ServerEvent::Explosion {
+                            emitters.emit(ExplosionEvent {
                                 pos: pos.0 + offset,
                                 explosion: e,
                                 owner: projectile.owner,
                             });
                         },
                         projectile::Effect::Vanish => {
-                            server_emitter.emit(ServerEvent::Delete(entity));
+                            emitters.emit(DeleteEvent(entity));
                             projectile_vanished = true;
                         },
                         projectile::Effect::Bonk => {
-                            server_emitter.emit(ServerEvent::Bonk {
+                            emitters.emit(BonkEvent {
                                 pos: pos.0,
                                 owner: projectile.owner,
                                 target: None,
@@ -230,7 +270,7 @@ impl<'a> System<'a> for Sys {
             }
 
             if projectile.time_left == Duration::default() {
-                server_emitter.emit(ServerEvent::Delete(entity));
+                emitters.emit(DeleteEvent(entity));
             }
             projectile.time_left = projectile
                 .time_left
@@ -247,6 +287,7 @@ struct ProjectileInfo<'a> {
     owner: Option<EcsEntity>,
     ori: Option<&'a Ori>,
     pos: &'a Pos,
+    vel: &'a Vel,
 }
 
 struct ProjectileTargetInfo<'a> {
@@ -262,7 +303,7 @@ fn dispatch_hit(
     read_data: &ReadData,
     projectile_vanished: &mut bool,
     outcomes_emitter: &mut Emitter<Outcome>,
-    server_emitter: &mut Emitter<ServerEvent>,
+    emitters: &mut Emitters,
     rng: &mut rand::rngs::ThreadRng,
 ) {
     match projectile_info.effect {
@@ -300,6 +341,7 @@ fn dispatch_hit(
                         combo: read_data.combos.get(entity),
                         inventory: read_data.inventories.get(entity),
                         stats: read_data.stats.get(entity),
+                        mass: read_data.masses.get(entity),
                     });
 
             let target_info = TargetInfo {
@@ -313,6 +355,7 @@ fn dispatch_hit(
                 char_state: read_data.character_states.get(target),
                 energy: read_data.energies.get(target),
                 buffs: read_data.buffs.get(target),
+                mass: read_data.masses.get(target),
             };
 
             // TODO: Is it possible to have projectile without body??
@@ -329,10 +372,15 @@ fn dispatch_hit(
                 });
             }
 
+            let allow_friendly_fire = owner.is_some_and(|owner| {
+                combat::allow_friendly_fire(&read_data.entered_auras, owner, target)
+            });
+
             // PvP check
-            let may_harm = combat::may_harm(
+            let permit_pvp = combat::permit_pvp(
                 &read_data.alignments,
                 &read_data.players,
+                &read_data.entered_auras,
                 &read_data.id_maps,
                 owner,
                 target,
@@ -343,10 +391,93 @@ fn dispatch_hit(
                 .get(target)
                 .and_then(|cs| cs.attack_immunities())
                 .map_or(false, |i| i.projectiles);
+
+            let precision_from_flank = combat::precision_mult_from_flank(
+                *projectile_dir,
+                target_info.ori,
+                Default::default(),
+                false,
+            );
+
+            let precision_from_head = {
+                // This performs a cylinder and line segment intersection check. The cylinder is
+                // the upper 10% of an entity's dimensions. The line segment is from the
+                // projectile's positions on the current and previous tick.
+                let curr_pos = projectile_info.pos.0;
+                let last_pos = projectile_info.pos.0 - projectile_info.vel.0 * read_data.dt.0;
+                let vel = projectile_info.vel.0;
+                let (target_height, target_radius) = read_data
+                    .bodies
+                    .get(target)
+                    .map_or((0.0, 0.0), |b| (b.height(), b.max_radius()));
+                let head_top_pos = target_pos.with_z(target_pos.z + target_height);
+                let head_bottom_pos = head_top_pos.with_z(
+                    head_top_pos.z - target_height * combat::PROJECTILE_HEADSHOT_PROPORTION,
+                );
+                if (curr_pos.z < head_bottom_pos.z && last_pos.z < head_bottom_pos.z)
+                    || (curr_pos.z > head_top_pos.z && last_pos.z > head_top_pos.z)
+                {
+                    None
+                } else if curr_pos.z > head_top_pos.z
+                    || curr_pos.z < head_bottom_pos.z
+                    || last_pos.z > head_top_pos.z
+                    || last_pos.z < head_bottom_pos.z
+                {
+                    let proj_top_intersection = {
+                        let t = (head_top_pos.z - last_pos.z) / vel.z;
+                        last_pos + vel * t
+                    };
+                    let proj_bottom_intersection = {
+                        let t = (head_bottom_pos.z - last_pos.z) / vel.z;
+                        last_pos + vel * t
+                    };
+                    let intersected_bottom = head_bottom_pos
+                        .distance_squared(proj_bottom_intersection)
+                        < target_radius.powi(2);
+                    let intersected_top = head_top_pos.distance_squared(proj_top_intersection)
+                        < target_radius.powi(2);
+                    let hit_head = intersected_bottom || intersected_top;
+                    let hit_from_bottom = last_pos.z < head_bottom_pos.z && intersected_bottom;
+                    let hit_from_top = last_pos.z > head_top_pos.z && intersected_top;
+                    // If projectile from bottom, do not award precision damage because it trivial
+                    // to get from up close If projectile from top, reduce
+                    // precision damage to mitigate cheesing benefits
+                    if !hit_head || hit_from_bottom {
+                        None
+                    } else if hit_from_top {
+                        Some(combat::MAX_TOP_HEADSHOT_PRECISION)
+                    } else {
+                        Some(combat::MAX_HEADSHOT_PRECISION)
+                    }
+                } else {
+                    let trajectory = LineSegment3 {
+                        start: last_pos,
+                        end: curr_pos,
+                    };
+                    let head_middle_pos = head_bottom_pos.with_z(
+                        head_bottom_pos.z
+                            + target_height * combat::PROJECTILE_HEADSHOT_PROPORTION * 0.5,
+                    );
+                    if trajectory.distance_to_point(head_middle_pos) < target_radius {
+                        Some(combat::MAX_HEADSHOT_PRECISION)
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            let precision_mult = match (precision_from_flank, precision_from_head) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+
             let attack_options = AttackOptions {
                 target_dodging,
-                may_harm,
+                permit_pvp,
+                allow_friendly_fire,
                 target_group: projectile_target_info.target_group,
+                precision_mult,
             };
 
             attack.apply_attack(
@@ -357,7 +488,7 @@ fn dispatch_hit(
                 1.0,
                 AttackSource::Projectile,
                 *read_data.time,
-                |e| server_emitter.emit(e),
+                emitters,
                 |o| outcomes_emitter.emit(o),
                 rng,
                 0,
@@ -366,7 +497,7 @@ fn dispatch_hit(
         projectile::Effect::Explode(e) => {
             let Pos(pos) = *projectile_info.pos;
             let owner_uid = projectile_info.owner_uid;
-            server_emitter.emit(ServerEvent::Explosion {
+            emitters.emit(ExplosionEvent {
                 pos,
                 explosion: e,
                 owner: owner_uid,
@@ -375,7 +506,7 @@ fn dispatch_hit(
         projectile::Effect::Bonk => {
             let Pos(pos) = *projectile_info.pos;
             let owner_uid = projectile_info.owner_uid;
-            server_emitter.emit(ServerEvent::Bonk {
+            emitters.emit(BonkEvent {
                 pos,
                 owner: owner_uid,
                 target: Some(projectile_target_info.uid),
@@ -383,7 +514,7 @@ fn dispatch_hit(
         },
         projectile::Effect::Vanish => {
             let entity = projectile_info.entity;
-            server_emitter.emit(ServerEvent::Delete(entity));
+            emitters.emit(DeleteEvent(entity));
             *projectile_vanished = true;
         },
         projectile::Effect::Possess => {
@@ -391,7 +522,7 @@ fn dispatch_hit(
             let owner_uid = projectile_info.owner_uid;
             if let Some(owner_uid) = owner_uid {
                 if target_uid != owner_uid {
-                    server_emitter.emit(ServerEvent::Possess(owner_uid, target_uid));
+                    emitters.emit(PossessEvent(owner_uid, target_uid));
                 }
             }
         },

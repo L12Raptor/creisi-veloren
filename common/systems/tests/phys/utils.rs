@@ -1,10 +1,8 @@
 use common::{
     comp::{
-        inventory::item::MaterialStatManifest,
-        skills::{GeneralSkill, Skill},
-        tool::AbilityMap,
-        Auras, Buffs, CharacterActivity, CharacterState, Collider, Combo, Controller, Energy,
-        Health, Ori, Pos, Stats, Vel,
+        inventory::item::MaterialStatManifest, tool::AbilityMap, Auras, Buffs, CharacterActivity,
+        CharacterState, Collider, Combo, Controller, Energy, EnteredAuras, Health, Ori, Pos, Stats,
+        Vel,
     },
     resources::{DeltaTime, GameMode, Time},
     shared_server_config::ServerConstants,
@@ -35,13 +33,15 @@ const DEFAULT_WORLD_CHUNKS_LG: MapSizeLg =
         panic!("Default world chunk size does not satisfy required invariants.");
     };
 
-pub fn setup() -> State {
+pub fn setup(add_systems: impl Fn(&mut specs::DispatcherBuilder)) -> State {
     let pools = State::pools(GameMode::Server);
     let mut state = State::new(
         GameMode::Server,
         pools,
         DEFAULT_WORLD_CHUNKS_LG,
         Arc::new(TerrainChunk::water(0)),
+        add_systems,
+        common_state::plugin::PluginMgr::default(),
     );
     state.ecs_mut().insert(MaterialStatManifest::with_empty());
     state.ecs_mut().insert(AbilityMap::load().cloned());
@@ -55,14 +55,14 @@ pub fn setup() -> State {
 
     state
 }
+pub fn add_char_and_phys_systems(dispatch_builder: &mut specs::DispatcherBuilder) {
+    dispatch::<character_behavior::Sys>(dispatch_builder, &[]);
+    dispatch::<phys::Sys>(dispatch_builder, &[&character_behavior::Sys::sys_name()]);
+}
 
 pub fn tick(state: &mut State, dt: Duration) {
     state.tick(
         dt,
-        |dispatch_builder| {
-            dispatch::<character_behavior::Sys>(dispatch_builder, &[]);
-            dispatch::<phys::Sys>(dispatch_builder, &[&character_behavior::Sys::sys_name()]);
-        },
         false,
         None,
         &ServerConstants {
@@ -129,18 +129,15 @@ pub fn create_player(state: &mut State) -> Entity {
         .with(Buffs::default())
         .with(Combo::default())
         .with(Auras::default())
-        .with(Energy::new(
-            body,
-            skill_set
-                .skill_level(Skill::General(GeneralSkill::EnergyIncrease))
-                .unwrap_or(0),
-        ))
-        .with(Health::new(body, body.base_health()))
+        .with(EnteredAuras::default())
+        .with(Energy::new(body))
+        .with(Health::new(body))
         .with(skill_set)
         .with(Stats::empty(body))
         .build()
 }
 
+#[allow(clippy::needless_pass_by_ref_mut)]
 pub fn generate_chunk(state: &mut State, chunk_pos: Vec2<i32>) {
     let (x, y) = chunk_pos.map(|e| e.to_le_bytes()).into_tuple();
     let mut rng = SmallRng::from_seed([

@@ -1,10 +1,11 @@
 use crate::{
     comp::{
-        buff::{Buff, BuffCategory, BuffChange, BuffData, BuffKind, BuffSource},
+        buff::{Buff, BuffCategory, BuffChange, BuffData, BuffKind, BuffSource, DestInfo},
         character_state::OutputEvents,
         CharacterState, StateUpdate,
     },
-    event::ServerEvent,
+    event::{BuffEvent, ComboChangeEvent, LocalEvent},
+    outcome::Outcome,
     resources::Secs,
     states::{
         behavior::{CharacterBehavior, JoinData},
@@ -36,8 +37,13 @@ pub struct StaticData {
     /// This is the amount of combo held by the entity when this character state
     /// was entered
     pub combo_on_use: u32,
+    /// Controls whether `SelfBuff`s that were previously applied should be
+    /// removed
+    pub enforced_limit: bool,
     /// What key is used to press ability
     pub ability_info: AbilityInfo,
+    /// Used to specify an outcome for the buff
+    pub specifier: Option<FrontendSpecifier>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -73,26 +79,48 @@ impl CharacterBehavior for Data {
                     } else {
                         self.static_data.combo_cost
                     };
-                    output_events.emit_server(ServerEvent::ComboChange {
+                    output_events.emit_server(ComboChangeEvent {
                         entity: data.entity,
                         change: -(combo_consumption as i32),
                     });
+
                     let scaling_factor = self.static_data.combo_scaling.map_or(1.0, |cs| {
                         cs.factor(
                             self.static_data.combo_on_use as f32,
                             self.static_data.combo_cost as f32,
                         )
                     });
-                    let buff_cat_ids = if self
+
+                    let mut buff_cat_ids = if self
                         .static_data
                         .ability_info
                         .ability
-                        .map_or(false, |a| a.ability.is_from_tool())
+                        .map_or(false, |a| a.ability.is_from_wielded())
                     {
                         vec![BuffCategory::RemoveOnLoadoutChange]
                     } else {
                         Vec::new()
                     };
+
+                    // Remove previous selfbuffs if we should
+                    if self.static_data.enforced_limit {
+                        buff_cat_ids.push(BuffCategory::SelfBuff);
+
+                        output_events.emit_server(BuffEvent {
+                            entity: data.entity,
+                            buff_change: BuffChange::RemoveByCategory {
+                                all_required: vec![BuffCategory::SelfBuff],
+                                any_required: vec![],
+                                none_required: vec![],
+                            },
+                        });
+                    }
+
+                    let dest_info = DestInfo {
+                        stats: Some(data.stats),
+                        mass: Some(data.mass),
+                    };
+
                     // Creates buff
                     let buff = Buff::new(
                         self.static_data.buff_kind,
@@ -103,10 +131,10 @@ impl CharacterBehavior for Data {
                         buff_cat_ids,
                         BuffSource::Character { by: *data.uid },
                         *data.time,
-                        Some(data.stats),
-                        data.health,
+                        dest_info,
+                        Some(data.mass),
                     );
-                    output_events.emit_server(ServerEvent::Buff {
+                    output_events.emit_server(BuffEvent {
                         entity: data.entity,
                         buff_change: BuffChange::Add(buff),
                     });
@@ -125,6 +153,12 @@ impl CharacterBehavior for Data {
                         timer: tick_attack_or_default(data, self.timer, None),
                         ..*self
                     });
+                    if let Some(FrontendSpecifier::FromTheAshes) = self.static_data.specifier {
+                        // Send local event used for frontend shenanigans
+                        output_events.emit_local(LocalEvent::CreateOutcome(
+                            Outcome::FromTheAshes { pos: data.pos.0 },
+                        ));
+                    }
                 } else {
                     update.character = CharacterState::SelfBuff(Data {
                         timer: Duration::default(),
@@ -136,7 +170,11 @@ impl CharacterBehavior for Data {
             StageSection::Recover => {
                 if self.timer < self.static_data.recover_duration {
                     update.character = CharacterState::SelfBuff(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {
@@ -155,4 +193,9 @@ impl CharacterBehavior for Data {
 
         update
     }
+}
+/// Used to specify a particular effect for frontend purposes
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FrontendSpecifier {
+    FromTheAshes,
 }

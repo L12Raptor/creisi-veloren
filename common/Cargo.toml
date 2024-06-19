@@ -10,6 +10,7 @@ hot-reloading = ["common-assets/hot-reloading"]
 simd = ["vek/platform_intrinsics"]
 bin_csv = ["ron", "csv", "clap"]
 bin_graphviz = ["petgraph", "clap"]
+bin_recipe_gen = ["ron"]
 bin_cmd_doc_gen = []
 bin_asset_migrate = ["ron"]
 rrt_pathfinding = ["kiddo"]
@@ -20,27 +21,26 @@ default = ["simd"]
 [dependencies]
 
 common-base = { package = "veloren-common-base", path = "base" }
+common-i18n = { package = "veloren-common-i18n", path = "i18n" }
 # inline_tweak = { workspace = true }
 
 # Serde
 serde = { workspace = true, features = ["rc"] }
 
 # Util
-enum-map = "2.4"
+enum-map = { workspace = true, features = ["serde"] }
 vek = { workspace = true }
-cfg-if = "1.0.0"
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 itertools = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10"
+sha2 = { workspace = true }
 
 # Strum
 strum = { workspace = true }
 
 approx = "0.5.1"
 crossbeam-utils = { workspace = true }
-crossbeam-channel = { workspace = true }
 bitflags = { workspace = true, features = ["serde"] }
 lazy_static = { workspace = true }
 num-derive = "0.4.0"
@@ -66,17 +66,17 @@ csv = { version = "1.1.3", optional = true }
 # graphviz exporters
 petgraph = { version = "0.6", optional = true }
 # K-d trees used for RRT pathfinding
-kiddo = { version = "0.2", optional = true }
+kiddo = { version = "4.2.0", optional = true }
 clap = { workspace = true, optional = true }
 
 # Data structures
 hashbrown = { workspace = true }
 slab = { workspace = true }
 slotmap = { version = "1.0", features = ["serde"] }
-indexmap = { version = "1.9.3", features = ["rayon"] }
+indexmap = { version = "2.2.2", features = ["rayon"] }
 
 # ECS
-specs = { workspace = true, features = ["serde", "storage-event-control"] }
+specs = { workspace = true, features = ["serde", "storage-event-control", "shred-derive"] }
 
 [dev-dependencies]
 #bench

@@ -7,6 +7,7 @@ pub mod particle;
 pub mod simple;
 pub mod smoke_cycle;
 pub mod terrain;
+pub mod tether;
 pub mod trail;
 
 pub use self::{
@@ -16,6 +17,7 @@ pub use self::{
     lod::Lod,
     particle::ParticleMgr,
     terrain::{SpriteRenderContextLazy, Terrain},
+    tether::TetherMgr,
     trail::TrailMgr,
 };
 use crate::{
@@ -25,24 +27,29 @@ use crate::{
         GlobalsBindGroup, Light, Model, PointLightMatrix, PostProcessLocals, RainOcclusionLocals,
         Renderer, Shadow, ShadowLocals, SkyboxVertex,
     },
+    session::PlayerDebugLines,
     settings::Settings,
     window::{AnalogGameInput, Event},
 };
 use client::Client;
 use common::{
     calendar::Calendar,
-    comp::{self, ship::figuredata::VOXEL_COLLIDER_MANIFEST},
+    comp::{
+        self, item::ItemDesc, ship::figuredata::VOXEL_COLLIDER_MANIFEST, slot::EquipSlot,
+        tool::ToolKind,
+    },
     outcome::Outcome,
-    resources::DeltaTime,
+    resources::{DeltaTime, TimeOfDay, TimeScale},
     terrain::{BlockKind, TerrainChunk, TerrainGrid},
     vol::ReadVol,
+    weather::WeatherGrid,
 };
 use common_base::{prof_span, span};
 use common_state::State;
 use comp::item::Reagent;
 use hashbrown::HashMap;
 use num::traits::{Float, FloatConst};
-use specs::{Entity as EcsEntity, Join, WorldExt};
+use specs::{Entity as EcsEntity, Join, LendJoin, WorldExt};
 use vek::*;
 
 const ZOOM_CAP_PLAYER: f32 = 1000.0;
@@ -51,8 +58,9 @@ const ZOOM_CAP_ADMIN: f32 = 100000.0;
 // TODO: Don't hard-code this.
 const CURSOR_PAN_SCALE: f32 = 0.005;
 
-const MAX_LIGHT_COUNT: usize = 20; // 31 (total shadow_mats is limited to 128 with default max_uniform_buffer_binding_size)
-const MAX_SHADOW_COUNT: usize = 24;
+pub(crate) const MAX_LIGHT_COUNT: usize = 20; // 31 (total shadow_mats is limited to 128 with default max_uniform_buffer_binding_size)
+pub(crate) const MAX_SHADOW_COUNT: usize = 24;
+pub(crate) const MAX_POINT_LIGHT_MATRICES_COUNT: usize = MAX_LIGHT_COUNT * 6 + 6;
 const NUM_DIRECTED_LIGHTS: usize = 1;
 const LIGHT_DIST_RADIUS: f32 = 64.0; // The distance beyond which lights may not emit light from their origin
 const SHADOW_DIST_RADIUS: f32 = 8.0;
@@ -105,6 +113,7 @@ pub struct Scene {
     particle_mgr: ParticleMgr,
     trail_mgr: TrailMgr,
     figure_mgr: FigureMgr,
+    tether_mgr: TetherMgr,
     pub sfx_mgr: SfxMgr,
     pub music_mgr: MusicMgr,
     ambient_mgr: AmbientMgr,
@@ -113,6 +122,9 @@ pub struct Scene {
     wind_vel: Vec2<f32>,
     pub interpolated_time_of_day: Option<f64>,
     last_lightning: Option<(Vec3<f32>, f64)>,
+    local_time: f64,
+
+    pub debug_vectors_enabled: bool,
 }
 
 pub struct SceneData<'a> {
@@ -140,11 +152,11 @@ pub struct SceneData<'a> {
 
 impl<'a> SceneData<'a> {
     pub fn get_sun_dir(&self) -> Vec3<f32> {
-        Globals::get_sun_dir(self.interpolated_time_of_day.unwrap_or(0.0))
+        TimeOfDay::new(self.interpolated_time_of_day.unwrap_or(0.0)).get_sun_dir()
     }
 
     pub fn get_moon_dir(&self) -> Vec3<f32> {
-        Globals::get_moon_dir(self.interpolated_time_of_day.unwrap_or(0.0))
+        TimeOfDay::new(self.interpolated_time_of_day.unwrap_or(0.0)).get_moon_dir()
     }
 }
 
@@ -300,7 +312,9 @@ impl Scene {
             shadow_mats: renderer.create_shadow_bound_locals(&[ShadowLocals::default()]),
             rain_occlusion_mats: renderer
                 .create_rain_occlusion_bound_locals(&[RainOcclusionLocals::default()]),
-            point_light_matrices: Box::new([PointLightMatrix::default(); MAX_LIGHT_COUNT * 6 + 6]),
+            point_light_matrices: Box::new(
+                [PointLightMatrix::default(); MAX_POINT_LIGHT_MATRICES_COUNT],
+            ),
         };
 
         let lod = Lod::new(renderer, client, settings);
@@ -339,6 +353,7 @@ impl Scene {
             particle_mgr: ParticleMgr::new(renderer),
             trail_mgr: TrailMgr::default(),
             figure_mgr: FigureMgr::new(renderer),
+            tether_mgr: TetherMgr::new(renderer),
             sfx_mgr: SfxMgr::default(),
             music_mgr: MusicMgr::new(&calendar),
             ambient_mgr: AmbientMgr {
@@ -348,6 +363,8 @@ impl Scene {
             wind_vel: Vec2::zero(),
             interpolated_time_of_day: None,
             last_lightning: None,
+            local_time: 0.0,
+            debug_vectors_enabled: false,
         }
     }
 
@@ -486,6 +503,7 @@ impl Scene {
                                 Rgb::new(1.0, 0.0, 0.0)
                             }
                         },
+                        Some(Reagent::Phoenix) => Rgb::new(1.0, 0.8, 0.3),
                         Some(Reagent::White) => Rgb::new(1.0, 1.0, 1.0),
                         Some(Reagent::Yellow) => Rgb::new(1.0, 1.0, 0.0),
                         None => Rgb::new(1.0, 0.5, 0.0),
@@ -516,12 +534,15 @@ impl Scene {
         audio: &mut AudioFrontend,
         scene_data: &SceneData,
         client: &Client,
+        settings: &Settings,
     ) {
         span!(_guard, "maintain", "Scene::maintain");
         // Get player position.
         let ecs = scene_data.state.ecs();
 
         let dt = ecs.fetch::<DeltaTime>().0;
+
+        self.local_time += dt as f64 * ecs.fetch::<TimeScale>().0;
 
         let positions = ecs.read_storage::<comp::Pos>();
 
@@ -532,6 +553,31 @@ impl Scene {
                 .read_storage::<comp::Ori>()
                 .get(scene_data.viewpoint_entity)
                 .map_or(Quaternion::identity(), |ori| ori.to_quat());
+
+            let viewpoint_look_ori = ecs
+                .read_storage::<comp::CharacterActivity>()
+                .get(scene_data.viewpoint_entity)
+                .and_then(|activity| activity.look_dir)
+                .map(|dir| {
+                    let d = dir.to_vec();
+
+                    let pitch = (-d.z).asin();
+                    let yaw = d.x.atan2(d.y);
+
+                    Vec3::new(yaw, pitch, 0.0)
+                })
+                .unwrap_or_else(|| {
+                    let q = viewpoint_ori;
+                    let sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z);
+                    let cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+                    let pitch = sinr_cosp.atan2(cosr_cosp);
+
+                    let siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+                    let cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+                    let yaw = siny_cosp.atan2(cosy_cosp);
+
+                    Vec3::new(-yaw, -pitch, 0.0)
+                });
 
             let viewpoint_scale = ecs
                 .read_storage::<comp::Scale>()
@@ -558,24 +604,7 @@ impl Scene {
                     .rotate_by(Vec3::from([0.0, self.camera_input_state.y, 0.0]));
             } else {
                 // Otherwise set the cameras rotation to the viewpoints
-                let q = viewpoint_ori;
-                let sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z);
-                let cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
-                let roll = sinr_cosp.atan2(cosr_cosp);
-
-                let sinp = 2.0 * (q.w * q.y - q.z * q.x);
-                let pitch = if sinp.abs() >= 1.0 {
-                    std::f32::consts::FRAC_PI_2.copysign(sinp)
-                } else {
-                    sinp.asin()
-                };
-
-                let siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
-                let cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
-                let yaw = siny_cosp.atan2(cosy_cosp);
-
-                self.camera
-                    .set_orientation_instant(Vec3::new(-yaw, pitch, roll));
+                self.camera.set_orientation(viewpoint_look_ori);
             }
 
             let viewpoint_offset = if is_humanoid {
@@ -601,6 +630,19 @@ impl Scene {
                     .get(scene_data.viewpoint_entity)
                     .map(|p| p.on_ground.is_some());
 
+                let player_entity = client.entity();
+                let holding_ranged = client
+                    .inventories()
+                    .get(player_entity)
+                    .and_then(|inv| inv.equipped(EquipSlot::ActiveMainhand))
+                    .and_then(|item| item.tool_info())
+                    .is_some_and(|tool_kind| {
+                        matches!(
+                            tool_kind,
+                            ToolKind::Bow | ToolKind::Staff | ToolKind::Sceptre
+                        )
+                    });
+
                 let up = match self.camera.get_mode() {
                     CameraMode::FirstPerson => {
                         if viewpoint_rolling {
@@ -612,15 +654,29 @@ impl Scene {
                             viewpoint_eye_height
                         }
                     },
+                    CameraMode::ThirdPerson if scene_data.is_aiming && holding_ranged => {
+                        viewpoint_height * 1.16 + settings.gameplay.aim_offset_y
+                    },
                     CameraMode::ThirdPerson if scene_data.is_aiming => viewpoint_height * 1.16,
                     CameraMode::ThirdPerson => viewpoint_eye_height,
                     CameraMode::Freefly => 0.0,
                 };
+
+                let right = match self.camera.get_mode() {
+                    CameraMode::FirstPerson => 0.0,
+                    CameraMode::ThirdPerson if scene_data.is_aiming && holding_ranged => {
+                        settings.gameplay.aim_offset_x
+                    },
+                    CameraMode::ThirdPerson => 0.0,
+                    CameraMode::Freefly => 0.0,
+                };
+
                 // Alter camera position to match player.
                 let tilt = self.camera.get_orientation().y;
                 let dist = self.camera.get_distance();
 
                 Vec3::unit_z() * (up * viewpoint_scale - tilt.min(0.0).sin() * dist * 0.6)
+                    + self.camera.right() * (right * viewpoint_scale)
             } else {
                 self.figure_mgr
                     .viewpoint_offset(scene_data, scene_data.viewpoint_entity)
@@ -763,9 +819,9 @@ impl Scene {
         renderer.update_consts(&mut self.data.lights, lights);
 
         // Update event lights
-        self.event_lights.drain_filter(|el| {
+        self.event_lights.retain_mut(|el| {
             el.timeout -= dt;
-            el.timeout <= 0.0
+            el.timeout > 0.0
         });
 
         // Update shadow constants
@@ -838,6 +894,7 @@ impl Scene {
             self.map_bounds,
             time_of_day,
             scene_data.state.get_time(),
+            self.local_time,
             renderer.resolution().as_(),
             Vec2::new(SHADOW_NEAR, SHADOW_FAR),
             lights.len(),
@@ -866,6 +923,9 @@ impl Scene {
 
         // Maintain LoD.
         self.lod.maintain(renderer, client, focus_pos, &self.camera);
+
+        // Maintain tethers.
+        self.tether_mgr.maintain(renderer, client, focus_pos);
 
         // Maintain debug shapes
         self.debug.maintain(renderer);
@@ -1177,7 +1237,7 @@ impl Scene {
             .max_weather_near(focus_off.xy() + cam_pos.xy());
         self.wind_vel = weather.wind_vel();
         if weather.rain > RAIN_THRESHOLD {
-            let weather = client.state().weather_at(focus_off.xy() + cam_pos.xy());
+            let weather = client.weather_at_player();
             let rain_vel = weather.rain_vel();
             let rain_view_mat = math::Mat4::look_at_rh(look_at, look_at + rain_vel, up);
 
@@ -1409,7 +1469,7 @@ impl Scene {
             // Draws sprites
             let mut sprite_drawer = first_pass.draw_sprites(
                 &self.terrain.sprite_globals,
-                &self.terrain.sprite_atlas_textures,
+                &self.terrain.sprite_render_state.sprite_atlas_textures,
             );
             self.figure_mgr.render_sprites(
                 &mut sprite_drawer,
@@ -1425,6 +1485,9 @@ impl Scene {
                 culling_mode,
             );
             drop(sprite_drawer);
+
+            // Render tethers.
+            self.tether_mgr.render(&mut first_pass);
 
             // Draws translucent
             self.terrain.render_translucent(&mut first_pass, focus_pos);
@@ -1483,7 +1546,7 @@ impl Scene {
                     for line in chunk.meta().debug_lines().iter() {
                         let shape_id = self
                             .debug
-                            .add_shape(DebugShape::Line([line.start, line.end]));
+                            .add_shape(DebugShape::Line([line.start, line.end], 0.1));
                         ret.push(shape_id);
                         self.debug
                             .set_context(shape_id, [0.0; 4], [1.0; 4], [0.0, 0.0, 0.0, 1.0]);
@@ -1579,5 +1642,88 @@ impl Scene {
             }
             keep
         });
+    }
+
+    pub fn maintain_debug_vectors(&mut self, client: &Client, lines: &mut PlayerDebugLines) {
+        lines
+            .chunk_normal
+            .take()
+            .map(|id| self.debug.remove_shape(id));
+        lines.fluid_vel.take().map(|id| self.debug.remove_shape(id));
+        lines.wind.take().map(|id| self.debug.remove_shape(id));
+        lines.vel.take().map(|id| self.debug.remove_shape(id));
+        if self.debug_vectors_enabled {
+            let ecs = client.state().ecs();
+
+            let vels = &ecs.read_component::<comp::Vel>();
+            let Some(vel) = vels.get(client.entity()) else {
+                return;
+            };
+
+            let phys_states = &ecs.read_component::<comp::PhysicsState>();
+            let Some(phys) = phys_states.get(client.entity()) else {
+                return;
+            };
+
+            let positions = &ecs.read_component::<comp::Pos>();
+            let Some(pos) = positions.get(client.entity()) else {
+                return;
+            };
+
+            let weather = ecs.read_resource::<WeatherGrid>();
+            // take id and remove to delete the previous lines.
+
+            const LINE_WIDTH: f32 = 0.05;
+            // Fluid Velocity
+            {
+                let Some(fluid) = phys.in_fluid else {
+                    return;
+                };
+                let shape = DebugShape::Line([pos.0, pos.0 + fluid.flow_vel().0 / 2.], LINE_WIDTH);
+                let id = self.debug.add_shape(shape);
+                lines.fluid_vel = Some(id);
+                self.debug
+                    .set_context(id, [0.0; 4], [0.18, 0.72, 0.87, 0.8], [0.0, 0.0, 0.0, 1.0]);
+            }
+            // Chunk Terrain Normal Vector
+            {
+                let Some(chunk) = client.current_chunk() else {
+                    return;
+                };
+                let shape = DebugShape::Line(
+                    [
+                        pos.0,
+                        pos.0
+                            + chunk
+                                .meta()
+                                .approx_chunk_terrain_normal()
+                                .unwrap_or(Vec3::unit_z())
+                                * 2.5,
+                    ],
+                    LINE_WIDTH,
+                );
+                let id = self.debug.add_shape(shape);
+                lines.chunk_normal = Some(id);
+                self.debug
+                    .set_context(id, [0.0; 4], [0.22, 0.63, 0.1, 0.8], [0.0, 0.0, 0.0, 1.0]);
+            }
+            // Wind
+            {
+                let wind = weather.get_interpolated(pos.0.xy()).wind_vel();
+                let shape = DebugShape::Line([pos.0, pos.0 + wind * 5.0], LINE_WIDTH);
+                let id = self.debug.add_shape(shape);
+                lines.wind = Some(id);
+                self.debug
+                    .set_context(id, [0.0; 4], [0.76, 0.76, 0.76, 0.8], [0.0, 0.0, 0.0, 1.0]);
+            }
+            // Player Vel
+            {
+                let shape = DebugShape::Line([pos.0, pos.0 + vel.0 / 2.0], LINE_WIDTH);
+                let id = self.debug.add_shape(shape);
+                lines.vel = Some(id);
+                self.debug
+                    .set_context(id, [0.0; 4], [0.98, 0.76, 0.01, 0.8], [0.0, 0.0, 0.0, 1.0]);
+            }
+        }
     }
 }

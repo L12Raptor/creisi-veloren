@@ -10,7 +10,7 @@ use crate::{
         },
         CharacterState, InventoryManip, StateUpdate,
     },
-    event::ServerEvent,
+    event::{BuffEvent, InventoryManipEvent},
     states::behavior::{CharacterBehavior, JoinData},
 };
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,9 @@ impl CharacterBehavior for Data {
         let mut update = StateUpdate::from(data);
 
         match self.static_data.item_kind {
-            ItemUseKind::Consumable(ConsumableKind::Drink) => {
+            ItemUseKind::Consumable(
+                ConsumableKind::Drink | ConsumableKind::Charm | ConsumableKind::Recipe,
+            ) => {
                 handle_orientation(data, &mut update, 1.0, None);
                 handle_move(data, &mut update, 1.0);
             },
@@ -64,10 +66,12 @@ impl CharacterBehavior for Data {
         }
 
         let use_point = match self.static_data.item_kind {
-            ItemUseKind::Consumable(ConsumableKind::Drink | ConsumableKind::Food) => {
-                UsePoint::BuildupUse
+            ItemUseKind::Consumable(
+                ConsumableKind::Drink | ConsumableKind::Food | ConsumableKind::Recipe,
+            ) => UsePoint::BuildupUse,
+            ItemUseKind::Consumable(ConsumableKind::ComplexFood | ConsumableKind::Charm) => {
+                UsePoint::UseRecover
             },
-            ItemUseKind::Consumable(ConsumableKind::ComplexFood) => UsePoint::UseRecover,
         };
 
         match self.stage_section {
@@ -118,7 +122,11 @@ impl CharacterBehavior for Data {
                     // Recovery
                     update.character = CharacterState::UseItem(Data {
                         static_data: self.static_data.clone(),
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {
@@ -139,11 +147,11 @@ impl CharacterBehavior for Data {
 
         if matches!(update.character, CharacterState::Roll(_)) {
             // Remove potion/saturation effect if left the use item state early by rolling
-            output_events.emit_server(ServerEvent::Buff {
+            output_events.emit_server(BuffEvent {
                 entity: data.entity,
                 buff_change: BuffChange::RemoveByKind(BuffKind::Potion),
             });
-            output_events.emit_server(ServerEvent::Buff {
+            output_events.emit_server(BuffEvent {
                 entity: data.entity,
                 buff_change: BuffChange::RemoveByKind(BuffKind::Saturation),
             });
@@ -187,6 +195,16 @@ impl ItemUseKind {
                 Duration::from_secs_f32(4.5),
                 Duration::from_secs_f32(0.5),
             ),
+            Self::Consumable(ConsumableKind::Charm) => (
+                Duration::from_secs_f32(0.1),
+                Duration::from_secs_f32(0.8),
+                Duration::from_secs_f32(0.1),
+            ),
+            Self::Consumable(ConsumableKind::Recipe) => (
+                Duration::from_secs_f32(0.0),
+                Duration::from_secs_f32(0.0),
+                Duration::from_secs_f32(0.0),
+            ),
         }
     }
 }
@@ -210,6 +228,6 @@ fn use_item(data: &JoinData, output_events: &mut OutputEvents, state: &Data) {
     if item_is_same {
         // Create inventory manipulation event
         let inv_manip = InventoryManip::Use(Slot::Inventory(state.static_data.inv_slot));
-        output_events.emit_server(ServerEvent::InventoryManip(data.entity, inv_manip));
+        output_events.emit_server(InventoryManipEvent(data.entity, inv_manip));
     }
 }

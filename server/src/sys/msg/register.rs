@@ -7,24 +7,23 @@ use crate::{
 };
 use common::{
     comp::{self, Admin, Player, Stats},
-    event::{EventBus, ServerEvent},
-    recipe::{default_component_recipe_book, default_recipe_book, default_repair_recipe_book},
+    event::{ClientDisconnectEvent, EventBus, MakeAdminEvent},
+    recipe::{default_component_recipe_book, default_repair_recipe_book},
     resources::TimeOfDay,
     shared_server_config::ServerConstants,
-    uid::{IdMaps, Uid},
+    uid::Uid,
 };
 use common_base::prof_span;
 use common_ecs::{Job, Origin, Phase, System};
 use common_net::msg::{
-    CharacterInfo, ClientRegister, DisconnectReason, PlayerInfo, PlayerListUpdate, RegisterError,
-    ServerGeneral, ServerInit, WorldMapMsg,
+    server::ServerDescription, CharacterInfo, ClientRegister, DisconnectReason, PlayerInfo,
+    PlayerListUpdate, RegisterError, ServerGeneral, ServerInit, WorldMapMsg,
 };
 use hashbrown::{hash_map, HashMap};
 use itertools::Either;
-use plugin_api::Health;
 use rayon::prelude::*;
 use specs::{
-    shred::ResourceId, Entities, Join, ParJoin, Read, ReadExpect, ReadStorage, SystemData, World,
+    shred, Entities, Join, LendJoin, ParJoin, Read, ReadExpect, ReadStorage, SystemData,
     WriteStorage,
 };
 use tracing::{debug, info, trace, warn};
@@ -42,7 +41,8 @@ pub struct ReadData<'a> {
     entities: Entities<'a>,
     stats: ReadStorage<'a, Stats>,
     uids: ReadStorage<'a, Uid>,
-    server_event_bus: Read<'a, EventBus<ServerEvent>>,
+    client_disconnect_events: Read<'a, EventBus<ClientDisconnectEvent>>,
+    make_admin_events: Read<'a, EventBus<MakeAdminEvent>>,
     login_provider: ReadExpect<'a, LoginProvider>,
     player_metrics: ReadExpect<'a, PlayerMetrics>,
     settings: ReadExpect<'a, Settings>,
@@ -50,11 +50,11 @@ pub struct ReadData<'a> {
     time_of_day: Read<'a, TimeOfDay>,
     material_stats: ReadExpect<'a, comp::item::MaterialStatManifest>,
     ability_map: ReadExpect<'a, comp::item::tool::AbilityMap>,
+    recipe_book: ReadExpect<'a, common::recipe::RecipeBookManifest>,
     map: ReadExpect<'a, WorldMapMsg>,
     trackers: TrackedStorages<'a>,
-    _healths: ReadStorage<'a, Health>, // used by plugin feature
-    _plugin_mgr: ReadPlugin<'a>,       // used by plugin feature
-    _id_maps: Read<'a, IdMaps>,        // used by plugin feature
+    #[allow(dead_code)]
+    plugin_mgr: ReadPlugin<'a>, // only used by plugins feature
 }
 
 /// This system will handle new messages from clients
@@ -62,7 +62,6 @@ pub struct ReadData<'a> {
 pub struct Sys;
 impl<'a> System<'a> for Sys {
     type SystemData = (
-        Read<'a, EventBus<ServerEvent>>,
         ReadData<'a>,
         WriteStorage<'a, Client>,
         WriteStorage<'a, Player>,
@@ -75,8 +74,9 @@ impl<'a> System<'a> for Sys {
 
     fn run(
         _job: &mut Job<Self>,
-        (event_bus, read_data, mut clients, mut players, mut pending_logins): Self::SystemData,
+        (read_data, mut clients, mut players, mut pending_logins): Self::SystemData,
     ) {
+        let mut make_admin_emitter = read_data.make_admin_events.emitter();
         // Player list to send new players, and lookup from UUID to entity (so we don't
         // have to do a linear scan over all entities on each login to see if
         // it's a duplicate).
@@ -99,6 +99,8 @@ impl<'a> System<'a> for Sys {
                         player_alias: player.alias.clone(),
                         character: stats.map(|stats| CharacterInfo {
                             name: stats.name.clone(),
+                            // NOTE: hack, read docs for body::Gender for more
+                            gender: stats.original_body.humanoid_gender(),
                         }),
                         uuid: player.uuid(),
                     }),
@@ -129,12 +131,20 @@ impl<'a> System<'a> for Sys {
 
         // defer auth lockup
         for (entity, client) in (&read_data.entities, &mut clients).join() {
+            let mut locale = None;
+
             let _ = super::try_recv_all(client, 0, |_, msg: ClientRegister| {
                 trace!(?msg.token_or_username, "defer auth lockup");
                 let pending = read_data.login_provider.verify(&msg.token_or_username);
+                locale = msg.locale;
                 let _ = pending_logins.insert(entity, pending);
                 Ok(())
             });
+
+            // Update locale
+            if let Some(locale) = locale {
+                client.locale = Some(locale);
+            }
         }
 
         let old_player_count = player_list.len();
@@ -155,8 +165,8 @@ impl<'a> System<'a> for Sys {
             // NOTE: Required because Specs has very poor work splitting for sparse joins.
             .par_bridge()
             .for_each_init(
-                || read_data.server_event_bus.emitter(),
-                |server_emitter, (entity, uid, client, _, pending)| {
+                || read_data.client_disconnect_events.emitter(),
+                |client_disconnect_emitter, (entity, uid, client, _, pending)| {
                     prof_span!("msg::register login");
                     if let Err(e) = || -> Result<(), crate::error::Error> {
                         let extra_checks = |username: String, uuid: authc::Uuid| {
@@ -228,7 +238,7 @@ impl<'a> System<'a> for Sys {
                                         // NOTE: Done only on error to avoid doing extra work within
                                         // the lock.
                                         trace!(?e, "pending login returned error");
-                                        server_emitter.emit(ServerEvent::ClientDisconnect(
+                                        client_disconnect_emitter.emit(ClientDisconnectEvent(
                                             entity,
                                             common::comp::DisconnectReason::Kicked,
                                         ));
@@ -292,7 +302,7 @@ impl<'a> System<'a> for Sys {
                                     );
                                 }
                                 // Remove old client
-                                server_emitter.emit(ServerEvent::ClientDisconnect(
+                                client_disconnect_emitter.emit(ClientDisconnectEvent(
                                     old_entity,
                                     common::comp::DisconnectReason::NewerLogin,
                                 ));
@@ -320,6 +330,17 @@ impl<'a> System<'a> for Sys {
                         // Tell the client its request was successful.
                         client.send(Ok(()))?;
 
+                        #[cfg(feature = "plugins")]
+                        let active_plugins = read_data.plugin_mgr.plugin_list();
+                        #[cfg(not(feature = "plugins"))]
+                        let active_plugins = Vec::default();
+
+                        let server_descriptions = &read_data.editable_settings.server_description;
+                        let description = ServerDescription {
+                            motd: server_descriptions.get(client.locale.as_deref()).map(|d| d.motd.clone()).unwrap_or_default(),
+                            rules: server_descriptions.get_rules(client.locale.as_deref()).map(str::to_string),
+                        };
+
                         // Send client all the tracked components currently attached to its entity
                         // as well as synced resources (currently only `TimeOfDay`)
                         debug!("Starting initial sync with client.");
@@ -332,7 +353,7 @@ impl<'a> System<'a> for Sys {
                             max_group_size: read_data.settings.max_player_group_size,
                             client_timeout: read_data.settings.client_timeout,
                             world_map: (*read_data.map).clone(),
-                            recipe_book: default_recipe_book().cloned(),
+                            recipe_book: (*read_data.recipe_book).clone(),
                             component_recipe_book: default_component_recipe_book().cloned(),
                             repair_recipe_book: default_repair_recipe_book().cloned(),
                             material_stats: (*read_data.material_stats).clone(),
@@ -340,6 +361,8 @@ impl<'a> System<'a> for Sys {
                             server_constants: ServerConstants {
                                 day_cycle_coefficient: read_data.settings.day_cycle_coefficient()
                             },
+                            description,
+                            active_plugins,
                         })?;
                         debug!("Done initial sync with client.");
 
@@ -390,7 +413,7 @@ impl<'a> System<'a> for Sys {
                 if let Some(admin) = admin {
                     // We need to defer writing to the Admin storage since it's borrowed immutably
                     // by this system via TrackedStorages.
-                    event_bus.emit_now(ServerEvent::MakeAdmin {
+                    make_admin_emitter.emit(MakeAdminEvent {
                         entity,
                         admin: Admin(admin.role.into()),
                         uuid,

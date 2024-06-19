@@ -1,10 +1,10 @@
-pub mod alpha;
 pub mod beta;
 pub mod breathe;
 pub mod combomelee;
 pub mod dash;
 pub mod idle;
 pub mod jump;
+pub mod leapshockwave;
 pub mod run;
 pub mod shockwave;
 pub mod shoot;
@@ -14,14 +14,18 @@ pub mod tailwhip;
 
 // Reexports
 pub use self::{
-    alpha::AlphaAnimation, beta::BetaAnimation, breathe::BreatheAnimation,
-    combomelee::ComboAnimation, dash::DashAnimation, idle::IdleAnimation, jump::JumpAnimation,
-    run::RunAnimation, shockwave::ShockwaveAnimation, shoot::ShootAnimation,
-    spritesummon::SpriteSummonAnimation, stunned::StunnedAnimation, tailwhip::TailwhipAnimation,
+    beta::BetaAnimation, breathe::BreatheAnimation, combomelee::ComboAnimation,
+    dash::DashAnimation, idle::IdleAnimation, jump::JumpAnimation,
+    leapshockwave::LeapShockAnimation, run::RunAnimation, shockwave::ShockwaveAnimation,
+    shoot::ShootAnimation, spritesummon::SpriteSummonAnimation, stunned::StunnedAnimation,
+    tailwhip::TailwhipAnimation,
 };
 
 use super::{make_bone, vek::*, FigureBoneData, Offsets, Skeleton};
-use common::comp::{self};
+use common::{
+    comp::{self},
+    states::utils::StageSection,
+};
 use core::convert::TryFrom;
 
 pub type Body = comp::quadruped_low::Body;
@@ -120,6 +124,7 @@ pub struct SkeletonAttr {
     lean: (f32, f32),
     scaler: f32,
     tempo: f32,
+    tongue_for_tail: bool,
 }
 
 impl<'a> TryFrom<&'a comp::Body> for SkeletonAttr {
@@ -147,6 +152,7 @@ impl Default for SkeletonAttr {
             lean: (0.0, 0.0),
             scaler: 0.0,
             tempo: 0.0,
+            tongue_for_tail: false,
         }
     }
 }
@@ -178,7 +184,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (2.0, -3.0),
                 (Mossdrake, _) => (7.0, 8.0),
                 (Driggle, _) => (3.0, 4.0),
-                (HermitAlligator, _) => (0.5, 2.0),
+                (Snaretongue, _) => (7.0, 5.5),
                 (Rigusaurus, _) => (1.5, 2.0),
             },
             head_lower: match (body.species, body.body_type) {
@@ -204,7 +210,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (0.0, 0.0),
                 (Mossdrake, _) => (9.0, -6.0),
                 (Driggle, _) => (6.0, -3.0),
-                (HermitAlligator, _) => (9.0, 0.25),
+                (Snaretongue, _) => (8.5, 0.0),
                 (Rigusaurus, _) => (8.0, 0.0),
             },
             jaw: match (body.species, body.body_type) {
@@ -230,7 +236,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (-1.0, 4.0),
                 (Mossdrake, _) => (3.0, -5.0),
                 (Driggle, _) => (-2.0, -5.0),
-                (HermitAlligator, _) => (2.5, -2.0),
+                (Snaretongue, _) => (-7.0, -7.0),
                 (Rigusaurus, _) => (2.5, -3.0),
             },
             chest: match (body.species, body.body_type) {
@@ -256,7 +262,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (0.0, 12.0),
                 (Mossdrake, _) => (0.0, 16.5),
                 (Driggle, _) => (0.0, 8.0),
-                (HermitAlligator, _) => (0.0, 5.0),
+                (Snaretongue, _) => (-8.0, 9.0),
                 (Rigusaurus, _) => (0.0, 5.0),
             },
             tail_rear: match (body.species, body.body_type) {
@@ -282,7 +288,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (-15.0, 4.0),
                 (Mossdrake, _) => (-12.0, -2.0),
                 (Driggle, _) => (-4.0, 0.0),
-                (HermitAlligator, _) => (-13.0, -1.0),
+                (Snaretongue, _) => (5.0, 0.0),
                 (Rigusaurus, _) => (-12.5, -1.0),
             },
             tail_front: match (body.species, body.body_type) {
@@ -308,7 +314,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (-1.0, 4.0),
                 (Mossdrake, _) => (-7.0, -4.5),
                 (Driggle, _) => (-5.5, -4.0),
-                (HermitAlligator, _) => (-5.0, 0.0),
+                (Snaretongue, _) => (5.0, -2.0),
                 (Rigusaurus, _) => (-6.0, 0.0),
             },
             feet_f: match (body.species, body.body_type) {
@@ -334,7 +340,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (3.5, 4.0, -5.0),
                 (Mossdrake, _) => (4.5, 4.0, -6.5),
                 (Driggle, _) => (4.5, 2.5, -4.0),
-                (HermitAlligator, _) => (4.5, 4.25, -1.0),
+                (Snaretongue, _) => (6.5, 6.5, 1.0),
                 (Rigusaurus, _) => (3.5, 6.0, -1.0),
             },
             feet_b: match (body.species, body.body_type) {
@@ -360,7 +366,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Deadwood, _) => (3.5, -6.0, -5.0),
                 (Mossdrake, _) => (3.5, -8.0, -6.5),
                 (Driggle, _) => (3.5, -3.5, -5.0),
-                (HermitAlligator, _) => (4.5, -5.5, -1.0),
+                (Snaretongue, _) => (1.5, 1.5, 2.0),
                 (Rigusaurus, _) => (3.5, -6.0, -1.0),
             },
             lean: match (body.species, body.body_type) {
@@ -386,7 +392,7 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Icedrake, _) => 1.12,
                 (Basilisk, _) => 1.3,
                 (Mossdrake, _) => 1.12,
-                (HermitAlligator, _) => 2.0,
+                (Snaretongue, _) => 1.0,
                 _ => 0.9,
             },
             tempo: match (body.species, body.body_type) {
@@ -408,9 +414,11 @@ impl<'a> From<&'a Body> for SkeletonAttr {
                 (Icedrake, _) => 1.1,
                 (Basilisk, _) => 0.8,
                 (Mossdrake, _) => 1.1,
-                (HermitAlligator, _) => 0.7,
+                (Snaretongue, _) => 0.7,
                 _ => 1.0,
             },
+            // bool to special case Snaretongue
+            tongue_for_tail: matches!(body.species, Snaretongue),
         }
     }
 }
@@ -439,8 +447,88 @@ fn mount_point(body: &Body) -> Vec3<f32> {
         (Deadwood, _) => (0.0, -2.0, -3.0),
         (Mossdrake, _) => (0.0, 2.0, -0.5),
         (Driggle, _) => (0.0, 2.0, 0.0),
-        (HermitAlligator, _) => (0.0, 2.5, 3.0),
+        (Snaretongue, _) => (0.0, 2.0, 0.0),
         (Rigusaurus, _) => (0.0, 3.5, 4.5),
     }
     .into()
+}
+
+pub fn quadruped_low_alpha(
+    next: &mut QuadrupedLowSkeleton,
+    _s_a: &SkeletonAttr,
+    stage_section: StageSection,
+    anim_time: f32,
+    global_time: f32,
+    timer: f32,
+) {
+    let (movement1base, movement2base, movement3) = match stage_section {
+        StageSection::Buildup => (anim_time.sqrt(), 0.0, 0.0),
+        StageSection::Action => (1.0, anim_time.powi(4), 0.0),
+        StageSection::Recover => (1.0, 1.0, anim_time),
+        _ => (0.0, 0.0, 0.0),
+    };
+    let pullback = 1.0 - movement3;
+    let subtract = global_time - timer;
+    let check = subtract - subtract.trunc();
+    let mirror = (check - 0.5).signum();
+    let twitch3 = (mirror * movement3 * 9.0).sin();
+    let movement1 = mirror * movement1base * pullback;
+    let movement2 = mirror * movement2base * pullback;
+    let movement1abs = movement1base * pullback;
+    let movement2abs = movement2base * pullback;
+
+    next.head_upper.orientation = Quaternion::rotation_z(twitch3 * -0.7);
+
+    next.head_lower.orientation = Quaternion::rotation_x(movement1abs * 0.35 + movement2abs * -0.9)
+        * Quaternion::rotation_y(movement1 * 0.7 + movement2 * -1.0);
+
+    next.jaw.orientation = Quaternion::rotation_x(movement1abs * -0.5 + movement2abs * 0.5);
+    next.chest.orientation = Quaternion::rotation_y(movement1 * -0.08 + movement2 * 0.15)
+        * Quaternion::rotation_z(movement1 * -0.2 + movement2 * 0.6);
+
+    next.tail_front.orientation =
+        Quaternion::rotation_x(0.15) * Quaternion::rotation_z(movement1 * -0.4 + movement2 * -0.2);
+
+    next.tail_rear.orientation =
+        Quaternion::rotation_x(-0.12) * Quaternion::rotation_z(movement1 * -0.4 + movement2 * -0.2);
+}
+
+pub fn quadruped_low_beta(
+    next: &mut QuadrupedLowSkeleton,
+    _s_a: &SkeletonAttr,
+    stage_section: StageSection,
+    anim_time: f32,
+    global_time: f32,
+    timer: f32,
+) {
+    let (movement1base, movement2base, movement3) = match stage_section {
+        StageSection::Buildup => (anim_time.sqrt(), 0.0, 0.0),
+        StageSection::Action => (1.0, anim_time.powi(4), 0.0),
+        StageSection::Recover => (1.0, 1.0, anim_time),
+        _ => (0.0, 0.0, 0.0),
+    };
+    let pullback = 1.0 - movement3;
+    let subtract = global_time - timer;
+    let check = subtract - subtract.trunc();
+    let mirror = (check - 0.5).signum();
+    let twitch3 = (mirror * movement3 * 9.0).sin();
+    let movement1 = mirror * movement1base * pullback;
+    let movement2 = mirror * movement2base * pullback;
+    let movement1abs = movement1base * pullback;
+    let movement2abs = movement2base * pullback;
+
+    next.head_upper.orientation = Quaternion::rotation_z(twitch3 * 0.2);
+
+    next.head_lower.orientation = Quaternion::rotation_x(movement1abs * 0.15 + movement2abs * -0.6)
+        * Quaternion::rotation_y(movement1 * -0.1 + movement2 * 0.15);
+
+    next.jaw.orientation = Quaternion::rotation_x(movement1abs * -0.9 + movement2abs * 0.9);
+    next.chest.orientation = Quaternion::rotation_y(movement1 * 0.08 + movement2 * -0.15)
+        * Quaternion::rotation_z(movement1 * 0.2 + movement2 * -0.3);
+
+    next.tail_front.orientation =
+        Quaternion::rotation_x(0.15) * Quaternion::rotation_z(movement1 * 0.4 + movement2 * 0.2);
+
+    next.tail_rear.orientation =
+        Quaternion::rotation_x(-0.12) * Quaternion::rotation_z(movement1 * 0.4 + movement2 * 0.2);
 }

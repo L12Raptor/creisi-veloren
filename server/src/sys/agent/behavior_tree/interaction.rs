@@ -9,7 +9,7 @@ use common::{
         BehaviorState, Content, ControlAction, Item, TradingBehavior, UnresolvedChatMsg,
         UtteranceKind,
     },
-    event::ServerEvent,
+    event::{ChatEvent, EmitExt, ProcessTradeActionEvent},
     rtsim::{Actor, NpcInput, PersonalityTrait},
     trade::{TradeAction, TradePhase, TradeResult},
 };
@@ -45,7 +45,7 @@ pub fn process_inbox_sound_and_hurt(bdata: &mut BehaviorData) -> bool {
                 Some(_) | None => {},
             }
         } else {
-            bdata.agent.action_state.timers
+            bdata.agent.behavior_state.timers
                 [ActionStateInteractionTimers::TimerInteraction as usize] = 0.1;
         }
     }
@@ -63,9 +63,9 @@ pub fn process_inbox_interaction(bdata: &mut BehaviorData) -> bool {
     false
 }
 
-/// Increment agent's action_state timer
+/// Increment agent's behavior_state timer
 pub fn increment_timer_deltatime(bdata: &mut BehaviorData) -> bool {
-    bdata.agent.action_state.timers[ActionStateInteractionTimers::TimerInteraction as usize] +=
+    bdata.agent.behavior_state.timers[ActionStateInteractionTimers::TimerInteraction as usize] +=
         bdata.read_data.dt.0;
     false
 }
@@ -76,7 +76,7 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
         agent,
         agent_data,
         read_data,
-        event_emitter,
+        emitters,
         controller,
         ..
     } = bdata;
@@ -89,15 +89,13 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
         let by_entity = get_entity_by_id(by, read_data);
 
         if let Some(rtsim_outbox) = &mut agent.rtsim_outbox {
-            if let Subject::Regular
-                | Subject::Mood
-                | Subject::Work = subject
+            if let Subject::Regular | Subject::Mood | Subject::Work = subject
                 && let Some(by_entity) = by_entity
-                && let Some(actor) = read_data.presences
+                && let Some(actor) = read_data
+                    .presences
                     .get(by_entity)
                     .and_then(|p| p.kind.character_id().map(Actor::Character))
-                    .or_else(|| Some(Actor::Npc(read_data.rtsim_entities
-                        .get(by_entity)?.0)))
+                    .or_else(|| Some(Actor::Npc(read_data.rtsim_entities.get(by_entity)?.0)))
             {
                 rtsim_outbox.push_back(NpcInput::Interaction(actor, subject));
                 return false;
@@ -173,7 +171,7 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
                                     standard_response_msg()
                                 };
                                 // TODO: Localise
-                                agent_data.chat_npc(Content::Plain(msg), event_emitter);
+                                agent_data.chat_npc(Content::Plain(msg), emitters);
                             } else {
                                 let mut rng = thread_rng();
                                 agent_data.chat_npc(
@@ -181,7 +179,7 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
                                         .rtsim_controller
                                         .personality
                                         .get_generic_comment(&mut rng),
-                                    event_emitter,
+                                    emitters,
                                 );
                             }
                         }
@@ -193,13 +191,13 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
                                 agent_data.chat_npc_if_allowed_to_speak(
                                     Content::localized("npc-speech-merchant_advertisement"),
                                     agent,
-                                    event_emitter,
+                                    emitters,
                                 );
                             } else {
                                 agent_data.chat_npc_if_allowed_to_speak(
                                     Content::localized("npc-speech-merchant_busy"),
                                     agent,
-                                    event_emitter,
+                                    emitters,
                                 );
                             }
                         } else {
@@ -208,7 +206,7 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
                             agent_data.chat_npc_if_allowed_to_speak(
                                 Content::localized("npc-speech-villager_decline_trade"),
                                 agent,
-                                event_emitter,
+                                emitters,
                             );
                         }
                     },
@@ -226,7 +224,7 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
                                 "{} ? I think it's {} {} from here!",
                                 location.name, dist, dir
                             );
-                            agent_data.chat_npc(Content::Plain(msg), event_emitter);
+                            agent_data.chat_npc(Content::Plain(msg), emitters);
                         }
                     },
                     Subject::Person(person) => {
@@ -261,7 +259,7 @@ pub fn handle_inbox_talk(bdata: &mut BehaviorData) -> bool {
                                     person.name()
                                 )
                             };
-                            agent_data.chat_npc(Content::Plain(msg), event_emitter);
+                            agent_data.chat_npc(Content::Plain(msg), emitters);
                         }
                     },
                     Subject::Work => {},
@@ -278,7 +276,7 @@ pub fn handle_inbox_trade_invite(bdata: &mut BehaviorData) -> bool {
         agent,
         agent_data,
         read_data,
-        event_emitter,
+        emitters,
         controller,
         ..
     } = bdata;
@@ -315,7 +313,7 @@ pub fn handle_inbox_trade_invite(bdata: &mut BehaviorData) -> bool {
                 agent_data.chat_npc_if_allowed_to_speak(
                     Content::localized("npc-speech-merchant_busy"),
                     agent,
-                    event_emitter,
+                    emitters,
                 );
             }
         } else {
@@ -324,7 +322,7 @@ pub fn handle_inbox_trade_invite(bdata: &mut BehaviorData) -> bool {
             agent_data.chat_npc_if_allowed_to_speak(
                 Content::localized("npc-speech-villager_decline_trade"),
                 agent,
-                event_emitter,
+                emitters,
             );
         }
     }
@@ -366,7 +364,7 @@ pub fn handle_inbox_finished_trade(bdata: &mut BehaviorData) -> bool {
     let BehaviorData {
         agent,
         agent_data,
-        event_emitter,
+        emitters,
         ..
     } = bdata;
 
@@ -381,14 +379,14 @@ pub fn handle_inbox_finished_trade(bdata: &mut BehaviorData) -> bool {
                     agent_data.chat_npc_if_allowed_to_speak(
                         Content::localized("npc-speech-merchant_trade_successful"),
                         agent,
-                        event_emitter,
+                        emitters,
                     );
                 },
                 _ => {
                     agent_data.chat_npc_if_allowed_to_speak(
                         Content::localized("npc-speech-merchant_trade_declined"),
                         agent,
-                        event_emitter,
+                        emitters,
                     );
                 },
             }
@@ -406,7 +404,7 @@ pub fn handle_inbox_update_pending_trade(bdata: &mut BehaviorData) -> bool {
         agent,
         agent_data,
         read_data,
-        event_emitter,
+        emitters,
         ..
     } = bdata;
 
@@ -424,13 +422,13 @@ pub fn handle_inbox_update_pending_trade(bdata: &mut BehaviorData) -> bool {
                     .as_ref()
                     .and_then(|tgt_data| read_data.uids.get(tgt_data.target))
                 {
-                    event_emitter.emit(ServerEvent::Chat(UnresolvedChatMsg::npc_tell(
+                    emitters.emit(ChatEvent(UnresolvedChatMsg::npc_tell(
                         *agent_data.uid,
                         *with,
                         content,
                     )));
                 } else {
-                    event_emitter.emit(ServerEvent::Chat(UnresolvedChatMsg::npc_say(
+                    emitters.emit(ChatEvent(UnresolvedChatMsg::npc_say(
                         *agent_data.uid,
                         content,
                     )));
@@ -459,7 +457,7 @@ pub fn handle_inbox_update_pending_trade(bdata: &mut BehaviorData) -> bool {
                                 // the phase is included in the message, this shouldn't
                                 // result in fully accepting an unfavourable trade))
                                 if !pending.accept_flags[who] && !pending.is_empty_trade() {
-                                    event_emitter.emit(ServerEvent::ProcessTradeAction(
+                                    emitters.emit(ProcessTradeActionEvent(
                                         *agent_data.entity,
                                         tradeid,
                                         TradeAction::Accept(pending.phase),
@@ -484,7 +482,7 @@ pub fn handle_inbox_update_pending_trade(bdata: &mut BehaviorData) -> bool {
                                     // decline
                                     agent.behavior.unset(BehaviorState::TRADING);
                                     agent.target = None;
-                                    event_emitter.emit(ServerEvent::ProcessTradeAction(
+                                    emitters.emit(ProcessTradeActionEvent(
                                         *agent_data.entity,
                                         tradeid,
                                         TradeAction::Decline,
@@ -519,7 +517,7 @@ pub fn handle_inbox_update_pending_trade(bdata: &mut BehaviorData) -> bool {
                         && !pending.offers[1 - who].is_empty()
                         && only_food
                     {
-                        event_emitter.emit(ServerEvent::ProcessTradeAction(
+                        emitters.emit(ProcessTradeActionEvent(
                             *agent_data.entity,
                             tradeid,
                             TradeAction::Accept(pending.phase),
@@ -529,7 +527,7 @@ pub fn handle_inbox_update_pending_trade(bdata: &mut BehaviorData) -> bool {
                 TradingBehavior::None => {
                     agent.behavior.unset(BehaviorState::TRADING);
                     agent.target = None;
-                    event_emitter.emit(ServerEvent::ProcessTradeAction(
+                    emitters.emit(ProcessTradeActionEvent(
                         *agent_data.entity,
                         tradeid,
                         TradeAction::Decline,
@@ -551,28 +549,26 @@ pub fn handle_inbox_cancel_interactions(bdata: &mut BehaviorData) -> bool {
     let BehaviorData {
         agent,
         agent_data,
-        event_emitter,
+        emitters,
         controller,
         ..
     } = bdata;
 
     if let Some(msg) = agent.inbox.front() {
-        let used = match msg {
+        match msg {
             AgentEvent::Talk(by, _) | AgentEvent::TradeAccepted(by) => {
-                if let (Some(target), Some(speaker)) =
-                    (agent.target, get_entity_by_id(*by, bdata.read_data))
-                {
+                if agent
+                    .target
+                    .zip(get_entity_by_id(*by, bdata.read_data))
                     // in combat, speak to players that aren't the current target
-                    if !target.hostile || target.target != speaker {
-                        agent_data.chat_npc_if_allowed_to_speak(
-                            Content::localized("npc-speech-villager_busy"),
-                            agent,
-                            event_emitter,
-                        );
-                    }
+                    .map_or(false, |(target, speaker)| !target.hostile || target.target != speaker)
+                {
+                    agent_data.chat_npc_if_allowed_to_speak(
+                        Content::localized("npc-speech-villager_busy"),
+                        agent,
+                        emitters,
+                    );
                 }
-
-                true
             },
             AgentEvent::TradeInvite(by) => {
                 controller.push_invite_response(InviteResponse::Decline);
@@ -585,18 +581,17 @@ pub fn handle_inbox_cancel_interactions(bdata: &mut BehaviorData) -> bool {
                             agent_data.chat_npc_if_allowed_to_speak(
                                 Content::localized("npc-speech-merchant_busy"),
                                 agent,
-                                event_emitter,
+                                emitters,
                             );
                         } else {
                             agent_data.chat_npc_if_allowed_to_speak(
                                 Content::localized("npc-speech-villager_busy"),
                                 agent,
-                                event_emitter,
+                                emitters,
                             );
                         }
                     }
                 }
-                true
             },
             AgentEvent::FinishedTrade(result) => {
                 // copy pasted from recv_interaction
@@ -607,28 +602,27 @@ pub fn handle_inbox_cancel_interactions(bdata: &mut BehaviorData) -> bool {
                             agent_data.chat_npc_if_allowed_to_speak(
                                 Content::localized("npc-speech-merchant_trade_successful"),
                                 agent,
-                                event_emitter,
+                                emitters,
                             );
                         },
                         _ => {
                             agent_data.chat_npc_if_allowed_to_speak(
                                 Content::localized("npc-speech-merchant_trade_declined"),
                                 agent,
-                                event_emitter,
+                                emitters,
                             );
                         },
                     }
                     agent.behavior.unset(BehaviorState::TRADING);
                     agent.target = None;
                 }
-                true
             },
             AgentEvent::UpdatePendingTrade(boxval) => {
                 // immediately cancel the trade
                 let (tradeid, _pending, _prices, _inventories) = &**boxval;
                 agent.behavior.unset(BehaviorState::TRADING);
                 agent.target = None;
-                event_emitter.emit(ServerEvent::ProcessTradeAction(
+                emitters.emit(ProcessTradeActionEvent(
                     *agent_data.entity,
                     *tradeid,
                     TradeAction::Decline,
@@ -636,16 +630,13 @@ pub fn handle_inbox_cancel_interactions(bdata: &mut BehaviorData) -> bool {
                 agent_data.chat_npc_if_allowed_to_speak(
                     Content::localized("npc-speech-merchant_trade_cancelled_hostile"),
                     agent,
-                    event_emitter,
+                    emitters,
                 );
-                true
             },
-            AgentEvent::ServerSound(_) | AgentEvent::Hurt => false,
+            AgentEvent::ServerSound(_) | AgentEvent::Hurt => return false,
         };
-        if used {
-            agent.inbox.pop_front();
-        }
-        return used;
+
+        agent.inbox.pop_front();
     }
     false
 }

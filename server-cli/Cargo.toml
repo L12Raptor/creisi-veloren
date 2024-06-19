@@ -1,6 +1,6 @@
 [package]
 name = "veloren-server-cli"
-version = "0.15.0"
+version = "0.16.0"
 authors = ["Joshua Barretto <joshua.s.barretto@gmail.com>"]
 edition = "2021"
 
@@ -27,7 +27,9 @@ hot-agent = ["server/hot-agent", "agent"]
 hot-site = ["server/hot-site", "world"]
 
 [dependencies]
-server = { package = "veloren-server", path = "../server", default-features = false, features = ["simd"] }
+server = { package = "veloren-server", path = "../server", default-features = false, features = [
+    "simd",
+] }
 agent = { package = "veloren-server-agent", path = "../server/agent", optional = true }
 common = { package = "veloren-common", path = "../common" }
 common-base = { package = "veloren-common-base", path = "../common/base" }
@@ -39,20 +41,24 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 num_cpus = "1.0"
 cansi = "2.2.1"
 clap = { workspace = true }
-crossterm = "0.26"
+crossterm = "0.27"
 lazy_static = { workspace = true }
 signal-hook = "0.3.6"
 shell-words = "1.0.0"
 tracing = { workspace = true }
 ron = { workspace = true }
-serde = { workspace = true, features = [ "rc", "derive" ]}
-strum = { workspace = true }
+serde = { workspace = true, features = ["rc", "derive"] }
+ratatui = { version = "0.26.0", features = ["crossterm"] }
+rand = { workspace = true }
+# ECS
+specs = { workspace = true }
+
+#HTTP
+axum = { version = "0.7" }
+hyper = "1"
+http-body-util = "0.1"
+prometheus = { workspace = true }
+chrono = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 mimalloc = "0.1.29"
-
-[dependencies.tui]
-git = "https://github.com/fdehau/tui-rs.git"
-branch="paragraph-scroll"
-default-features = false
-features = ['crossterm']

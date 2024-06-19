@@ -16,16 +16,18 @@ use crate::{
 use common::{
     astar::{Astar, PathResult},
     comp::{
+        self, bird_large,
         compass::{Direction, Distance},
         dialogue::Subject,
         Content,
     },
     path::Path,
-    rtsim::{Actor, ChunkResource, NpcInput, Profession, Role, SiteId},
+    rtsim::{Actor, ChunkResource, NpcInput, PersonalityTrait, Profession, Role, SiteId},
     spiral::Spiral2d,
     store::Id,
-    terrain::{CoordinateConversions, SiteKindMeta, TerrainChunkSize},
+    terrain::{CoordinateConversions, TerrainChunkSize},
     time::DayPeriod,
+    util::Dir,
 };
 use fxhash::FxHasher64;
 use itertools::{Either, Itertools};
@@ -36,7 +38,7 @@ use vek::*;
 use world::{
     civ::{self, Track},
     site::{Site as WorldSite, SiteKind},
-    site2::{self, PlotKind, TileKind},
+    site2::{self, plot::tavern, PlotKind, TileKind},
     util::NEIGHBORS,
     IndexRef, World,
 };
@@ -64,7 +66,7 @@ struct DefaultState {
 
 fn path_in_site(start: Vec2<i32>, end: Vec2<i32>, site: &site2::Site) -> PathResult<Vec2<i32>> {
     let heuristic = |tile: &Vec2<i32>, _: &Vec2<i32>| tile.as_::<f32>().distance(end.as_());
-    let mut astar = Astar::new(1000, start, BuildHasherDefault::<FxHasher64>::default());
+    let mut astar = Astar::new(1_000, start, BuildHasherDefault::<FxHasher64>::default());
 
     let transition = |a: Vec2<i32>, b: Vec2<i32>| {
         let distance = a.as_::<f32>().distance(b.as_());
@@ -210,7 +212,7 @@ fn path_site(
     }
 }
 
-fn path_towns(
+fn path_between_towns(
     start: SiteId,
     end: SiteId,
     sites: &Sites,
@@ -251,7 +253,7 @@ impl Rule for NpcAi {
                 data.npcs
                     .iter_mut()
                     // Don't run AI for dead NPCs
-                    .filter(|(_, npc)| !npc.is_dead)
+                    .filter(|(_, npc)| !npc.is_dead && !matches!(npc.role, Role::Vehicle))
                     // Don't run AI for simulated NPCs every tick
                     .filter(|(_, npc)| matches!(npc.mode, SimulationMode::Loaded) || (npc.seed as u64 + ctx.event.tick) % SIMULATED_TICK_SKIP == 0)
                     .map(|(npc_id, npc)| {
@@ -270,7 +272,7 @@ impl Rule for NpcAi {
                     .collect::<Vec<_>>()
             };
 
-            // The sum of the last `SIMULATED_TICK_SKIP` tick deltatimes is the deltatime since 
+            // The sum of the last `SIMULATED_TICK_SKIP` tick deltatimes is the deltatime since
             // simulated npcs ran this tick had their ai ran.
             let simulated_dt = last_ticks.iter().sum::<f32>();
 
@@ -282,6 +284,9 @@ impl Rule for NpcAi {
                     .par_iter_mut()
                     .for_each(|(npc_id, controller, inbox, sentiments, known_reports, brain)| {
                         let npc = &data.npcs[*npc_id];
+
+                        // Reset look_dir
+                        controller.look_dir = None;
 
                         brain.action.tick(&mut NpcCtx {
                             state: ctx.state,
@@ -320,11 +325,12 @@ impl Rule for NpcAi {
     }
 }
 
-fn idle<S: State>() -> impl Action<S> { just(|ctx, _| ctx.controller.do_idle()).debug(|| "idle") }
+fn idle<S: State>() -> impl Action<S> + Clone {
+    just(|ctx, _| ctx.controller.do_idle()).debug(|| "idle")
+}
 
 /// Try to walk toward a 3D position without caring for obstacles.
 fn goto<S: State>(wpos: Vec3<f32>, speed_factor: f32, goal_dist: f32) -> impl Action<S> {
-    const STEP_DIST: f32 = 24.0;
     const WAYPOINT_DIST: f32 = 12.0;
 
     just(move |ctx, waypoint: &mut Option<Vec3<f32>>| {
@@ -337,10 +343,6 @@ fn goto<S: State>(wpos: Vec3<f32>, speed_factor: f32, goal_dist: f32) -> impl Ac
 
         // Get the next waypoint on the route toward the goal
         let waypoint = waypoint.get_or_insert_with(|| {
-            let rpos = wpos - ctx.npc.wpos;
-            let len = rpos.magnitude();
-            let wpos = ctx.npc.wpos + (rpos / len) * len.min(STEP_DIST);
-
             wpos.with_z(ctx.world.sim().get_surface_alt_approx(wpos.xy().as_()))
         });
 
@@ -390,7 +392,12 @@ fn goto_flying<S: State>(
     .stop_if(move |ctx: &mut NpcCtx| {
         ctx.npc.wpos.xy().distance_squared(wpos.xy()) < goal_dist.powi(2)
     })
-    .debug(move || format!("goto {}, {}, {}", wpos.x, wpos.y, wpos.z))
+    .debug(move || {
+        format!(
+            "goto flying ({}, {}, {}), goal dist {}",
+            wpos.x, wpos.y, wpos.z, goal_dist
+        )
+    })
     .map(|_, _| {})
 }
 
@@ -399,7 +406,12 @@ fn goto_flying<S: State>(
 fn goto_2d<S: State>(wpos2d: Vec2<f32>, speed_factor: f32, goal_dist: f32) -> impl Action<S> {
     now(move |ctx, _| {
         let wpos = wpos2d.with_z(ctx.world.sim().get_surface_alt_approx(wpos2d.as_()));
-        goto(wpos, speed_factor, goal_dist)
+        goto(wpos, speed_factor, goal_dist).debug(move || {
+            format!(
+                "goto 2d ({}, {}), z {}, goal dist {}",
+                wpos2d.x, wpos2d.y, wpos.z, goal_dist
+            )
+        })
     })
 }
 
@@ -424,6 +436,12 @@ fn goto_2d_flying<S: State>(
             waypoint_dist,
             height_offset,
         )
+        .debug(move || {
+            format!(
+                "goto 2d flying ({}, {}), goal dist {}",
+                wpos2d.x, wpos2d.y, goal_dist
+            )
+        })
     })
 }
 
@@ -432,6 +450,7 @@ where
     F: FnMut(&mut NpcCtx) -> Option<Vec2<f32>> + Clone + Send + Sync + 'static,
 {
     until(move |ctx, next_point: &mut F| {
+        // Pick next waypoint, return if path ended
         let wpos = next_point(ctx)?;
 
         let wpos_site = |wpos: Vec2<f32>| {
@@ -441,13 +460,24 @@ where
                 .and_then(|chunk| chunk.sites.first().copied())
         };
 
-        // If we're traversing within a site, to intra-site pathfinding
+        let wpos_sites_contain = |wpos: Vec2<f32>, site: Id<world::site::Site>| {
+            ctx.world
+                .sim()
+                .get(wpos.as_().wpos_to_cpos())
+                .map(|chunk| chunk.sites.contains(&site))
+                .unwrap_or(false)
+        };
+
+        let npc_wpos = ctx.npc.wpos;
+
+        // If we're traversing within a site, do intra-site pathfinding
         if let Some(site) = wpos_site(wpos) {
             let mut site_exit = wpos;
-            while let Some(next) = next_point(ctx).filter(|next| wpos_site(*next) == Some(site)) {
+            while let Some(next) = next_point(ctx).filter(|next| wpos_sites_contain(*next, site)) {
                 site_exit = next;
             }
 
+            // Navigate through the site to the site exit
             if let Some(path) = path_site(wpos, site_exit, site, ctx.index) {
                 Some(Either::Left(
                     seq(path.into_iter().map(move |wpos| goto_2d(wpos, 1.0, 8.0))).then(goto_2d(
@@ -457,13 +487,34 @@ where
                     )),
                 ))
             } else {
-                Some(Either::Right(goto_2d(site_exit, speed_factor, 8.0)))
+                // No intra-site path found, just attempt to move towards the exit node
+                Some(Either::Right(
+                    goto_2d(site_exit, speed_factor, 8.0)
+                        .debug(move || {
+                            format!(
+                                "direct from {}, {}, ({}) to site exit at {}, {}",
+                                npc_wpos.x, npc_wpos.y, npc_wpos.z, site_exit.x, site_exit.y
+                            )
+                        })
+                        .boxed(),
+                ))
             }
         } else {
-            Some(Either::Right(goto_2d(wpos, speed_factor, 8.0)))
+            // We're in the middle of a road, just go to the next waypoint
+            Some(Either::Right(
+                goto_2d(wpos, speed_factor, 8.0)
+                    .debug(move || {
+                        format!(
+                            "from {}, {}, ({}) to the next waypoint at {}, {}",
+                            npc_wpos.x, npc_wpos.y, npc_wpos.z, wpos.x, wpos.y
+                        )
+                    })
+                    .boxed(),
+            ))
         }
     })
     .with_state(next_point)
+    .debug(|| "traverse points")
 }
 
 /// Try to travel to a site. Where practical, paths will be taken.
@@ -476,7 +527,7 @@ fn travel_to_point<S: State>(wpos: Vec2<f32>, speed_factor: f32) -> impl Action<
         let mut points = (1..n as usize + 1).map(move |i| start + diff * (i as f32 / n));
         traverse_points(move |_| points.next(), speed_factor)
     })
-    .debug(|| "travel to point")
+    .debug(move || format!("travel to point {}, {}", wpos.x, wpos.y))
 }
 
 /// Try to travel to a site. Where practical, paths will be taken.
@@ -489,16 +540,16 @@ fn travel_to_site<S: State>(tgt_site: SiteId, speed_factor: f32) -> impl Action<
         // If we're currently in a site, try to find a path to the target site via
         // tracks
         if let Some(current_site) = ctx.npc.current_site
-            && let Some(tracks) = path_towns(current_site, tgt_site, sites, ctx.world)
+            && let Some(tracks) = path_between_towns(current_site, tgt_site, sites, ctx.world)
         {
 
-            let mut nodes = tracks.path
+            let mut path_nodes = tracks.path
                 .into_iter()
                 .flat_map(move |(track_id, reversed)| (0..)
                     .map(move |node_idx| (node_idx, track_id, reversed)));
 
             traverse_points(move |ctx| {
-                let (node_idx, track_id, reversed) = nodes.next()?;
+                let (node_idx, track_id, reversed) = path_nodes.next()?;
                 let nodes = &ctx.world.civs().tracks.get(track_id).path().nodes;
 
                 // Handle the case where we walk paths backward
@@ -561,7 +612,7 @@ fn travel_to_site<S: State>(tgt_site: SiteId, speed_factor: f32) -> impl Action<
             //     .boxed()
         } else if let Some(site) = sites.get(tgt_site) {
             // If all else fails, just walk toward the target site in a straight line
-            travel_to_point(site.wpos.map(|e| e as f32 + 0.5), speed_factor).boxed()
+            travel_to_point(site.wpos.map(|e| e as f32 + 0.5), speed_factor).debug(|| "travel to point fallback").boxed()
         } else {
             // If we can't find a way to get to the site at all, there's nothing more to be done
             finish().boxed()
@@ -573,7 +624,7 @@ fn travel_to_site<S: State>(tgt_site: SiteId, speed_factor: f32) -> impl Action<
         .map(|_, _| ())
 }
 
-fn talk_to<S: State>(tgt: Actor, _subject: Option<Subject>) -> impl Action<S> {
+fn talk_to<S: State>(tgt: Actor, _subject: Option<Subject>) -> impl Action<S> + Clone {
     now(move |ctx, _| {
         if matches!(tgt, Actor::Npc(_)) && ctx.rng.gen_bool(0.2) {
             // Cut off the conversation sometimes to avoid infinite conversations (but only
@@ -587,26 +638,63 @@ fn talk_to<S: State>(tgt: Actor, _subject: Option<Subject>) -> impl Action<S> {
                 && let Some(current_site) = ctx.state.data().sites.get(current_site)
                 && let Some(mention_site) = current_site.nearby_sites_by_size.choose(&mut ctx.rng)
                 && let Some(mention_site) = ctx.state.data().sites.get(*mention_site)
-                && let Some(mention_site_name) = mention_site.world_site
+                && let Some(mention_site_name) = mention_site
+                    .world_site
                     .map(|ws| ctx.index.sites.get(ws).name().to_string())
             {
                 Content::localized_with_args("npc-speech-tell_site", [
                     ("site", Content::Plain(mention_site_name)),
-                    ("dir", Direction::from_dir(mention_site.wpos.as_() - ctx.npc.wpos.xy()).localize_npc()),
-                    ("dist", Distance::from_length(mention_site.wpos.as_().distance(ctx.npc.wpos.xy()) as i32).localize_npc()),
+                    (
+                        "dir",
+                        Direction::from_dir(mention_site.wpos.as_() - ctx.npc.wpos.xy())
+                            .localize_npc(),
+                    ),
+                    (
+                        "dist",
+                        Distance::from_length(
+                            mention_site.wpos.as_().distance(ctx.npc.wpos.xy()) as i32
+                        )
+                        .localize_npc(),
+                    ),
                 ])
+            // Mention current site
+            } else if ctx.rng.gen_bool(0.3)
+                && let Some(current_site) = ctx.npc.current_site
+                && let Some(current_site) = ctx.state.data().sites.get(current_site)
+                && let Some(current_site_name) = current_site
+                    .world_site
+                    .map(|ws| ctx.index.sites.get(ws).name().to_string())
+            {
+                Content::localized_with_args("npc-speech-site", [(
+                    "site",
+                    Content::Plain(current_site_name),
+                )])
+
             // Mention nearby monsters
             } else if ctx.rng.gen_bool(0.3)
-                && let Some(monster) = ctx.state.data().npcs
+                && let Some(monster) = ctx
+                    .state
+                    .data()
+                    .npcs
                     .values()
                     .filter(|other| matches!(&other.role, Role::Monster))
                     .min_by_key(|other| other.wpos.xy().distance(ctx.npc.wpos.xy()) as i32)
             {
                 Content::localized_with_args("npc-speech-tell_monster", [
-                    ("body", monster.body.localize()),
-                    ("dir", Direction::from_dir(monster.wpos.xy() - ctx.npc.wpos.xy()).localize_npc()),
-                    ("dist", Distance::from_length(monster.wpos.xy().distance(ctx.npc.wpos.xy()) as i32).localize_npc()),
+                    ("body", monster.body.localize_npc()),
+                    (
+                        "dir",
+                        Direction::from_dir(monster.wpos.xy() - ctx.npc.wpos.xy()).localize_npc(),
+                    ),
+                    (
+                        "dist",
+                        Distance::from_length(monster.wpos.xy().distance(ctx.npc.wpos.xy()) as i32)
+                            .localize_npc(),
+                    ),
                 ])
+            // Specific night dialog
+            } else if ctx.rng.gen_bool(0.6) && DayPeriod::from(ctx.time_of_day.0).is_dark() {
+                Content::localized("npc-speech-night")
             } else {
                 ctx.npc.personality.get_generic_comment(&mut ctx.rng)
             };
@@ -625,13 +713,16 @@ fn talk_to<S: State>(tgt: Actor, _subject: Option<Subject>) -> impl Action<S> {
     })
 }
 
-fn socialize() -> impl Action<EveryRange> {
+fn socialize() -> impl Action<EveryRange> + Clone {
     now(move |ctx, socialize: &mut EveryRange| {
         // Skip most socialising actions if we're not loaded
-        if matches!(ctx.npc.mode, SimulationMode::Loaded) && socialize.should(ctx) {
+        if matches!(ctx.npc.mode, SimulationMode::Loaded)
+            && socialize.should(ctx)
+            && !ctx.npc.personality.is(PersonalityTrait::Introverted)
+        {
             // Sometimes dance
             if ctx.rng.gen_bool(0.15) {
-                return just(|ctx, _| ctx.controller.do_dance())
+                return just(|ctx, _| ctx.controller.do_dance(None))
                     .repeat()
                     .stop_if(timeout(6.0))
                     .debug(|| "dancing")
@@ -692,11 +783,11 @@ fn adventure() -> impl Action<DefaultState> {
                 .unwrap_or_default();
             // Travel to the site
             important(just(move |ctx, _| ctx.controller.say(None, Content::localized_with_args("npc-speech-moving_on", [("site", site_name.clone())])))
-                .then(travel_to_site(tgt_site, 0.6))
-                // Stop for a few minutes
-                .then(villager(tgt_site).repeat().stop_if(timeout(wait_time)))
-                .map(|_, _| ())
-                .boxed(),
+                          .then(travel_to_site(tgt_site, 0.6))
+                          // Stop for a few minutes
+                          .then(villager(tgt_site).repeat().stop_if(timeout(wait_time)))
+                          .map(|_, _| ())
+                          .boxed(),
             )
         } else {
             casual(finish().boxed())
@@ -753,6 +844,8 @@ fn choose_plaza(ctx: &mut NpcCtx, site: SiteId) -> Option<Vec2<f32>> {
         })
 }
 
+const WALKING_SPEED: f32 = 0.35;
+
 fn villager(visiting_site: SiteId) -> impl Action<DefaultState> {
     choose(move |ctx, state: &mut DefaultState| {
         // Consider moving home if the home site gets too full
@@ -799,8 +892,9 @@ fn villager(visiting_site: SiteId) -> impl Action<DefaultState> {
                 .then(travel_to_site(new_home, 0.5))
                 .then(just(move |ctx, _| ctx.controller.set_new_home(new_home))));
         }
-
-        if DayPeriod::from(ctx.time_of_day.0).is_dark()
+        let day_period = DayPeriod::from(ctx.time_of_day.0);
+        let is_weekend = ctx.time_of_day.day() as u64 % 6 == 0;
+        if day_period.is_dark()
             && !matches!(ctx.npc.profession(), Some(Profession::Guard))
         {
             return important(
@@ -840,8 +934,142 @@ fn villager(visiting_site: SiteId) -> impl Action<DefaultState> {
                 })
                 .debug(|| "find somewhere to sleep"),
             );
+        }
+        // Go do something fun on evenings and holidays, or on random days.
+        else if
+            // Ain't no rest for the wicked
+            !matches!(ctx.npc.profession(), Some(Profession::Guard))
+            && (matches!(day_period, DayPeriod::Evening) || is_weekend || ctx.rng.gen_bool(0.05)) {
+            let mut fun_stuff = Vec::new();
+
+            if let Some(ws_id) = ctx.state.data().sites[visiting_site].world_site
+                && let Some(ws) = ctx.index.sites.get(ws_id).site2() {
+                if let Some(arena) = ws.plots().find_map(|p| match p.kind() { PlotKind::DesertCityArena(a) => Some(a), _ => None}) {
+                    let wait_time = ctx.rng.gen_range(100.0..300.0);
+                    // We don't use Z coordinates for seats because they are complicated to calculate from the Ramp procedural generation
+                    // and using goto_2d seems to work just fine. However it also means that NPC will never go seat on the stands
+                    // on the first floor of the arena. This is a compromise that was made because in the current arena procedural generation
+                    // there is also no pathways to the stands on the first floor for NPCs.
+                    let arena_center = Vec3::new(arena.center.x, arena.center.y, arena.base).as_::<f32>();
+                    let stand_dist = arena.stand_dist as f32;
+                    let seat_var_width = ctx.rng.gen_range(0..arena.stand_width) as f32;
+                    let seat_var_length = ctx.rng.gen_range(-arena.stand_length..arena.stand_length) as f32;
+                    // Select a seat on one of the 4 arena stands
+                    let seat = match ctx.rng.gen_range(0..4) {
+                        0 => Vec3::new(arena_center.x - stand_dist + seat_var_width, arena_center.y + seat_var_length, arena_center.z),
+                        1 => Vec3::new(arena_center.x + stand_dist - seat_var_width, arena_center.y + seat_var_length, arena_center.z),
+                        2 => Vec3::new(arena_center.x + seat_var_length, arena_center.y - stand_dist + seat_var_width, arena_center.z),
+                        _ => Vec3::new(arena_center.x + seat_var_length, arena_center.y + stand_dist - seat_var_width, arena_center.z),
+                    };
+                    let look_dir = Dir::from_unnormalized(arena_center - seat);
+                    // Walk to an arena seat, cheer, sit and dance
+                    let action = casual(just(move |ctx, _| ctx.controller.say(None, Content::localized("npc-speech-arena")))
+                            .then(goto_2d(seat.xy(), 0.6, 1.0).debug(|| "go to arena"))
+                            // Turn toward the centre of the arena and watch the action!
+                            .then(choose(move |ctx, _| if ctx.rng.gen_bool(0.3) {
+                                casual(just(move |ctx,_| ctx.controller.do_cheer(look_dir)).repeat().stop_if(timeout(5.0)))
+                            } else if ctx.rng.gen_bool(0.15) {
+                                casual(just(move |ctx,_| ctx.controller.do_dance(look_dir)).repeat().stop_if(timeout(5.0)))
+                            } else {
+                                casual(just(move |ctx,_| ctx.controller.do_sit(look_dir, None)).repeat().stop_if(timeout(15.0)))
+                            })
+                                .repeat()
+                                .stop_if(timeout(wait_time)))
+                            .map(|_, _| ())
+                            .boxed());
+                    fun_stuff.push(action);
+                }
+                if let Some(tavern) = ws.plots().filter_map(|p| match p.kind() {  PlotKind::Tavern(a) => Some(a), _ => None }).choose(&mut ctx.rng) {
+                    let wait_time = ctx.rng.gen_range(100.0..300.0);
+
+                    let (stage_aabr, stage_z) = tavern.rooms.values().flat_map(|room| {
+                        room.details.iter().filter_map(|detail| match detail {
+                            tavern::Detail::Stage { aabr } => Some((*aabr, room.bounds.min.z + 1)),
+                            _ => None,
+                        })
+                    }).choose(&mut ctx.rng).unwrap_or((tavern.bounds, tavern.door_wpos.z));
+
+                    let bar_pos = tavern.rooms.values().flat_map(|room|
+                        room.details.iter().filter_map(|detail| match detail {
+                            tavern::Detail::Bar { aabr } => {
+                                let side = site2::util::Dir::from_vec2(room.bounds.center().xy() - aabr.center());
+                                let pos = side.select_aabr_with(*aabr, aabr.center()) + side.to_vec2();
+
+                                Some(pos.with_z(room.bounds.min.z))
+                            }
+                            _ => None,
+                        })
+                    ).choose(&mut ctx.rng).unwrap_or(stage_aabr.center().with_z(stage_z));
+
+                    // Pick a chair that is theirs for the stay
+                    let chair_pos = tavern.rooms.values().flat_map(|room| {
+                        let z = room.bounds.min.z;
+                        room.details.iter().filter_map(move |detail| match detail {
+                            tavern::Detail::Table { pos, chairs } => Some(chairs.into_iter().map(move |dir| pos.with_z(z) + dir.to_vec2())),
+                            _ => None,
+                        })
+                        .flatten()
+                    }
+                    ).choose(&mut ctx.rng)
+                    // This path is possible, but highly unlikely.
+                    .unwrap_or(bar_pos);
+
+                    let stage_aabr = stage_aabr.as_::<f32>();
+                    let stage_z = stage_z as f32;
+
+                    let action = casual(travel_to_point(tavern.door_wpos.xy().as_() + 0.5, 0.8).then(choose(move |ctx, (last_action, _)| {
+                            let action = [0, 1, 2].into_iter().filter(|i| *last_action != Some(*i)).choose(&mut ctx.rng).expect("We have at least 2 elements");
+                            let socialize = socialize().map_state(|(_, timer)| timer).repeat();
+                            match action {
+                                // Go and dance on a stage.
+                                0 => {
+                                    casual(now(move |ctx, (last_action, _)| {
+                                        *last_action = Some(action);
+                                        goto(stage_aabr.min.map2(stage_aabr.max, |a, b| ctx.rng.gen_range(a..b)).with_z(stage_z), WALKING_SPEED, 1.0)
+                                    })
+                                    .then(just(move |ctx,_| ctx.controller.do_dance(None)).repeat().stop_if(timeout(ctx.rng.gen_range(20.0..30.0))))
+                                    .map(|_, _| ())
+                                    )
+                                },
+                                // Go and sit at a table.
+                                1 => {
+                                    casual(
+                                        now(move |ctx, (last_action, _)| {
+                                            *last_action = Some(action);
+                                            goto(chair_pos.as_() + 0.5, WALKING_SPEED, 1.0).then(just(move |ctx, _| ctx.controller.do_sit(None, Some(chair_pos)))).then(socialize.clone().stop_if(timeout(ctx.rng.gen_range(30.0..60.0)))).map(|_, _| ())
+                                        })
+                                    )
+                                },
+                                // Go to the bar.
+                                _ => {
+                                    casual(
+                                        now(move |ctx, (last_action, _)| {
+                                            *last_action = Some(action);
+                                            goto(bar_pos.as_() + 0.5, WALKING_SPEED, 1.0).then(socialize.clone().stop_if(timeout(ctx.rng.gen_range(10.0..25.0)))).map(|_, _| ())
+                                        })
+                                    )
+                                },
+                            }
+                        })
+                        .with_state((None::<u32>, every_range(5.0..10.0)))
+                        .repeat()
+                        .stop_if(timeout(wait_time)))
+                        .map(|_, _| ())
+                        .boxed()
+                    );
+
+                    fun_stuff.push(action);
+                }
+            }
+
+
+            if !fun_stuff.is_empty() {
+                let i = ctx.rng.gen_range(0..fun_stuff.len());
+                return fun_stuff.swap_remove(i);
+            }
+        }
         // Villagers with roles should perform those roles
-        } else if matches!(ctx.npc.profession(), Some(Profession::Herbalist)) && ctx.rng.gen_bool(0.8)
+        else if matches!(ctx.npc.profession(), Some(Profession::Herbalist)) && ctx.rng.gen_bool(0.8)
         {
             if let Some(forest_wpos) = find_forest(ctx) {
                 return casual(
@@ -964,27 +1192,35 @@ fn pilot<S: State>(ship: common::comp::ship::Body) -> impl Action<S> {
     // Travel between different towns in a straight line
     now(move |ctx, _| {
         let data = &*ctx.state.data();
-        let site = data
+        let station_wpos = data
             .sites
             .iter()
             .filter(|(id, _)| Some(*id) != ctx.npc.current_site)
-            .filter(|(_, site)| {
-                site.world_site
-                    .and_then(|site| ctx.index.sites.get(site).kind.convert_to_meta())
-                    .map_or(false, |meta| matches!(meta, SiteKindMeta::Settlement(_)))
+            .filter_map(|(_, site)| ctx.index.sites.get(site.world_site?).site2())
+            .flat_map(|site| {
+                site.plots()
+                    .filter(|plot| matches!(plot.kind(), PlotKind::AirshipDock(_)))
+                    .map(|plot| site.tile_center_wpos(plot.root_tile()))
             })
             .choose(&mut ctx.rng);
-        if let Some((_id, site)) = site {
+        if let Some(station_wpos) = station_wpos {
             Either::Right(
                 goto_2d_flying(
-                    site.wpos.as_(),
+                    station_wpos.as_(),
                     1.0,
                     50.0,
                     150.0,
                     110.0,
                     ship.flying_height(),
                 )
-                .then(goto_2d_flying(site.wpos.as_(), 1.0, 10.0, 32.0, 16.0, 10.0)),
+                .then(goto_2d_flying(
+                    station_wpos.as_(),
+                    1.0,
+                    10.0,
+                    32.0,
+                    16.0,
+                    30.0,
+                )),
             )
         } else {
             Either::Left(finish())
@@ -1110,15 +1346,17 @@ fn react_to_events<S: State>(ctx: &mut NpcCtx, _: &mut S) -> Option<impl Action<
 
 fn humanoid() -> impl Action<DefaultState> {
     choose(|ctx, _| {
-        if let Some(riding) = &ctx.npc.riding {
-            if riding.steering {
-                if let Some(vehicle) = ctx.state.data().npcs.vehicles.get(riding.vehicle) {
+        if let Some(riding) = &ctx.state.data().npcs.mounts.get_mount_link(ctx.npc_id) {
+            if riding.is_steering {
+                if let Some(vehicle) = ctx.state.data().npcs.get(riding.mount) {
                     match vehicle.body {
-                        common::comp::ship::Body::DefaultAirship
-                        | common::comp::ship::Body::AirBalloon => important(pilot(vehicle.body)),
-                        common::comp::ship::Body::SailBoat | common::comp::ship::Body::Galleon => {
-                            important(captain())
-                        },
+                        comp::Body::Ship(
+                            body @ comp::ship::Body::DefaultAirship
+                            | body @ comp::ship::Body::AirBalloon,
+                        ) => important(pilot(body)),
+                        comp::Body::Ship(
+                            comp::ship::Body::SailBoat | comp::ship::Body::Galleon,
+                        ) => important(captain()),
                         _ => casual(idle()),
                     }
                 } else {
@@ -1152,15 +1390,21 @@ fn bird_large() -> impl Action<DefaultState> {
             .map(|e| e + ctx.rng.gen_range(-0.1..0.1))
             .try_normalized()
             .unwrap_or_default();
-        let bearing_dist = 24.0;
+        let bearing_dist = 15.0;
         let mut pos = ctx.npc.wpos.xy() + *bearing * bearing_dist;
-        let is_deep_water = ctx
-            .world
-            .sim()
-            .get(pos.as_().wpos_to_cpos())
-            .map_or(true, |c| {
-                c.alt - c.water_alt < -120.0 && (c.river.is_ocean() || c.river.is_lake())
-            });
+        let is_deep_water =
+            matches!(ctx.npc.body, common::comp::Body::BirdLarge(b) if matches!(b.species, bird_large::Species::SeaWyvern))
+                || ctx
+                .world
+                .sim()
+                .get(pos.as_().wpos_to_cpos())
+                .map_or(true, |c| {
+                    c.alt - c.water_alt < -120.0 && (c.river.is_ocean() || c.river.is_lake())
+                });
+        if is_deep_water {
+            *bearing *= -1.0;
+            pos = ctx.npc.wpos.xy() + *bearing * bearing_dist;
+        };
         // when high tree_density fly high, otherwise fly low-mid
         let npc_pos = ctx.npc.wpos.xy();
         let trees = ctx
@@ -1173,44 +1417,92 @@ fn bird_large() -> impl Action<DefaultState> {
         } else {
             ctx.rng.gen_range(0.4..0.9)
         };
-        if !is_deep_water {
-            goto_2d_flying(
-                pos,
-                0.2,
-                bearing_dist,
-                8.0,
-                8.0,
-                ctx.npc.body.flying_height() * height_factor,
-            )
 
-        } else {
-            *bearing *= -1.0;
-
-            pos = ctx.npc.wpos.xy() + *bearing * 24.0;
-
-            goto_2d_flying(
-                pos,
-                0.2,
-                bearing_dist,
-                8.0,
-                8.0,
-                ctx.npc.body.flying_height() * height_factor,
-            )
+        let data = ctx.state.data();
+        // without destination site fly to next waypoint
+        let mut dest_site = pos;
+        if let Some(home) = ctx.npc.home {
+            let is_home = ctx.npc.current_site.map_or(false, |site| home == site);
+            if is_home {
+                if let Some((id, _)) = data
+                    .sites
+                    .iter()
+                    .filter(|(id, site)| {
+                        *id != home
+                            && site.world_site.map_or(false, |site| {
+                            match ctx.npc.body {
+                                common::comp::Body::BirdLarge(b) => match b.species {
+                                    bird_large::Species::Phoenix => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::Terracotta(_)
+                                    | SiteKind::Haniwa(_)
+                                    | SiteKind::Dungeon(_)
+                                    | SiteKind::Adlet(_)
+                                    | SiteKind::DwarvenMine(_)
+                                    | SiteKind::ChapelSite(_)
+                                    | SiteKind::Cultist(_)
+                                    | SiteKind::Gnarling(_)
+                                    | SiteKind::Sahagin(_)),
+                                    bird_large::Species::Cockatrice => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::Dungeon(_)
+                                    | SiteKind::GiantTree(_)),
+                                    bird_large::Species::Roc => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::Haniwa(_)
+                                    | SiteKind::Cultist(_)),
+                                    bird_large::Species::FlameWyvern => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::DwarvenMine(_)
+                                    | SiteKind::Terracotta(_)),
+                                    bird_large::Species::CloudWyvern => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::ChapelSite(_)
+                                    | SiteKind::Sahagin(_)),
+                                    bird_large::Species::FrostWyvern => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::Adlet(_)
+                                    | SiteKind::Dungeon(_)),
+                                    bird_large::Species::SeaWyvern => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::ChapelSite(_)
+                                    | SiteKind::Sahagin(_)),
+                                    bird_large::Species::WealdWyvern => matches!(&ctx.index.sites.get(site).kind,
+                                    SiteKind::GiantTree(_)
+                                    | SiteKind::Gnarling(_)),
+                                },
+                                _ => matches!(&ctx.index.sites.get(site).kind, SiteKind::GiantTree(_)),
+                            }
+                        })
+                    })
+                    /*choose closest destination:
+                    .min_by_key(|(_, site)| site.wpos.as_().distance(npc_pos) as i32)*/
+                //choose random destination:
+                .choose(&mut ctx.rng)
+                {
+                    ctx.controller.set_new_home(id)
+                }
+            } else if let Some(site) = data.sites.get(home) {
+                dest_site = site.wpos.as_::<f32>()
+            }
         }
-            // If we are too far away from our goal position we can stop since we aren't going to a specific place.
+        goto_2d_flying(
+            pos,
+            0.2,
+            bearing_dist,
+            8.0,
+            8.0,
+            ctx.npc.body.flying_height() * height_factor,
+        )
+            // If we are too far away from our waypoint position we can stop since we aren't going to a specific place.
+            // If waypoint position is further away from destination site find a new waypoint
             .stop_if(move |ctx: &mut NpcCtx| {
                 ctx.npc.wpos.xy().distance_squared(pos) > (bearing_dist + 5.0).powi(2)
+                    || dest_site.distance_squared(pos) > dest_site.distance_squared(npc_pos)
             })
-            // If goal position wasn't reached within 20 seconds we're probably stuck and need to find a new goal position.
+            // If waypoint position wasn't reached within 10 seconds we're probably stuck and need to find a new waypoint.
             .stop_if(timeout(10.0))
             .debug({
                 let bearing = *bearing;
                 move || format!("Moving with a bearing of {:?}", bearing)
             })
     })
-    .repeat()
-    .with_state(Vec2::<f32>::zero())
-    .map(|_, _| ())
+        .repeat()
+        .with_state(Vec2::<f32>::zero())
+        .map(|_, _| ())
 }
 
 fn monster() -> impl Action<DefaultState> {
@@ -1263,6 +1555,7 @@ fn think() -> impl Action<DefaultState> {
                 .l(),
             Role::Monster => monster().r().r().l(),
             Role::Wild => idle().r(),
+            Role::Vehicle => idle().r(),
         },
     })
 }

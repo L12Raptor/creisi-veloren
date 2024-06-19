@@ -2,6 +2,7 @@ use crate::{
     comp::{self, pet::is_mountable, ship::figuredata::VOXEL_COLLIDER_MANIFEST},
     link::{Is, Link, LinkHandle, Role},
     terrain::{Block, TerrainGrid},
+    tether,
     uid::{IdMaps, Uid},
     vol::ReadVol,
 };
@@ -45,6 +46,7 @@ impl Link for Mounting {
         WriteStorage<'a, Is<Mount>>,
         WriteStorage<'a, Is<Rider>>,
         ReadStorage<'a, Is<VolumeRider>>,
+        ReadStorage<'a, Is<tether::Follower>>,
     );
     type DeleteData<'a> = (
         Read<'a, IdMaps>,
@@ -67,7 +69,7 @@ impl Link for Mounting {
 
     fn create(
         this: &LinkHandle<Self>,
-        (id_maps, is_mounts, is_riders, is_volume_rider): &mut Self::CreateData<'_>,
+        (id_maps, is_mounts, is_riders, is_volume_rider, is_followers): &mut Self::CreateData<'_>,
     ) -> Result<(), Self::Error> {
         let entity = |uid: Uid| id_maps.uid_entity(uid);
 
@@ -79,7 +81,7 @@ impl Link for Mounting {
             // relationship
             if !is_mounts.contains(mount)
                 && !is_riders.contains(rider)
-                && !is_riders.contains(rider)
+                && !is_followers.contains(rider)
                 // TODO: Does this definitely prevent mount cycles?
                 && (!is_mounts.contains(rider) || !is_riders.contains(mount))
                 && !is_volume_rider.contains(rider)
@@ -277,6 +279,14 @@ pub struct VolumeRiders {
     riders: HashSet<Vec3<i32>>,
 }
 
+impl VolumeRiders {
+    pub fn clear(&mut self) -> bool {
+        let res = !self.riders.is_empty();
+        self.riders.clear();
+        res
+    }
+}
+
 impl Component for VolumeRiders {
     type Storage = DenseVecStorage<Self>;
 }
@@ -286,6 +296,12 @@ pub struct VolumeMounting {
     pub pos: VolumePos,
     pub block: Block,
     pub rider: Uid,
+}
+
+impl VolumeMounting {
+    pub fn is_steering_entity(&self) -> bool {
+        matches!(self.pos.kind, Volume::Entity(..)) && self.block.is_controller()
+    }
 }
 
 impl Link for VolumeMounting {
@@ -380,8 +396,9 @@ impl Link for VolumeMounting {
             Volume::Terrain => &*terrain_riders,
             Volume::Entity(uid) => {
                 let Some(riders) = entity(uid)
-                .filter(|entity| is_alive(*entity))
-                .and_then(|entity| volume_riders.get(entity)) else {
+                    .filter(|entity| is_alive(*entity))
+                    .and_then(|entity| volume_riders.get(entity))
+                else {
                     return false;
                 };
                 riders

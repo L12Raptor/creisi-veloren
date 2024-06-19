@@ -1,4 +1,5 @@
 pub mod behavior_tree;
+use server_agent::data::AgentEvents;
 pub use server_agent::{action_nodes, attack, consts, data, util};
 use vek::Vec3;
 
@@ -11,7 +12,6 @@ use common::{
         self, inventory::slot::EquipSlot, item::ItemDesc, Agent, Alignment, Body, CharacterState,
         Controller, Health, InputKind, Scale,
     },
-    event::{EventBus, ServerEvent},
     mounting::Volume,
     path::TraversalConfig,
 };
@@ -19,7 +19,7 @@ use common_base::prof_span;
 use common_ecs::{Job, Origin, ParMode, Phase, System};
 use rand::thread_rng;
 use rayon::iter::ParallelIterator;
-use specs::{Join, ParJoin, Read, WriteStorage};
+use specs::{LendJoin, ParJoin, WriteStorage};
 
 /// This system will allow NPCs to modify their controller
 #[derive(Default)]
@@ -27,7 +27,7 @@ pub struct Sys;
 impl<'a> System<'a> for Sys {
     type SystemData = (
         ReadData<'a>,
-        Read<'a, EventBus<ServerEvent>>,
+        AgentEvents<'a>,
         WriteStorage<'a, Agent>,
         WriteStorage<'a, Controller>,
     );
@@ -38,7 +38,7 @@ impl<'a> System<'a> for Sys {
 
     fn run(
         job: &mut Job<Self>,
-        (read_data, event_bus, mut agents, mut controllers): Self::SystemData,
+        (read_data, events, mut agents, mut controllers): Self::SystemData,
     ) {
         job.cpu_stats.measure(ParMode::Rayon);
 
@@ -97,7 +97,7 @@ impl<'a> System<'a> for Sys {
                     rtsim_entity,
                     (_, is_rider, is_volume_rider),
                 )| {
-                    let mut event_emitter = event_bus.emitter();
+                    let mut emitters = events.get_emitters();
                     let mut rng = thread_rng();
 
                     // The entity that is moving, if riding it's the mount, otherwise it's itself
@@ -137,11 +137,14 @@ impl<'a> System<'a> for Sys {
                             )
                     };
 
-                    if !matches!(char_state, CharacterState::LeapMelee(_)) {
+                    if !matches!(
+                        char_state,
+                        CharacterState::LeapMelee(_) | CharacterState::Glide(_)
+                    ) {
                         // Default to looking in orientation direction
                         // (can be overridden below)
                         //
-                        // This definitely breaks LeapMelee and
+                        // This definitely breaks LeapMelee, Glide and
                         // probably not only that, do we really need this at all?
                         controller.reset();
                         controller.inputs.look_dir = ori.look_dir();
@@ -197,6 +200,7 @@ impl<'a> System<'a> for Sys {
                         min_tgt_dist: scale * moving_body.map_or(1.0, |body| body.max_radius()),
                         can_climb: moving_body.map_or(false, Body::can_climb),
                         can_fly: moving_body.map_or(false, |b| b.fly_thrust().is_some()),
+                        is_target_loaded: true,
                     };
                     let health_fraction = health.map_or(1.0, Health::fraction);
 
@@ -263,7 +267,7 @@ impl<'a> System<'a> for Sys {
                         agent,
                         agent_data: data,
                         read_data: &read_data,
-                        event_emitter: &mut event_emitter,
+                        emitters: &mut emitters,
                         controller,
                         rng: &mut rng,
                     };

@@ -1,6 +1,7 @@
 mod ui;
 
 use crate::{
+    menu::{main::rand_bg_image_spec, server_info::ServerInfoState},
     render::{Drawer, GlobalsBindGroup},
     scene::simple::{self as scene, Scene},
     session::SessionState,
@@ -11,6 +12,8 @@ use crate::{
 use client::{self, Client};
 use common::{comp, event::UpdateCharacterMetadata, resources::DeltaTime};
 use common_base::span;
+#[cfg(feature = "plugins")]
+use common_state::plugin::PluginMgr;
 use specs::WorldExt;
 use std::{cell::RefCell, rc::Rc};
 use tracing::error;
@@ -25,10 +28,12 @@ pub struct CharSelectionState {
 impl CharSelectionState {
     /// Create a new `CharSelectionState`.
     pub fn new(global_state: &mut GlobalState, client: Rc<RefCell<Client>>) -> Self {
+        let sprite_render_context = (global_state.lazy_init)(global_state.window.renderer_mut());
         let scene = Scene::new(
             global_state.window.renderer_mut(),
-            Some("fixture.selection_bg"),
-            &client.borrow(),
+            &mut client.borrow_mut(),
+            &global_state.settings,
+            sprite_render_context,
         );
         let char_selection_ui = CharSelectionUi::new(global_state, &client.borrow());
 
@@ -59,12 +64,16 @@ impl CharSelectionState {
             })
             .unwrap_or_default()
     }
+
+    pub fn client(&self) -> &RefCell<Client> { &self.client }
 }
 
 impl PlayState for CharSelectionState {
     fn enter(&mut self, global_state: &mut GlobalState, _: Direction) {
         // Load the player's character list
-        self.client.borrow_mut().load_character_list();
+        if !self.client.borrow().are_plugins_missing() {
+            self.client.borrow_mut().load_character_list();
+        }
 
         // Updated localization in case the selected language was changed
         self.char_selection_ui.update_language(global_state.i18n);
@@ -158,6 +167,30 @@ impl PlayState for CharSelectionState {
                             Rc::clone(&self.client),
                         )));
                     },
+                    ui::Event::ShowRules => {
+                        let client = self.client.borrow();
+
+                        let server_info = client.server_info().clone();
+                        let server_description = client.server_description().clone();
+
+                        drop(client);
+
+                        let char_select =
+                            CharSelectionState::new(global_state, Rc::clone(&self.client));
+
+                        let new_state = ServerInfoState::try_from_server_info(
+                            global_state,
+                            rand_bg_image_spec(),
+                            char_select,
+                            server_info,
+                            server_description,
+                            true,
+                        )
+                        .map(|s| Box::new(s) as _)
+                        .unwrap_or_else(|s| Box::new(s) as _);
+
+                        return PlayStateResult::Switch(new_state);
+                    },
                     ui::Event::ClearCharacterListError => {
                         self.char_selection_ui.error = None;
                     },
@@ -199,18 +232,21 @@ impl PlayState for CharSelectionState {
                         as f32,
                 };
 
-                self.scene
-                    .maintain(global_state.window.renderer_mut(), scene_data, loadout);
+                self.scene.maintain(
+                    global_state.window.renderer_mut(),
+                    scene_data,
+                    loadout,
+                    &client,
+                );
             }
 
             // Tick the client (currently only to keep the connection alive).
             let localized_strings = &global_state.i18n.read();
 
-            let res = self.client.borrow_mut().tick(
-                comp::ControllerInputs::default(),
-                global_state.clock.dt(),
-                |_| {},
-            );
+            let res = self
+                .client
+                .borrow_mut()
+                .tick(comp::ControllerInputs::default(), global_state.clock.dt());
             match res {
                 Ok(events) => {
                     for event in events {
@@ -241,6 +277,27 @@ impl PlayState for CharSelectionState {
                                     metadata,
                                     Rc::clone(&self.client),
                                 )));
+                            },
+                            client::Event::PluginDataReceived(data) => {
+                                #[cfg(feature = "plugins")]
+                                {
+                                    tracing::info!("plugin data {}", data.len());
+                                    let mut client = self.client.borrow_mut();
+                                    let hash = client
+                                        .state()
+                                        .ecs()
+                                        .write_resource::<PluginMgr>()
+                                        .cache_server_plugin(&global_state.config_dir, data);
+                                    match hash {
+                                        Ok(hash) => {
+                                            if client.plugin_received(hash) == 0 {
+                                                // now load characters (plugins might contain items)
+                                                client.load_character_list();
+                                            }
+                                        },
+                                        Err(e) => tracing::error!(?e, "cache_server_plugin"),
+                                    }
+                                }
                             },
                             // TODO: See if we should handle StartSpectate here instead.
                             _ => {},

@@ -29,6 +29,8 @@ use rand::{seq::SliceRandom, thread_rng};
 use std::time::Duration;
 use tracing::warn;
 
+use super::DetailedInitializationStage;
+
 // TODO: what is this? (showed up in rebase)
 //const COL1: Color = Color::Rgba(0.07, 0.1, 0.1, 0.9);
 
@@ -93,6 +95,7 @@ const BG_IMGS: [&str; 17] = [
 pub enum WorldChange {
     Name(String),
     Seed(u32),
+    DayLength(f64),
     SizeX(u32),
     SizeY(u32),
     Scale(f64),
@@ -109,6 +112,7 @@ impl WorldChange {
         match self {
             WorldChange::Name(name) => world.name = name,
             WorldChange::Seed(seed) => world.seed = seed,
+            WorldChange::DayLength(d) => world.day_length = d,
             WorldChange::SizeX(s) => gen_opts.x_lg = s,
             WorldChange::SizeY(s) => gen_opts.y_lg = s,
             WorldChange::Scale(scale) => gen_opts.scale = scale,
@@ -182,6 +186,7 @@ enum Screen {
     Connecting {
         screen: connecting::Screen,
         connection_state: ConnectionState,
+        init_stage: DetailedInitializationStage,
     },
     #[cfg(feature = "singleplayer")]
     WorldSelector {
@@ -205,7 +210,7 @@ impl Showing {
     }
 }
 
-struct Controls {
+pub struct Controls {
     fonts: Fonts,
     imgs: Imgs,
     bg_img: widget::image::Handle,
@@ -408,10 +413,12 @@ impl Controls {
             Screen::Connecting {
                 screen,
                 connection_state,
+                init_stage,
             } => screen.view(
                 &self.fonts,
                 &self.imgs,
                 connection_state,
+                init_stage,
                 self.time,
                 &self.i18n.read(),
                 button_style,
@@ -483,6 +490,7 @@ impl Controls {
                 self.screen = Screen::Connecting {
                     screen: connecting::Screen::new(ui),
                     connection_state: ConnectionState::InProgress,
+                    init_stage: DetailedInitializationStage::Singleplayer,
                 };
                 events.push(Event::StartSingleplayer);
             },
@@ -523,6 +531,7 @@ impl Controls {
                 self.screen = Screen::Connecting {
                     screen: connecting::Screen::new(ui),
                     connection_state: ConnectionState::InProgress,
+                    init_stage: DetailedInitializationStage::StartingMultiplayer,
                 };
 
                 events.push(Event::LoginAttempt {
@@ -543,7 +552,7 @@ impl Controls {
             },
             Message::ServerChanged(new_value) => {
                 self.selected_server_index = Some(new_value);
-                self.login_info.server = servers[new_value].clone();
+                self.login_info.server.clone_from(&servers[new_value]);
             },
             Message::FocusPassword => {
                 if let Screen::Login { screen, .. } = &mut self.screen {
@@ -632,6 +641,12 @@ impl Controls {
         }
     }
 
+    fn update_init_stage(&mut self, stage: DetailedInitializationStage) {
+        if let Screen::Connecting { init_stage, .. } = &mut self.screen {
+            *init_stage = stage
+        }
+    }
+
     fn tab(&mut self) {
         if let Screen::Login { screen, .. } = &mut self.screen {
             // TODO: add select all function in iced
@@ -665,6 +680,7 @@ pub struct MainMenuUi {
     // TODO: re add this
     // tip_no: u16,
     controls: Controls,
+    bg_img_spec: &'static str,
 }
 
 impl MainMenuUi {
@@ -683,7 +699,7 @@ impl MainMenuUi {
 
         let fonts = Fonts::load(i18n.fonts(), &mut ui).expect("Impossible to load fonts");
 
-        let bg_img_spec = BG_IMGS.choose(&mut thread_rng()).unwrap();
+        let bg_img_spec = rand_bg_image_spec();
 
         let bg_img = assets::Image::load_expect(bg_img_spec).read().to_image();
         let controls = Controls::new(
@@ -695,8 +711,14 @@ impl MainMenuUi {
             server,
         );
 
-        Self { ui, controls }
+        Self {
+            ui,
+            controls,
+            bg_img_spec,
+        }
     }
+
+    pub fn bg_img_spec(&self) -> &'static str { self.bg_img_spec }
 
     pub fn update_language(&mut self, i18n: LocalizationHandle, settings: &Settings) {
         self.controls.i18n = i18n;
@@ -716,6 +738,11 @@ impl MainMenuUi {
     }
 
     pub fn show_info(&mut self, msg: String) { self.controls.connection_error(msg); }
+
+    pub fn update_stage(&mut self, stage: DetailedInitializationStage) {
+        tracing::trace!(?stage, "Updating stage");
+        self.controls.update_init_stage(stage);
+    }
 
     pub fn connected(&mut self) { self.controls.exit_connect_screen(); }
 
@@ -790,3 +817,5 @@ impl MainMenuUi {
 
     pub fn render<'a>(&'a self, drawer: &mut UiDrawer<'_, 'a>) { self.ui.render(drawer); }
 }
+
+pub fn rand_bg_image_spec() -> &'static str { BG_IMGS.choose(&mut thread_rng()).unwrap() }

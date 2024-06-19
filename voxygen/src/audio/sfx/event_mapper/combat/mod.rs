@@ -19,7 +19,7 @@ use common::{
 };
 use common_state::State;
 use hashbrown::HashMap;
-use specs::{Entity as EcsEntity, Join, WorldExt};
+use specs::{Entity as EcsEntity, Join, LendJoin, WorldExt};
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -145,7 +145,12 @@ impl CombatEventMapper {
         previous_state: &PreviousEntityState,
         inventory: &Inventory,
     ) -> SfxEvent {
-        if let Some(item) = inventory.equipped(EquipSlot::ActiveMainhand) {
+        let equip_slot = character_state
+            .ability_info()
+            .and_then(|ability| ability.hand)
+            .map_or(EquipSlot::ActiveMainhand, |hand| hand.to_equip_slot());
+
+        if let Some(item) = inventory.equipped(equip_slot) {
             if let ItemKind::Tool(data) = &*item.kind() {
                 if character_state.is_attack() {
                     return SfxEvent::Attack(

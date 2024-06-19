@@ -2,13 +2,14 @@ use crate::{
     comp::{
         buff::{BuffChange, BuffKind},
         character_state::{AttackFilters, OutputEvents},
-        CharacterState, InputKind, StateUpdate,
+        CharacterState, StateUpdate,
     },
-    event::ServerEvent,
+    event::BuffEvent,
     states::{
         behavior::{CharacterBehavior, JoinData},
         utils::*,
     },
+    util::Dir,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -41,10 +42,10 @@ pub struct Data {
     pub stage_section: StageSection,
     /// Had weapon
     pub was_wielded: bool,
+    /// What direction were we previously aiming in?
+    pub prev_aimed_dir: Option<Dir>,
     /// Is sneaking, true if previous state was also considered sneaking
     pub is_sneaking: bool,
-    /// Was in state with combo
-    pub was_combo: Option<(InputKind, u32)>,
 }
 
 impl CharacterBehavior for Data {
@@ -59,7 +60,7 @@ impl CharacterBehavior for Data {
 
         match self.stage_section {
             StageSection::Buildup => {
-                handle_move(data, &mut update, 1.0);
+                handle_move(data, &mut update, 0.3);
                 if self.timer < self.static_data.buildup_duration {
                     // Build up
                     update.character = CharacterState::Roll(Data {
@@ -68,7 +69,7 @@ impl CharacterBehavior for Data {
                     });
                 } else {
                     // Remove burning effect if active
-                    output_events.emit_server(ServerEvent::Buff {
+                    output_events.emit_server(BuffEvent {
                         entity: data.entity,
                         buff_change: BuffChange::RemoveByKind(BuffKind::Burning),
                     });
@@ -118,25 +119,16 @@ impl CharacterBehavior for Data {
                 {
                     // Recover
                     update.character = CharacterState::Roll(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {
                     // Done
-                    if let Some((input, stage)) = self.was_combo {
-                        if input_is_pressed(data, input) {
-                            handle_input(data, output_events, &mut update, input);
-                            // If other states are introduced that progress through stages, add them
-                            // here
-                            if let CharacterState::ComboMelee(c) = &mut update.character {
-                                c.stage = stage;
-                            }
-                        } else {
-                            end_ability(data, &mut update);
-                        }
-                    } else {
-                        end_ability(data, &mut update);
-                    }
+                    end_ability(data, &mut update);
                 }
             },
             _ => {

@@ -1,4 +1,5 @@
 use crate::{
+    combat,
     comp::{
         character_state::OutputEvents, tool::ToolKind, CharacterState, MeleeConstructor,
         StateUpdate,
@@ -22,10 +23,15 @@ pub struct StaticData {
     pub swing_duration: Duration,
     /// How long the state has until exiting
     pub recover_duration: Duration,
+    /// At what fraction of swing_duration to make the hit
+    pub hit_timing: f32,
     /// Used to construct the Melee attack
     pub melee_constructor: MeleeConstructor,
     /// Adjusts turning rate during the attack
     pub ori_modifier: f32,
+    /// Used to indicate to the frontend what ability this is for any special
+    /// effects
+    pub frontend_specifier: Option<FrontendSpecifier>,
     /// What key is used to press ability
     pub ability_info: AbilityInfo,
 }
@@ -69,21 +75,25 @@ impl CharacterBehavior for Data {
                 }
             },
             StageSection::Action => {
-                if !self.exhausted {
+                if !self.exhausted
+                    && self.timer.as_secs_f32()
+                        >= self.static_data.swing_duration.as_secs_f32()
+                            * self.static_data.hit_timing
+                {
                     update.character = CharacterState::BasicMelee(Data {
-                        timer: Duration::default(),
+                        timer: tick_attack_or_default(data, self.timer, None),
                         exhausted: true,
                         ..*self
                     });
 
-                    let crit_data = get_crit_data(data, self.static_data.ability_info);
+                    let precision_mult = combat::compute_precision_mult(data.inventory, data.msm);
                     let tool_stats = get_tool_stats(data, self.static_data.ability_info);
 
                     data.updater.insert(
                         data.entity,
                         self.static_data
                             .melee_constructor
-                            .create_melee(crit_data, tool_stats)
+                            .create_melee(precision_mult, tool_stats)
                             .with_block_breaking(
                                 data.inputs
                                     .break_block_pos
@@ -123,7 +133,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recovery
                     update.character = CharacterState::BasicMelee(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {
@@ -160,4 +174,9 @@ fn reset_state(
         update,
         data.static_data.ability_info.input,
     );
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FrontendSpecifier {
+    FlameTornado,
 }

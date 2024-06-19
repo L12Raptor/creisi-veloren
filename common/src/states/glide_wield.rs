@@ -26,9 +26,29 @@ impl From<&JoinData<'_>> for Data {
         Self {
             // Aspect ratio is what really matters for lift/drag ratio
             // and the aerodynamics model works for ARs up to 25.
+            //
             // The inflated dimensions are hopefully only a temporary
             // bandaid for the poor glide ratio experienced under 2.5G.
+            //
+            // The formula is:
+            //  s: span_length_modifier
+            //  c: chord_length_modifier
+            //  h: height (this is a hack to balance different races)
+            //
+            // p_a = Pi/4 * c * h * s * h
+            // AR
+            //  = (s * h)^2 / p_a
+            //  = (s * h)^2  / (Pi / 4 * (c * h) * (s * h))
+            //  = (s * h) / (c * h) / (Pi / 4)
+            //  = s / c / Pi/4
+            //
+            // or if c is 1,
+            //  = s / Pi/4
+            //
+            // In other words, the bigger `span_length` the better.
+            //
             // A span/chord ratio of 4.5 gives an AR of ~5.73.
+            // A span/chord ratio of 3.0 gives an ARI of ~3.82.
             span_length: scale * 4.5,
             chord_length: scale,
             ori: *data.ori,
@@ -46,7 +66,7 @@ impl CharacterBehavior for Data {
         if input_is_pressed(data, InputKind::Roll) {
             handle_input(data, output_events, &mut update, InputKind::Roll);
         }
-        handle_wield(data, &mut update);
+        handle_glider_input_or(data, &mut update, output_events, handle_wield);
 
         // If still in this state, do the things
         if matches!(update.character, CharacterState::GlideWield(_)) {

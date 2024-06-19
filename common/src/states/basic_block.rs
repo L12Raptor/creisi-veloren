@@ -25,7 +25,8 @@ pub struct StaticData {
     pub recover_duration: Duration,
     /// Max angle (45.0 will give you a 90.0 angle window)
     pub max_angle: f32,
-    /// What percentage incoming damage is reduced by
+    /// Base value that incoming damage is reduced by and converted to poise
+    /// damage
     pub block_strength: f32,
     /// What durations are considered a parry
     pub parry_window: ParryWindow,
@@ -50,6 +51,8 @@ pub struct Data {
     pub timer: Duration,
     /// What section the character stage is in
     pub stage_section: StageSection,
+    // Whether there was parry
+    pub is_parry: bool,
 }
 
 impl CharacterBehavior for Data {
@@ -99,10 +102,16 @@ impl CharacterBehavior for Data {
                 }
             },
             StageSection::Recover => {
-                if self.timer < self.static_data.recover_duration {
+                if (self.static_data.parry_window.recover || !self.is_parry)
+                    && self.timer < self.static_data.recover_duration
+                {
                     // Recovery
                     update.character = CharacterState::BasicBlock(Data {
-                        timer: tick_attack_or_default(data, self.timer, None),
+                        timer: tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        ),
                         ..*self
                     });
                 } else {

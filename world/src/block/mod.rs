@@ -1,6 +1,6 @@
 use crate::{
     column::{ColumnGen, ColumnSample},
-    util::{FastNoise, RandomField, RandomPerm, Sampler, SmallCache},
+    util::{FastNoise, RandomField, Sampler, SmallCache},
     IndexRef, CONFIG,
 };
 use common::{
@@ -34,7 +34,7 @@ impl<'a> BlockGen<'a> {
 
     pub fn sample_column<'b>(
         column_gen: &ColumnGen<'a>,
-        cache: &'b mut SmallCache<Option<ColumnSample<'a>>>,
+        cache: &'b mut SmallCache<Vec2<i32>, Option<ColumnSample<'a>>>,
         wpos: Vec2<i32>,
         index: IndexRef<'a>,
         calendar: Option<&'a Calendar>,
@@ -212,8 +212,7 @@ pub fn block_from_structure(
 ) -> Option<(Block, Option<SpriteCfg>)> {
     let field = RandomField::new(structure_seed);
 
-    let lerp = ((field.get(Vec3::from(structure_pos)).rem_euclid(256)) as f32 / 255.0) * 0.8
-        + ((field.get(pos + i32::MAX / 2).rem_euclid(256)) as f32 / 255.0) * 0.2;
+    let lerp = field.get_f32(Vec3::from(structure_pos)) * 0.8 + field.get_f32(pos) * 0.2;
 
     let block = match sblock {
         StructureBlock::None => None,
@@ -280,50 +279,25 @@ pub fn block_from_structure(
         | StructureBlock::Acacia
         | StructureBlock::Mangrove
         | StructureBlock::Chestnut
-        | StructureBlock::Baobab => {
-            let ranges = sblock
-                .elim_case_pure(&index.colors.block.structure_blocks)
-                .as_ref()
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            let range = if ranges.is_empty() {
-                None
+        | StructureBlock::Baobab
+        | StructureBlock::MapleLeaves
+        | StructureBlock::CherryLeaves
+        | StructureBlock::AutumnLeaves => {
+            if calendar.map_or(false, |c| c.is_event(CalendarEvent::Christmas))
+                && field.chance(pos + structure_pos, 0.025)
+            {
+                Some(Block::new(BlockKind::GlowingWeakRock, Rgb::new(255, 0, 0)))
+            } else if calendar.map_or(false, |c| c.is_event(CalendarEvent::Halloween))
+                && (*sblock == StructureBlock::TemperateLeaves
+                    || *sblock == StructureBlock::Chestnut
+                    || *sblock == StructureBlock::CherryLeaves)
+            {
+                crate::all::leaf_color(index, structure_seed, lerp, &StructureBlock::AutumnLeaves)
+                    .map(|col| Block::new(BlockKind::Leaves, col))
             } else {
-                ranges.get(
-                    RandomPerm::new(structure_seed).get(structure_seed) as usize % ranges.len(),
-                )
-            };
-
-            range.map(|range| {
-                if calendar.map_or(false, |c| c.is_event(CalendarEvent::Christmas))
-                    && field.chance(pos + structure_pos, 0.025)
-                {
-                    Block::new(BlockKind::GlowingWeakRock, Rgb::new(255, 0, 0))
-                } else if calendar.map_or(false, |c| c.is_event(CalendarEvent::Halloween))
-                    && *sblock != StructureBlock::PineLeaves
-                {
-                    let (c0, c1) = match structure_seed % 6 {
-                        0 => (Rgb::new(165.0, 150.0, 11.0), Rgb::new(170.0, 165.0, 16.0)),
-                        1 | 2 => (Rgb::new(218.0, 53.0, 3.0), Rgb::new(226.0, 62.0, 5.0)),
-                        _ => (Rgb::new(230.0, 120.0, 20.0), Rgb::new(242.0, 130.0, 25.0)),
-                    };
-
-                    Block::new(
-                        BlockKind::Leaves,
-                        Rgb::<f32>::lerp(c0, c1, lerp).map(|e| e as u8),
-                    )
-                } else {
-                    Block::new(
-                        BlockKind::Leaves,
-                        Rgb::<f32>::lerp(
-                            Rgb::<u8>::from(range.start).map(f32::from),
-                            Rgb::<u8>::from(range.end).map(f32::from),
-                            lerp,
-                        )
-                        .map(|e| e as u8),
-                    )
-                }
-            })
+                crate::all::leaf_color(index, structure_seed, lerp, sblock)
+                    .map(|col| Block::new(BlockKind::Leaves, col))
+            }
         },
         StructureBlock::BirchWood => {
             let wpos = pos + structure_pos;
@@ -371,6 +345,17 @@ pub fn block_from_structure(
                 }),
             ));
         },
+        StructureBlock::HaniwaKeyhole(consumes) => {
+            return Some((
+                Block::air(SpriteKind::HaniwaKeyhole),
+                Some(SpriteCfg {
+                    unlock: Some(UnlockKind::Consumes(ItemDefinitionIdOwned::Simple(
+                        consumes.clone(),
+                    ))),
+                    ..SpriteCfg::default()
+                }),
+            ));
+        },
         StructureBlock::KeyholeBars(consumes) => {
             return Some((
                 Block::air(SpriteKind::KeyholeBars),
@@ -392,6 +377,36 @@ pub fn block_from_structure(
                     ..SpriteCfg::default()
                 }),
             ));
+        },
+        StructureBlock::TerracottaKeyhole(consumes) => {
+            return Some((
+                Block::air(SpriteKind::TerracottaKeyhole),
+                Some(SpriteCfg {
+                    unlock: Some(UnlockKind::Consumes(ItemDefinitionIdOwned::Simple(
+                        consumes.clone(),
+                    ))),
+                    ..SpriteCfg::default()
+                }),
+            ));
+        },
+        StructureBlock::SahaginKeyhole(consumes) => {
+            return Some((
+                Block::air(SpriteKind::SahaginKeyhole),
+                Some(SpriteCfg {
+                    unlock: Some(UnlockKind::Consumes(ItemDefinitionIdOwned::Simple(
+                        consumes.clone(),
+                    ))),
+                    ..SpriteCfg::default()
+                }),
+            ));
+        },
+        StructureBlock::RedwoodWood => {
+            let wpos = pos + structure_pos;
+            if (wpos.x / 2 + wpos.y) % 5 > 1 && ((wpos.x + 1) / 2 + wpos.y + 2) % 5 > 1 {
+                Some(Block::new(BlockKind::Wood, Rgb::new(80, 40, 10)))
+            } else {
+                Some(Block::new(BlockKind::Wood, Rgb::new(110, 55, 10)))
+            }
         },
     };
 

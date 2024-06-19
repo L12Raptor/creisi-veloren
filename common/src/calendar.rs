@@ -9,6 +9,7 @@ pub enum CalendarEvent {
     Christmas = 0,
     Halloween = 1,
     AprilFools = 2,
+    Easter = 3,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +32,8 @@ impl Calendar {
         let now = match tz {
             Some(tz) => {
                 let utc = Utc::now().naive_utc();
-                DateTime::<Tz>::from_utc(utc, tz.offset_from_utc_datetime(&utc)).naive_local()
+                DateTime::<Tz>::from_naive_utc_and_offset(utc, tz.offset_from_utc_datetime(&utc))
+                    .naive_local()
             },
             None => Local::now().naive_local(),
         };
@@ -46,6 +48,10 @@ impl Calendar {
 
         if now.month() == 4 && now.day() == 1 {
             this.events.push(CalendarEvent::AprilFools);
+        }
+
+        if now.month() == 3 && now.day() == 31 || now.month() == 4 && (1..=7).contains(&now.day()) {
+            this.events.push(CalendarEvent::Easter);
         }
 
         this

@@ -57,7 +57,7 @@ npc-speech-villager_neurotic =
     .a3 = Я бы хотел, чтобы кто-нибудь отогнал волков подальше от деревни.
 npc-speech-villager_sad_loner =
     .a0 = Я так одинок.
-    .a1 = ... Извини за это неловкое молчание. Я не очень умею ладить с людьми.
+    .a1 = { "." }.. Извини за это неловкое молчание. Я не очень умею ладить с людьми.
 npc-speech-villager_seeker =
     .a0 = Я хочу когда-нибудь увидеть весь мир. В жизни должно быть что-то большее, чем эта деревня.
 npc-speech-villager_stable =
@@ -202,7 +202,7 @@ npc-speech-villager_under_attack =
 npc-speech-villager_enemy_killed =
     .a0 = Я уничтожил врага!
     .a1 = Наконец-то мир!
-    .a2 = ... что я там делал?
+    .a2 = { "." }.. что я там делал?
 npc-speech-menacing =
     .a0 = Я предупреждаю тебя!
     .a1 = Ещё шаг и я атакую!
@@ -218,8 +218,102 @@ npc-speech-cultist_low_health_fleeing =
     .a4 = Я должен передохнуть!
     .a5 = Они слишком сильны!
 npc-speech-prisoner =
-    .a0 = Эти мерзавцы отобрали у меня кирку!
-    .a1 = Быть в заточении - не самое приятное занятие.
-    .a2 = Этому кардиналу нельзя доверять.
+    .a0 = Пожалуйста, найдите ключ!
+    .a1 = Быть в ловушке не весело.
+    .a2 = Этому Кардиналу нельзя доверять.
     .a3 = Эти церковники задумали что-то неладное.
-    .a4 = Жаль, что у меня нет моей кирки!
+npc-speech-day_time =
+    .a0 = Начинается новый день!
+    .a1 = Мне никогда не нравилось просыпаться...
+npc-speech-night_time =
+    .a0 = Темнеет, пора возвращаться домой.
+    .a1 = Я устал.
+    .a2 = Моя кровать зовет меня!
+npc-speech-dist_far = далеко
+npc-speech-witness_enemy_murder =
+    .a0 = Мой герой!
+    .a1 = Наконец-то хоть кто-то это сделал!
+    .a2 = Да!
+npc-speech-witness_death =
+    .a0 = Нет!
+    .a1 = Это ужасно!
+    .a2 = О, Боже мой!
+npc-speech-dist_very_far = очень далеко
+# Generic NPC messages
+npc-speech-start_hunting =
+    .a0 = Пора идти на охоту!
+# Generic NPC messages
+npc-speech-moving_on =
+    .a0 = Я провел здесь достаточно времени, вперед к { $site }!
+# Generic NPC messages
+npc-speech-migrating =
+    .a0 = Мне больше не нравится жить здесь. Пора переезжать в { $site }.
+    .a1 = Пора переезжать в { $site }, мне надоело это место.
+# Generic NPC messages
+npc-speech-guard_thought =
+    .a0 = Мой брат сражается с ограми. А что я? Стал стражником...
+    .a1 = Просто ещё один патруль, после смогу отправиться домой.
+    .a2 = Ни один бандит не пройдёт мимо меня.
+# Generic NPC messages
+npc-speech-merchant_sell_undirected =
+    .a0 = Все мои товары самого высокого качества!
+    .a1 = Кто-нибудь хочет купить мои товары?
+    .a2 = У меня лучшие предложения в городе.
+    .a3 = Ищете припасы? У меня есть все необходимое.
+# Generic NPC messages
+npc-speech-merchant_sell_directed =
+    .a0 = Вы на месте! Вам нужен новый этот, как его там?
+    .a1 = Вы голодны? Уверен, у меня есть сыр, который вы можете купить.
+    .a2 = Похоже, вам не помешала бы новая броня!
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_east = востоке
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_south_east = юго-востоке
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_south = юге
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_south_west = юго-западе
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_west = западе
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_north_west = северо-западе
+# NPC site hints
+# Available variables:
+# - $dir references npc-speech-dir-* variables below
+# - $dist references npc-speech-dist-* variables below
+# - $site represents hard-coded site in the world
+npc-speech-tell_site =
+    .a0 = Вы посещали { $site }? Это на { $dir } отсюда!
+    .a1 = Вам стоит как-нибудь посетить { $site }.
+    .a2 = Если пройти { $dist } на { $dir }, то можно попасть в { $site }.
+    .a3 = На { $dir } вы найдете { $site }, это { $dist }.
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_north = севере
+# Direction hints, used ONLY in npc-speech-tell* above
+npc-speech-dir_north_east = северо-востоке
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_ahead = в некотором отдалении
+# NPC monster hints
+# Available variables:
+# - $dir references npc-speech-dir-* variables below
+# - $dist references npc-speech-dist-* variables below
+# - $body references body-npc-speech-* variables in `body` component
+npc-speech-tell_monster =
+    .a0 = Говорят, что { $body } находится на { $dir }, { $dist }...
+    .a1 = Считаешь себя крутым? На { $dir } есть { $body }.
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_near = неподалеку
+# NPC proposals
+npc-speech-arena = Давайте сядем вон там!
+# Distance hints, used ONLY in npc-speech-tell* above
+npc-speech-dist_near_to = очень близко
+# NPC reactions
+npc-speech-witness_murder =
+    .a0 = Убийца!
+    .a1 = Как ты мог это сделать?
+    .a2 = Ааа!
+# NPC reactions
+npc-speech-welcome-aboard =
+    .a0 = Добро пожаловать на борт!
+    .a1 = Могу ли я посмотреть ваш билет... шучу, это бесплатно!
+    .a2 = Удачной поездки!

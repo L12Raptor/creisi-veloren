@@ -1,7 +1,7 @@
 use crate::{client::Client, Settings};
 use common::{
-    event::{EventBus, ServerEvent},
-    resources::Time,
+    event::{ClientDisconnectEvent, EventBus},
+    resources::ProgramTime,
 };
 use common_ecs::{Job, Origin, Phase, System};
 use common_net::msg::PingMsg;
@@ -25,8 +25,8 @@ pub struct Sys;
 impl<'a> System<'a> for Sys {
     type SystemData = (
         Entities<'a>,
-        Read<'a, EventBus<ServerEvent>>,
-        Read<'a, Time>,
+        Read<'a, EventBus<ClientDisconnectEvent>>,
+        Read<'a, ProgramTime>,
         WriteStorage<'a, Client>,
         Read<'a, Settings>,
     );
@@ -37,11 +37,11 @@ impl<'a> System<'a> for Sys {
 
     fn run(
         _job: &mut Job<Self>,
-        (entities, server_event_bus, time, mut clients, settings): Self::SystemData,
+        (entities, client_disconnect, program_time, mut clients, settings): Self::SystemData,
     ) {
         (&entities, &mut clients).par_join().for_each_init(
-            || server_event_bus.emitter(),
-            |server_emitter, (entity, client)| {
+            || client_disconnect.emitter(),
+            |client_disconnect_emitter, (entity, client)| {
                 // ignore network events
                 while let Some(Ok(Some(_))) =
                     client.participant.as_mut().map(|p| p.try_fetch_event())
@@ -52,26 +52,26 @@ impl<'a> System<'a> for Sys {
                 match res {
                     Err(e) => {
                         debug!(?entity, ?e, "network error with client, disconnecting");
-                        server_emitter.emit(ServerEvent::ClientDisconnect(
+                        client_disconnect_emitter.emit(ClientDisconnectEvent(
                             entity,
                             common::comp::DisconnectReason::NetworkError,
                         ));
                     },
                     Ok(1_u64..=u64::MAX) => {
                         // Update client ping.
-                        client.last_ping = time.0
+                        client.last_ping = program_time.0
                     },
                     Ok(0) => {
                         let last_ping: f64 = client.last_ping;
-                        if time.0 - last_ping > settings.client_timeout.as_secs() as f64
+                        if program_time.0 - last_ping > settings.client_timeout.as_secs() as f64
                         // Timeout
                         {
                             info!(?entity, "timeout error with client, disconnecting");
-                            server_emitter.emit(ServerEvent::ClientDisconnect(
+                            client_disconnect_emitter.emit(ClientDisconnectEvent(
                                 entity,
                                 common::comp::DisconnectReason::Timeout,
                             ));
-                        } else if time.0 - last_ping
+                        } else if program_time.0 - last_ping
                             > settings.client_timeout.as_secs() as f64 * 0.5
                         {
                             // Try pinging the client if the timeout is nearing.

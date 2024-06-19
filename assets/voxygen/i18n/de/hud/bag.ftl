@@ -1,6 +1,5 @@
 hud-bag-inventory = { $playername }'s Inventar
 hud-bag-stats_title = { $playername }'s Statistiken
-hud-bag-exp = Exp
 hud-bag-armor = Rüstung
 hud-bag-stats = Statistiken
 hud-bag-head = Kopf
@@ -39,3 +38,6 @@ hud-bag-stun_res_desc =
 hud-bag-sort_by_name = Nach Namen sortieren
 hud-bag-sort_by_quality = Nach Qualität sortieren
 hud-bag-sort_by_category = Nach Kategorie sortieren
+hud-bag-sort_by_quantity = Nach Anzahl sortieren
+hud-bag-backpack = Rucksack
+hud-bag-sort_by_tag = Nach Label sortieren

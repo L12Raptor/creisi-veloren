@@ -1,15 +1,14 @@
 use crate::wiring::{Circuit, WiringElement};
 use common::{
     comp::{LightEmitter, PhysicsState, Pos},
-    event::{EventBus, ServerEvent},
+    event, event_emitters,
     resources::EntitiesDiedLastTick,
 };
 use common_ecs::{Job, Origin, Phase, System};
 use common_state::BlockChange;
 use hashbrown::HashMap;
 use specs::{
-    join::Join, shred::ResourceId, Entities, Entity, Read, ReadStorage, SystemData, World, Write,
-    WriteStorage,
+    shred, Entities, Entity, Join, LendJoin, Read, ReadStorage, SystemData, Write, WriteStorage,
 };
 
 #[derive(SystemData)]
@@ -21,13 +20,19 @@ pub struct ReadData<'a> {
     entities_died_last_tick: Read<'a, EntitiesDiedLastTick>,
 }
 
+event_emitters! {
+    struct Events[Emitters] {
+        shoot: event::ShootEvent,
+    }
+}
+
 /// This system is responsible for handling wiring (signals and wiring systems)
 #[derive(Default)]
 pub struct Sys;
 impl<'a> System<'a> for Sys {
     type SystemData = (
         ReadData<'a>,
-        Read<'a, EventBus<ServerEvent>>,
+        Events<'a>,
         WriteStorage<'a, WiringElement>,
         WriteStorage<'a, LightEmitter>, // maybe
         Write<'a, BlockChange>,
@@ -39,9 +44,9 @@ impl<'a> System<'a> for Sys {
 
     fn run(
         _job: &mut Job<Self>,
-        (read_data, event_bus, mut wiring_elements, mut light_emitters, mut block_change): Self::SystemData,
+        (read_data, events, mut wiring_elements, mut light_emitters, mut block_change): Self::SystemData,
     ) {
-        let mut server_emitter = event_bus.emitter();
+        let mut emitters = events.get_emitters();
 
         // Compute the output for each wiring element by computing
         // the output for each `OutputFormula` and store each value per output per
@@ -106,7 +111,7 @@ impl<'a> System<'a> for Sys {
             (&mut light_emitters).maybe(),
             read_data.pos.maybe(),
         )
-            .join()
+            .lend_join()
             .for_each(
                 |(entity, wiring_element, physics_state, mut light_emitter, pos)| {
                     wiring_element
@@ -129,7 +134,7 @@ impl<'a> System<'a> for Sys {
                                 &wiring_element.inputs,
                                 physics_state,
                                 &read_data.entities_died_last_tick.0,
-                                &mut server_emitter,
+                                &mut emitters,
                                 pos,
                                 &mut block_change,
                                 light_emitter.as_deref_mut(),

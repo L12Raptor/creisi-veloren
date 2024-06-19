@@ -4,7 +4,7 @@ use crate::{
         character_state::OutputEvents, controller::InputKind, item::ItemDefinitionIdOwned,
         slot::InvSlotId, CharacterState, InventoryManip, StateUpdate,
     },
-    event::{LocalEvent, ServerEvent},
+    event::{InventoryManipEvent, LocalEvent, ToggleSpriteLightEvent},
     outcome::Outcome,
     states::behavior::{CharacterBehavior, JoinData},
     terrain::SpriteKind,
@@ -95,7 +95,11 @@ impl CharacterBehavior for Data {
                 if self.timer < self.static_data.recover_duration {
                     // Recovery
                     if let CharacterState::SpriteInteract(c) = &mut update.character {
-                        c.timer = tick_attack_or_default(data, self.timer, None);
+                        c.timer = tick_attack_or_default(
+                            data,
+                            self.timer,
+                            Some(data.stats.recovery_speed_modifier),
+                        );
                     }
                 } else {
                     // Create inventory manipulation event
@@ -117,8 +121,18 @@ impl CharacterBehavior for Data {
                             sprite_pos: self.static_data.sprite_pos,
                             required_item: inv_slot,
                         };
-                        output_events
-                            .emit_server(ServerEvent::InventoryManip(data.entity, inv_manip));
+                        match self.static_data.sprite_kind {
+                            SpriteInteractKind::ToggleLight(enable) => {
+                                output_events.emit_server(ToggleSpriteLightEvent {
+                                    entity: data.entity,
+                                    pos: self.static_data.sprite_pos,
+                                    enable,
+                                })
+                            },
+                            _ => output_events
+                                .emit_server(InventoryManipEvent(data.entity, inv_manip)),
+                        }
+
                         if matches!(self.static_data.sprite_kind, SpriteInteractKind::Unlock) {
                             output_events.emit_local(LocalEvent::CreateOutcome(
                                 Outcome::SpriteUnlocked {
@@ -157,6 +171,7 @@ pub enum SpriteInteractKind {
     Collectible,
     Unlock,
     Fallback,
+    ToggleLight(bool),
 }
 
 impl From<SpriteKind> for Option<SpriteInteractKind> {
@@ -191,8 +206,11 @@ impl From<SpriteKind> for Option<SpriteInteractKind> {
             | SpriteKind::Bomb => Some(SpriteInteractKind::Collectible),
             SpriteKind::Keyhole
             | SpriteKind::BoneKeyhole
+            | SpriteKind::HaniwaKeyhole
+            | SpriteKind::SahaginKeyhole
             | SpriteKind::GlassKeyhole
-            | SpriteKind::KeyholeBars => Some(SpriteInteractKind::Unlock),
+            | SpriteKind::KeyholeBars
+            | SpriteKind::TerracottaKeyhole => Some(SpriteInteractKind::Unlock),
             // Collectible checked in addition to container for case that sprite requires a tool to
             // collect and cannot be collected by hand, yet still meets the container check
             _ if sprite_kind.is_container() && sprite_kind.is_collectible() => {
@@ -232,6 +250,11 @@ impl SpriteInteractKind {
                 Duration::from_secs_f32(0.8),
                 Duration::from_secs_f32(1.0),
                 Duration::from_secs_f32(0.3),
+            ),
+            Self::ToggleLight(_) => (
+                Duration::from_secs_f32(0.1),
+                Duration::from_secs_f32(0.2),
+                Duration::from_secs_f32(0.1),
             ),
         }
     }
