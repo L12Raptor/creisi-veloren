@@ -1335,7 +1335,8 @@ impl Body {
                 | quadruped_low::Species::Alligator
                 | quadruped_low::Species::Sandshark
                 | quadruped_low::Species::Snaretongue
-                | quadruped_low::Species::Asp => 190,
+                | quadruped_low::Species::Asp
+                | quadruped_low::Species::Rigusaurus => 190,
                 quadruped_low::Species::Tortoise
                 | quadruped_low::Species::Rocksnapper
                 | quadruped_low::Species::Rootsnapper
